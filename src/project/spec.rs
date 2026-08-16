@@ -168,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unparseable_background_is_rejected_rather_than_treated_as_transparent() {
+    fn an_unparsable_background_is_rejected_rather_than_treated_as_transparent() {
         // Silently falling back to transparent would produce a plausible-looking
         // asset with the wrong background, which is worse than failing.
         assert!("chartreuse".parse::<Background>().is_err());

@@ -1,13 +1,37 @@
-<!--
-  A placeholder mark: two glyph-free shapes, so it reads as "not yet designed"
-  rather than as a logo somebody chose. Replace it — the README, the
-  documentation header and the favicon all point here, so one file changes all
-  three.
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:shaipe="https://shaipe.dev/ns/2026" width="256" height="256" viewBox="0 0 256 256"><defs>
+    <g id="mark-geometry">
+      <path d="M40 40 H216 V216 H40 Z" fill="none" stroke="currentColor" stroke-width="16" stroke-linejoin="round"/>
+      <path d="M128 128 H216 V216 H128 Z" fill="#f05032"/>
+    </g>
 
-  Keep it a square viewBox. The header slot scales to a fixed height, and a
-  non-square source is letterboxed rather than cropped.
--->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="placeholder mark">
-  <rect width="64" height="64" rx="14" fill="currentColor" opacity="0.12"/>
-  <circle cx="32" cy="32" r="14" fill="none" stroke="currentColor" stroke-width="4"/>
-</svg>
+    <g id="letters-geometry">
+      <g fill="none" stroke="currentColor" stroke-width="22" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M376 116 C376 96 304 96 304 128 C304 158 376 152 376 180 C376 210 304 208 304 188"/>
+        <path d="M406 60 V180"/>
+        <path d="M406 128 C406 104 470 104 470 132 V180"/>
+        <circle cx="528" cy="146" r="34"/>
+        <path d="M562 112 V180"/>
+        <path d="M596 112 V180"/>
+        <path d="M626 112 V228"/>
+        <circle cx="660" cy="146" r="34"/>
+        <path d="M712 146 H780 A34 34 0 1 0 772 172"/>
+      </g>
+      <circle cx="596" cy="76" r="12" fill="currentColor"/>
+      <!-- The one accent in the word, echoing the icon's resolved quadrant. -->
+      <circle cx="660" cy="146" r="12" fill="#f05032"/>
+    </g>
+  </defs><symbol id="icon" viewBox="0 0 256 256">
+    <g color="#18181b"><use href="#mark-geometry"/></g>
+  </symbol><symbol id="icon-inverse" viewBox="0 0 256 256">
+    <g color="#ffffff"><use href="#mark-geometry"/></g>
+  </symbol><symbol id="wordmark" viewBox="0 0 800 256">
+    <g color="#18181b">
+      <use href="#mark-geometry"/>
+      <use href="#letters-geometry"/>
+    </g>
+  </symbol><symbol id="wordmark-inverse" viewBox="0 0 800 256">
+    <g color="#ffffff">
+      <use href="#mark-geometry"/>
+      <use href="#letters-geometry"/>
+    </g>
+  </symbol><use href="#icon"/></svg>

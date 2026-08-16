@@ -214,8 +214,9 @@ impl App {
         // the asset rather than an impression of it.
         self.preview = match Renderer::new(&self.project, RenderOptions::default())
             .and_then(|renderer| renderer.render(&spec))
-            .and_then(|asset| Image::from_asset(&asset).map(|image| (image, asset.spec.clone())))
-        {
+            .and_then(|asset| {
+                Image::from_png(&asset.bytes).map(|image| (image, asset.spec.clone()))
+            }) {
             Ok((image, spec)) => Preview::Ready {
                 image: Box::new(image),
                 caption: format!(

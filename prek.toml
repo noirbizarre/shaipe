@@ -78,3 +78,41 @@ pass_filenames = false
 #   entry = "bash -c '! grep -rnP --include=*.rs \"(?<![A-Za-z0-9_])ureq::\" src | grep -v \"^src/data/\"'"
 #   files = "\\.rs$"
 #   pass_filenames = false
+
+# --- architecture guards ---
+#
+# The module boundaries this project is built on, enforced rather than
+# described. Each one greps for a real `use` statement: prose in a doc comment
+# may still name the other side of a boundary, and rejecting that would only
+# teach people to stop writing the comments.
+
+# Rendering is local, deterministic and headless. A renderer that could reach
+# the terminal is a renderer that can stop working in CI.
+[[repos.hooks]]
+id = "renderer-isolation"
+name = "the renderer knows nothing about terminals"
+language = "system"
+entry = "bash -c '! grep -rnE \"^ *use (ratatui|crate::(preview|tui))\" src/render/'"
+files = "\\.rs$"
+pass_filenames = false
+
+# The preview layer is handed pixels and an area. It must not be able to reach
+# a project or the renderer, or a terminal graphics protocol acquires an
+# opinion about SVG.
+[[repos.hooks]]
+id = "preview-isolation"
+name = "the preview layer knows nothing about projects"
+language = "system"
+entry = "bash -c '! grep -rnE \"^ *use crate::(project|render)\" src/preview/'"
+files = "\\.rs$"
+pass_filenames = false
+
+# `src/cli/` and `src/main.rs` are the binary. Everything else is the library,
+# and the library has to be usable without the CLI.
+[[repos.hooks]]
+id = "library-knows-no-commands"
+name = "nothing in the library knows a command exists"
+language = "system"
+entry = "bash -c '! grep -rnE \"^ *use clap\" src --include=*.rs | grep -vE \"^src/(cli/|main\\.rs)\"'"
+files = "\\.rs$"
+pass_filenames = false

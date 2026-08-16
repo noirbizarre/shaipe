@@ -1,0 +1,58 @@
+# Regenerates the repository's artwork from `logo.svg` and fails if what is
+# committed does not match.
+#
+# This is the dogfooding loop made enforceable, and the standing proof of the
+# property the renderer is built around: rendering is local, deterministic and
+# needs no model. If this job ever goes red without `logo.svg` having changed,
+# something in the pipeline has started depending on the machine it runs on —
+# a system font, a clock, a hash seed — and that is worth knowing immediately.
+#
+# `--strict-fonts` is what makes it a real check rather than a hopeful one: a
+# font resolved from the runner's system would render something plausible here
+# and something different on a contributor's laptop.
+name: 🎨 Assets
+
+on:
+  push:
+    branches: [main]
+    paths: [logo.svg, docs/images/**, src/**, Cargo.toml, Cargo.lock]
+  pull_request:
+    paths: [logo.svg, docs/images/**, src/**, Cargo.toml, Cargo.lock]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: assets-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  render:
+    name: 🖼️ Render
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v7
+
+      - name: 🦀 Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: ⚡ Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: 🎨 Render the assets
+        run: cargo run --release -- render logo.svg --output docs/images --strict-fonts
+
+      - name: 🔍 Check nothing changed
+        run: |
+          if ! git diff --exit-code --stat -- docs/images; then
+            echo "::error::docs/images is stale. Run 'mise run assets' and commit the result."
+            exit 1
+          fi

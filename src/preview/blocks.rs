@@ -103,12 +103,29 @@ impl Widget for HalfBlocks<'_> {
                 let lower = ((f64::from(row) * 2.0 + 1.0) / scale) as u32;
 
                 let cell = &mut buffer[(left + column, top + row)];
-                cell.set_char('▀');
-                if let Some(fg) = colour(self.image.pixel(x, upper)) {
-                    cell.set_fg(fg);
-                }
-                if let Some(bg) = colour(self.image.pixel(x, lower)) {
-                    cell.set_bg(bg);
+                // Which glyph depends on which halves are actually there. A
+                // `▀` is only correct when the top half is opaque: emitting
+                // one unconditionally paints every transparent pixel in the
+                // terminal's default foreground colour, which turns the empty
+                // area around a logo into a solid block.
+                match (
+                    colour(self.image.pixel(x, upper)),
+                    colour(self.image.pixel(x, lower)),
+                ) {
+                    (None, None) => {}
+                    (Some(fg), None) => {
+                        cell.set_char('▀');
+                        cell.set_fg(fg);
+                    }
+                    (None, Some(fg)) => {
+                        cell.set_char('▄');
+                        cell.set_fg(fg);
+                    }
+                    (Some(fg), Some(bg)) => {
+                        cell.set_char('▀');
+                        cell.set_fg(fg);
+                        cell.set_bg(bg);
+                    }
                 }
             }
         }
@@ -153,16 +170,36 @@ mod tests {
     }
 
     #[test]
-    fn a_fully_transparent_image_leaves_the_cells_colours_alone() {
-        // Otherwise a logo with a transparent background previews as a solid
-        // black rectangle, which looks like a broken render.
+    fn a_fully_transparent_image_draws_nothing_at_all() {
+        // Not merely "no colour": a `▀` with the terminal's default
+        // foreground is a visible block. The empty area around a logo has to
+        // stay genuinely empty.
         let image = solid(4, 4, [0, 0, 0, 0]);
         let area = Rect::new(0, 0, 10, 4);
         let mut buffer = Buffer::empty(area);
         HalfBlocks::new(&image).render(area, &mut buffer);
 
+        assert_eq!(buffer[(5, 2)].symbol(), " ");
         assert_eq!(buffer[(5, 2)].fg, Color::Reset);
         assert_eq!(buffer[(5, 2)].bg, Color::Reset);
+    }
+
+    #[test]
+    fn a_half_transparent_cell_uses_the_glyph_that_matches_the_opaque_half() {
+        // A row of pixels with an opaque bottom half and a transparent top
+        // half is a `▄`, not a `▀` in the wrong colour.
+        let mut pixels = vec![0u8; 2 * 2 * 4];
+        // Bottom row opaque red, top row transparent.
+        pixels[8..16].copy_from_slice(&[0xff, 0, 0, 0xff, 0xff, 0, 0, 0xff]);
+        let image = Image::from_rgba(2, 2, pixels);
+
+        let area = Rect::new(0, 0, 2, 1);
+        let mut buffer = Buffer::empty(area);
+        HalfBlocks::new(&image).render(area, &mut buffer);
+
+        assert_eq!(buffer[(0, 0)].symbol(), "▄");
+        assert_eq!(buffer[(0, 0)].fg, Color::Rgb(0xff, 0, 0));
+        assert_eq!(buffer[(0, 0)].bg, Color::Reset);
     }
 
     #[test]

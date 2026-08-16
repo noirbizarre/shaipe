@@ -51,11 +51,26 @@ const DRAWN_ELEMENTS: &[&str] = &[
     "use",
 ];
 
+/// Elements that describe the *project* rather than the artwork.
+///
+/// Dropped on isolation because an isolated variant is a derived asset, not a
+/// project. Carrying `<metadata>` through would stamp the prompt, the palette
+/// and every render specification into each exported SVG, and would make the
+/// output indistinguishable from a project file when it is reopened.
+const DOCUMENT_METADATA: &[&str] = &["desc", "metadata", "title"];
+
 /// Whether a root-level child draws, and so must not survive isolation.
 fn draws(node: &Node<'_, '_>) -> bool {
     node.is_element()
         && node.tag_name().namespace() == Some(SVG_NAMESPACE)
         && DRAWN_ELEMENTS.contains(&node.tag_name().name())
+}
+
+/// Whether a root-level child describes the project rather than the artwork.
+fn describes_the_project(node: &Node<'_, '_>) -> bool {
+    node.is_element()
+        && node.tag_name().namespace() == Some(SVG_NAMESPACE)
+        && DOCUMENT_METADATA.contains(&node.tag_name().name())
 }
 
 /// Build a standalone SVG document showing one variant at a given size.
@@ -117,7 +132,7 @@ pub fn isolate(project: &Project, document: &Document<'_>, spec: &RenderSpec) ->
     // Everything the original document defines, in its original text, so a
     // gradient or filter the variant depends on is still there.
     for child in root.children() {
-        if draws(&child) {
+        if draws(&child) || describes_the_project(&child) {
             continue;
         }
         if let Some(range) = child.is_element().then(|| child.range()) {
@@ -173,6 +188,16 @@ mod tests {
         let svg = isolated("icon", 64, 64);
         assert!(svg.contains(r#"<symbol id="icon""#), "{svg}");
         assert!(svg.contains(r#"<symbol id="mark-wide""#), "{svg}");
+    }
+
+    #[test]
+    fn isolation_drops_the_projects_metadata() {
+        // An exported asset is not a project. Carrying `<metadata>` through
+        // would stamp the prompt and every render specification into each
+        // exported SVG, and make the output reopen as a project.
+        let svg = isolated("icon", 64, 64);
+        assert!(!svg.contains("shaipe:project"), "{svg}");
+        assert!(!svg.contains("<metadata"), "{svg}");
     }
 
     #[test]

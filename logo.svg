@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:shaipe="https://shaipe.dev/ns/2026" viewBox="0 0 256 256" width="256" height="256">
+  <metadata>
+    <shaipe:project version="1" primary="icon">
+      <shaipe:prompt>A mark for Shaipe, an LLM-native SVG asset workspace. The name plays on "shape" and "AI". A shape that is partly drawn and partly inferred: an outlined square whose lower-right quadrant has been resolved into solid colour, suggesting a form being completed rather than one already finished. Geometric, flat, monoline, no gradients. The icon carries no text, so it reads at 16 pixels. The wordmark sets "shaipe" as geometry rather than as type.</shaipe:prompt>
+      <shaipe:palette>
+        <shaipe:color name="accent" value="#f05032" role="accent"/>
+        <shaipe:color name="ink" value="#18181b" role="foreground"/>
+        <shaipe:color name="paper" value="#ffffff" role="background"/>
+      </shaipe:palette>
+      <shaipe:variants>
+        <shaipe:variant name="icon"/>
+        <shaipe:variant name="icon-inverse"/>
+        <shaipe:variant name="wordmark"/>
+        <shaipe:variant name="wordmark-inverse"/>
+      </shaipe:variants>
+      <shaipe:renders>
+        <shaipe:render name="icon" variant="icon" width="256" format="svg"/>
+        <shaipe:render name="favicon-32" variant="icon" width="32"/>
+        <shaipe:render name="icon-128" variant="icon" width="128"/>
+        <shaipe:render name="icon-512" variant="icon" width="512"/>
+        <shaipe:render name="wordmark-512" variant="wordmark" width="512" height="160"/>
+        <shaipe:render name="wordmark-dark-512" variant="wordmark-inverse" width="512" height="160"/>
+        <shaipe:render name="social" variant="wordmark-inverse" width="1280" height="640" background="#18181b"/>
+      </shaipe:renders>
+    </shaipe:project>
+  </metadata>
+
+  <!--
+    Placeholder artwork, drawn by hand so the repository has a real project to
+    render from day one. Regenerating it through Shaipe itself is the point of
+    the dogfooding loop and has not happened yet: there is no generation
+    workflow, and `<shaipe:generation>` is absent because nothing has
+    generated anything.
+
+    Paths only, no `<text>`: text would make every render depend on a font
+    being installed, and therefore on the machine doing the rendering.
+
+    The geometry is defined once, in `<defs>`, and drawn in `currentColor`.
+    Each variant is a `<symbol>` that sets `color` and reuses it, so the light
+    and dark forms cannot drift apart — changing the mark changes both.
+  -->
+  <defs>
+    <g id="mark-geometry">
+      <path d="M40 40 H216 V216 H40 Z" fill="none" stroke="currentColor" stroke-width="16" stroke-linejoin="round"/>
+      <path d="M128 128 H216 V216 H128 Z" fill="#f05032"/>
+    </g>
+
+    <g id="letters-geometry">
+      <g fill="none" stroke="currentColor" stroke-width="22" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M376 116 C376 96 304 96 304 128 C304 158 376 152 376 180 C376 210 304 208 304 188"/>
+        <path d="M406 60 V180"/>
+        <path d="M406 128 C406 104 470 104 470 132 V180"/>
+        <circle cx="528" cy="146" r="34"/>
+        <path d="M562 112 V180"/>
+        <path d="M596 112 V180"/>
+        <path d="M626 112 V228"/>
+        <circle cx="660" cy="146" r="34"/>
+        <path d="M712 146 H780 A34 34 0 1 0 772 172"/>
+      </g>
+      <circle cx="596" cy="76" r="12" fill="currentColor"/>
+      <!-- The one accent in the word, echoing the icon's resolved quadrant. -->
+      <circle cx="660" cy="146" r="12" fill="#f05032"/>
+    </g>
+  </defs>
+
+  <symbol id="icon" viewBox="0 0 256 256">
+    <g color="#18181b"><use href="#mark-geometry"/></g>
+  </symbol>
+
+  <symbol id="icon-inverse" viewBox="0 0 256 256">
+    <g color="#ffffff"><use href="#mark-geometry"/></g>
+  </symbol>
+
+  <symbol id="wordmark" viewBox="0 0 800 256">
+    <g color="#18181b">
+      <use href="#mark-geometry"/>
+      <use href="#letters-geometry"/>
+    </g>
+  </symbol>
+
+  <symbol id="wordmark-inverse" viewBox="0 0 800 256">
+    <g color="#ffffff">
+      <use href="#mark-geometry"/>
+      <use href="#letters-geometry"/>
+    </g>
+  </symbol>
+
+  <!--
+    The root draws the primary variant, so this file renders as a logo in a
+    browser and on GitHub instead of appearing blank. See ADR 001.
+  -->
+  <use href="#icon" width="256" height="256"/>
+</svg>

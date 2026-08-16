@@ -205,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unparseable_background_is_reported_rather_than_ignored() {
+    fn an_unparsable_background_is_reported_rather_than_ignored() {
         let error = specifications(
             &project(),
             &args(&["--variant", "icon", "--width", "8", "--background", "puce"]),

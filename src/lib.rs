@@ -17,6 +17,7 @@ pub mod logging;
 pub mod preview;
 pub mod project;
 pub mod render;
+pub mod tools;
 pub mod tui;
 
 #[cfg(test)]

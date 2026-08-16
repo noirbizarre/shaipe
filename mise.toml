@@ -219,3 +219,21 @@ git tpl diff --exit-code --stat
 #
 # Artwork tasks belong here rather than in `default` or `check`: they rewrite
 # committed binaries, so a routine run would dirty the working tree every time.
+
+[tasks.assets]
+description = "Regenerate the repository's artwork from logo.svg"
+run = "cargo run --quiet -- render logo.svg --output docs/images --strict-fonts"
+
+[tasks."assets:check"]
+description = "Fail if the committed artwork is stale"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+cargo run --quiet -- render logo.svg --output docs/images --strict-fonts
+# `--exit-code` alone would also trip on unrelated staged work, so the check is
+# narrowed to the directory the render writes.
+if ! git diff --exit-code --stat -- docs/images; then
+  echo "docs/images is stale — run 'mise run assets' and commit the result" >&2
+  exit 1
+fi
+"""

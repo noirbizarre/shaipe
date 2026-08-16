@@ -4,29 +4,74 @@ Notes for anyone — human or otherwise — changing this repository.
 
 ## What this project is
 
-An LLM-native SVG asset workspace
-
-<!-- Replace this with the one paragraph that, if someone read only it, would -->
-<!-- stop them proposing the wrong thing. Then list the invariants below.     -->
+Shaipe is a workspace for SVG assets — logos, marks, visual identities — built
+so that a vision-capable agent can work on them. **The project SVG is the
+source of truth**: a single file that carries the artwork *and*, in its
+`<metadata>`, the prompt, palette, fonts, variants and render specifications
+that describe it. Rendering is local, deterministic and completely independent
+of any model, so the same project opens in the TUI or regenerates a
+repository's assets in CI with no network access at all. Shaipe does not host a
+model and never will — it gives an agent that already exists the ability to
+*see* an SVG. If you are about to add a provider, an API key or a `generate`
+command that calls one, read `docs/adr/004-tools-not-a-model.md` first.
 
 ## Non-negotiable invariants
 
-Each of these should be enforced by a hook or a test. An invariant nothing
-checks is a comment, and it will be violated.
+1. **Rendering is deterministic.** Same project bytes, same specification, same
+   output bytes, on any machine. No clock, no network, no environment, no
+   system fonts unless the document asked for a family the project failed to
+   supply — enforced by `rendering_the_same_project_twice_produces_identical_bytes`
+   in `src/render/mod.rs`, and end to end by `.github/workflows/assets.yaml`,
+   which re-renders `logo.svg` and fails if `docs/images` changed.
 
-<!-- 1. **...** — enforced by `tests/....rs`. -->
+2. **Opening a project and saving it changes nothing.** Metadata is spliced
+   over its own byte range and defaults are omitted, so Shaipe never dirties a
+   working tree just by reading it — enforced by
+   `saving_an_untouched_project_would_not_change_a_byte` in `src/project/mod.rs`.
+
+3. **The renderer knows nothing about terminals** — enforced by the
+   `renderer-isolation` hook in `prek.toml`.
+
+4. **The preview layer knows nothing about projects or rendering.** It is
+   handed pixels and an area — enforced by the `preview-isolation` hook.
+
+5. **Nothing in the library knows a command exists.** `src/cli/` and
+   `src/main.rs` are the binary; everything else must be usable without it —
+   enforced by the `library-knows-no-commands` hook.
+
+6. **The project file stays a valid, ordinary SVG.** Its root draws the primary
+   variant, so it renders in a browser and on GitHub rather than appearing
+   blank. Metadata never affects geometry — by construction, since `usvg` never
+   sees it.
 
 ## Layout
 
 ```
 src/
-├── lib.rs      the library surface
-├── main.rs     the shaipe binary
-├── cli.rs      argument types only
-└── error.rs    the crate's error type
+├── lib.rs        the library surface
+├── main.rs       the shaipe binary
+├── error.rs      the crate's error type
+├── logging.rs    where warnings go
+├── inspect.rs    the serialisable description of a project
+├── cli/          argument types and one module per command
+├── project/      the format: document, metadata, palette, variants, specs
+├── render/       project + spec -> bytes. Headless, deterministic
+├── preview/      pixels -> terminal. Kitty and half-blocks
+├── tui/          the interactive workspace
+└── tools/        the operations an agent can perform
 ```
 
-Dependencies point inward. Nothing in the library knows a command exists.
+Dependencies point inward, and the direction is enforced, not described:
+
+```
+cli ──> tui ──> preview ──┐
+  │       │               ├──> (pixels only)
+  └───────┴──> render ────┴──> project ──> error
+                tools ────────────┘
+```
+
+`project` knows nothing. `render` knows `project`. `preview` knows neither.
+Nothing in the library knows a command exists.
 
 ## Style
 
@@ -36,12 +81,28 @@ code is worse than none.
 
 **Errors are typed and actionable.** `thiserror` for the library, `miette` at
 the binary edge. A diagnostic must carry the two things the user does not
-already know: what specifically failed, and what to do about it. Diagnostic
-codes are `shaipe::<module>::<kind>`, and a code is a public identifier
-users grep for — renaming one is a breaking change.
+already know: what specifically failed, and what to do about it. When something
+names a variant, a spec or a colour that does not exist, say what does.
+Diagnostic codes are `shaipe::<module>::<kind>`, and a code is a public
+identifier users grep for — renaming one is a breaking change. So is renaming a
+tool in `src/tools/`.
 
 **Test names are sentences.** `an_unchanged_input_produces_no_output`, not
 `test_run_2`. The name should say what would be broken if it failed.
+
+**Verify the SVG stack; do not assume it.** Two of this project's core design
+decisions exist because the obvious API does not do what its name suggests:
+`usvg` discards `<metadata>`, and `node_by_id` cannot find a `<symbol>`. Both
+were found by probing, not by reading. Do the same before building on an
+assumption about `resvg`.
+
+## Artwork
+
+`logo.svg` is a Shaipe project, and everything in `docs/images/` is rendered
+from it by `mise run assets`. Never edit a file in `docs/images/` by hand — CI
+will overwrite the change and fail. The artwork is currently a hand-drawn
+placeholder; regenerating it *through Shaipe* is the point of the dogfooding
+loop and has not happened yet.
 
 ## Commits
 

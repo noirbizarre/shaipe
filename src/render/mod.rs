@@ -108,8 +108,11 @@ impl<'a> Renderer<'a> {
 
         let bytes = match spec.format {
             // The isolated document already carries the right root size and
-            // viewBox, so it is the SVG output, unrasterised.
-            Format::Svg => isolated.into_bytes(),
+            // viewBox, so it is the SVG output, unrasterised. A trailing
+            // newline because it is a text file that gets committed: without
+            // one, every `end-of-file-fixer` hook appends it and the next
+            // render takes it away again, forever.
+            Format::Svg => format!("{isolated}\n").into_bytes(),
             Format::Png => self.rasterise(&isolated, spec)?,
         };
 
@@ -265,6 +268,11 @@ mod tests {
         let asset = render(&project, &spec).unwrap();
 
         let svg = String::from_utf8(asset.bytes).unwrap();
+        assert!(
+            svg.ends_with(">\n"),
+            "an SVG asset is a text file and must end with a newline"
+        );
+        let svg = svg.trim_end().to_owned();
         assert_eq!(asset.spec.file_name(), "mark.svg");
         assert!(svg.starts_with("<svg"), "{svg}");
         assert!(svg.contains(r#"width="512" height="512""#), "{svg}");

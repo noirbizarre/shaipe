@@ -245,18 +245,15 @@ pub enum Error {
         family: String,
     },
 
-    /// A render was asked to be previewed but carries no pixels.
-    #[error("`{spec}` is a {format} render and has no pixels to preview")]
+    /// Something that should have been a PNG was not.
+    #[error("not a PNG")]
     #[diagnostic(
-        code(shaipe::preview::unpreviewable),
-        help("Only raster renders can be previewed. Set the specification's format to `png`.")
+        code(shaipe::preview::not_a_png),
+        help(
+            "Only raster renders carry pixels. An SVG render has none until something rasterises it."
+        )
     )]
-    UnpreviewableAsset {
-        /// The specification that produced it.
-        spec: String,
-        /// What it was encoded as.
-        format: String,
-    },
+    NotAPng,
 
     /// A tool was invoked that the registry does not know.
     #[error("unknown tool `{tool}`")]
