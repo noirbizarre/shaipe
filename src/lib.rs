@@ -12,8 +12,12 @@
 #![warn(missing_docs)]
 
 pub mod error;
+pub mod inspect;
+pub mod logging;
+pub mod preview;
 pub mod project;
 pub mod render;
+pub mod tui;
 
 #[cfg(test)]
 pub(crate) mod fixtures;

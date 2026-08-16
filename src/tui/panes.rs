@@ -1,0 +1,270 @@
+//! The widgets each pane draws.
+//!
+//! One function per pane, each taking the state it needs and nothing more.
+//! They build widgets and return them; where those widgets go is [`super::ui`]'s
+//! decision, so a change to the layout does not touch a pane and a change to a
+//! pane does not touch the layout.
+
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wrap};
+
+use crate::project::{Palette, RenderSpec, Rgba, Variant};
+
+use super::app::{App, Focus};
+
+/// The border for a pane, highlighted when it has the keyboard.
+pub fn frame(title: Focus, focused: bool) -> Block<'static> {
+    let style = if focused {
+        Style::default().fg(Color::LightMagenta)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(style)
+        .title(Span::styled(
+            format!(" {} ", title.title()),
+            style.add_modifier(Modifier::BOLD),
+        ))
+}
+
+/// The style a selected row is drawn in.
+///
+/// Only the pane holding the keyboard shows a highlight, so it is always
+/// unambiguous which selection an arrow key will move.
+fn selected(focused: bool) -> Style {
+    if focused {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::LightMagenta)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().add_modifier(Modifier::DIM)
+    }
+}
+
+/// The prompt pane.
+pub fn prompt(app: &App) -> Paragraph<'static> {
+    let text = app.project.metadata().prompt.clone().unwrap_or_else(|| {
+        "No prompt recorded.\n\nAdd a <shaipe:prompt> to the project metadata.".to_owned()
+    });
+
+    Paragraph::new(text)
+        .wrap(Wrap { trim: false })
+        .style(Style::default().fg(Color::Gray))
+}
+
+/// A colour swatch, drawn as two solid cells.
+///
+/// Two rather than one because a single cell reads as a typo next to text,
+/// and because a swatch is the only thing in the pane that is not a word.
+fn swatch(colour: Rgba) -> Span<'static> {
+    Span::styled(
+        "  ",
+        Style::default().bg(Color::Rgb(colour.r, colour.g, colour.b)),
+    )
+}
+
+/// The palette pane.
+pub fn palette(palette: &Palette, selection: usize, focused: bool) -> List<'static> {
+    let items: Vec<ListItem> = palette
+        .colours()
+        .iter()
+        .enumerate()
+        .map(|(index, colour)| {
+            let style = if index == selection {
+                selected(focused)
+            } else {
+                Style::default()
+            };
+            let mut spans = vec![
+                swatch(colour.value),
+                Span::raw(" "),
+                Span::styled(colour.name.clone(), style),
+                Span::raw("  "),
+                Span::styled(
+                    colour.value.to_string(),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ];
+            if let Some(role) = &colour.role {
+                spans.push(Span::styled(
+                    format!("  {role}"),
+                    Style::default().fg(Color::Blue),
+                ));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    List::new(items)
+}
+
+/// The variants pane.
+pub fn variants(
+    variants: &[Variant],
+    primary: Option<&str>,
+    selection: usize,
+    focused: bool,
+) -> List<'static> {
+    let items: Vec<ListItem> = variants
+        .iter()
+        .enumerate()
+        .map(|(index, variant)| {
+            let style = if index == selection {
+                selected(focused)
+            } else {
+                Style::default()
+            };
+            let mut spans = vec![Span::styled(variant.name.clone(), style)];
+            // Which variant the document's root draws is otherwise invisible,
+            // and it is the one that shows up on GitHub.
+            if primary == Some(variant.name.as_str()) {
+                spans.push(Span::styled(" ●", Style::default().fg(Color::LightMagenta)));
+            }
+            spans.push(Span::styled(
+                format!("  #{}", variant.element),
+                Style::default().fg(Color::DarkGray),
+            ));
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    List::new(items)
+}
+
+/// The render specifications pane.
+pub fn renders(specs: &[RenderSpec], selection: usize, focused: bool) -> List<'static> {
+    let items: Vec<ListItem> = specs
+        .iter()
+        .enumerate()
+        .map(|(index, spec)| {
+            let style = if index == selection {
+                selected(focused)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(spec.name.clone(), style),
+                Span::styled(
+                    format!("  {}x{}", spec.width, spec.height),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!("  {}", spec.variant),
+                    Style::default().fg(Color::Blue),
+                ),
+            ]))
+        })
+        .collect();
+
+    List::new(items)
+}
+
+/// The key hints along the bottom.
+pub fn status(app: &App) -> Paragraph<'static> {
+    let hint = |key: &str, action: &str| {
+        vec![
+            Span::styled(
+                key.to_owned(),
+                Style::default()
+                    .fg(Color::LightMagenta)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {action}   "),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]
+    };
+
+    let mut spans = Vec::new();
+    spans.extend(hint("tab", "pane"));
+    spans.extend(hint("↑↓", "select"));
+    spans.extend(hint("r", "re-render"));
+    spans.extend(hint("q", "quit"));
+    spans.push(Span::styled(
+        format!("preview: {}", app.backend),
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    Paragraph::new(Line::from(spans))
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::Widget;
+
+    use super::*;
+    use crate::fixtures;
+
+    /// Everything a widget drew, as one string.
+    fn drawn(widget: impl Widget, width: u16, height: u16) -> String {
+        let area = Rect::new(0, 0, width, height);
+        let mut buffer = Buffer::empty(area);
+        widget.render(area, &mut buffer);
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_palette_pane_shows_each_colours_name_value_and_role() {
+        let project = fixtures::project();
+        let output = drawn(palette(&project.metadata().palette, 0, true), 60, 4);
+
+        assert!(output.contains("accent"), "{output}");
+        assert!(output.contains("#f05032"), "{output}");
+        assert!(output.contains("#18181b"), "{output}");
+    }
+
+    #[test]
+    fn the_variants_pane_marks_the_primary_variant() {
+        let project = fixtures::project();
+        let metadata = project.metadata();
+        let output = drawn(
+            variants(&metadata.variants, metadata.primary.as_deref(), 0, true),
+            60,
+            4,
+        );
+
+        assert!(output.contains("icon ●"), "{output}");
+        assert!(output.contains("#mark-wide"), "{output}");
+    }
+
+    #[test]
+    fn the_renders_pane_shows_each_specifications_size_and_variant() {
+        let project = fixtures::project();
+        let output = drawn(renders(&project.metadata().renders, 0, true), 60, 4);
+
+        assert!(output.contains("favicon-32"), "{output}");
+        assert!(output.contains("128x32"), "{output}");
+    }
+
+    #[test]
+    fn a_project_with_no_prompt_says_so_rather_than_showing_an_empty_pane() {
+        let mut project = fixtures::project();
+        project.metadata_mut().prompt = None;
+        let app = App::new(project, "blocks");
+
+        assert!(drawn(prompt(&app), 60, 4).contains("No prompt"));
+    }
+
+    #[test]
+    fn the_status_line_names_the_preview_backend_in_use() {
+        // A preview that looks wrong is much easier to report when the user
+        // can see which backend drew it.
+        let app = App::new(fixtures::project(), "kitty");
+        assert!(drawn(status(&app), 80, 1).contains("preview: kitty"));
+    }
+}

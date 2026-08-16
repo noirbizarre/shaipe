@@ -245,6 +245,19 @@ pub enum Error {
         family: String,
     },
 
+    /// A render was asked to be previewed but carries no pixels.
+    #[error("`{spec}` is a {format} render and has no pixels to preview")]
+    #[diagnostic(
+        code(shaipe::preview::unpreviewable),
+        help("Only raster renders can be previewed. Set the specification's format to `png`.")
+    )]
+    UnpreviewableAsset {
+        /// The specification that produced it.
+        spec: String,
+        /// What it was encoded as.
+        format: String,
+    },
+
     /// A tool was invoked that the registry does not know.
     #[error("unknown tool `{tool}`")]
     #[diagnostic(
@@ -275,7 +288,8 @@ impl Error {
     /// Every I/O failure in Shaipe is about a file the user named or that the
     /// project referenced, and "No such file or directory" without the path is
     /// the least actionable message there is.
-    pub(crate) fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
+    #[must_use]
+    pub fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
         Self::Io {
             path: path.into(),
             source,
