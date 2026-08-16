@@ -17,7 +17,7 @@ use crate::cli::{InspectArgs, ReportFormat};
 ///
 /// Returns whatever opening the project returns, or [`Error::Io`] if the
 /// report cannot be written out.
-pub fn run(args: &InspectArgs, out: &mut impl Write) -> Result<()> {
+pub fn run(args: &InspectArgs, out: &mut dyn Write) -> Result<()> {
     let project = Project::open(&args.input)?;
     let report = Report::of(&project);
 

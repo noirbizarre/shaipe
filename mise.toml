@@ -116,7 +116,7 @@ run = "cargo insta review"
 
 [tasks.check]
 description = "Run every check that does not modify the working tree"
-depends = ["format:check", "lint", "lint:actions", "spell", "test"]
+depends = ["format:check", "lint", "lint:actions", "spell", "test", "test:terminal"]
 
 [tasks.ci]
 description = "Everything CI runs, locally"
@@ -219,6 +219,13 @@ git tpl diff --exit-code --stat
 #
 # Artwork tasks belong here rather than in `default` or `check`: they rewrite
 # committed binaries, so a routine run would dirty the working tree every time.
+
+# Not a `cargo test`, because it needs a real pty and a terminal that answers
+# a capability query — neither of which exists inside the test harness. Unix
+# only; `pty` is not available on Windows.
+[tasks."test:terminal"]
+description = "Check that the terminal capability query is actually sent"
+run = "python3 scripts/check-terminal-detection.py"
 
 [tasks.assets]
 description = "Regenerate the repository's artwork from logo.svg"

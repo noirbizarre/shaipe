@@ -118,6 +118,22 @@ entry = "bash -c '! grep -rnE \"^ *use (ratatui_image|::?image)\" src --include=
 files = "\\.rs$"
 pass_filenames = false
 
+# `Stdout` is guarded by a re-entrant lock: re-entrant for the thread holding
+# it, blocking for every other one. `ratatui-image` queries the terminal's
+# graphics capabilities from a spawned thread, so a lock held across the
+# workspace blocks that thread until its timeout expires and the preview
+# silently degrades to half-blocks on a terminal that supports Kitty.
+#
+# That bug shipped once. `stdout().lock()` now appears exactly once, inside
+# `write_lines`, which never wraps the TUI.
+[[repos.hooks]]
+id = "stdout-lock-not-held-across-the-tui"
+name = "the stdout lock is taken in one place only"
+language = "system"
+entry = "bash -c '[ \"$(grep -rl \"[.]lock()\" src --include=*.rs)\" = src/main.rs ]'"
+files = "\\.rs$"
+pass_filenames = false
+
 # `src/cli/` and `src/main.rs` are the binary. Everything else is the library,
 # and the library has to be usable without the CLI.
 [[repos.hooks]]

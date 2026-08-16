@@ -86,6 +86,18 @@ impl std::fmt::Display for Backend {
     }
 }
 
+/// Whether output is going through tmux.
+///
+/// Only reported, never acted on: `ratatui-image` does its own tmux detection
+/// and passthrough wrapping. This exists so a diagnostic can say whether the
+/// two agree.
+#[must_use]
+pub fn in_tmux() -> bool {
+    std::env::var_os("TMUX").is_some()
+        || std::env::var("TERM").is_ok_and(|term| term.starts_with("tmux"))
+        || std::env::var("TERM_PROGRAM").is_ok_and(|program| program == "tmux")
+}
+
 /// What transparency is flattened against in the half-block fallback.
 ///
 /// Mid grey, so that neither near-black nor near-white artwork disappears
@@ -93,6 +105,25 @@ impl std::fmt::Display for Backend {
 /// background: that is not reliably knowable, and guessing it wrong is how a
 /// preview ends up showing nothing at all.
 const FALLBACK_BACKGROUND: ::image::Rgba<u8> = ::image::Rgba([128, 128, 128, 255]);
+
+/// What capability detection concluded, and why.
+///
+/// Kept because the answer is otherwise invisible: detection failing degrades
+/// to half-blocks, which looks exactly like a terminal that genuinely cannot
+/// do better. `shaipe doctor` exists to print this.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Detection {
+    /// The protocol that will be used.
+    pub backend: Backend,
+    /// Whether the protocol was asked for rather than detected.
+    pub forced: bool,
+    /// The terminal's reported cell size, in pixels.
+    pub font_size: (u16, u16),
+    /// Whether output is going through tmux.
+    pub in_tmux: bool,
+    /// Why the query failed, when it did.
+    pub error: Option<String>,
+}
 
 /// The name to show for a protocol.
 const fn name_of(protocol: ProtocolType) -> &'static str {
@@ -116,6 +147,7 @@ pub struct Preview {
     protocol: Option<StatefulProtocol>,
     /// Which image the protocol holds. `None` means nothing is prepared yet.
     generation: Option<u64>,
+    detection: Detection,
 }
 
 impl Preview {
@@ -136,11 +168,15 @@ impl Preview {
         // Half-blocks need no capabilities, so asking the terminal about them
         // is a pointless round trip on a path chosen precisely because the
         // fancy ones did not work.
+        let mut error = None;
         let mut picker = if requested == Backend::Blocks {
             Picker::halfblocks()
         } else {
-            Picker::from_query_stdio().unwrap_or_else(|error| {
-                log::debug!("terminal graphics query failed ({error}); using half-blocks");
+            Picker::from_query_stdio().unwrap_or_else(|reason| {
+                // Recorded rather than logged and forgotten. A failed query is
+                // indistinguishable from a terminal that really is limited to
+                // half-blocks, and the difference is the whole diagnosis.
+                error = Some(reason.to_string());
                 Picker::halfblocks()
             })
         };
@@ -165,11 +201,30 @@ impl Preview {
             picker.set_background_color(Some(FALLBACK_BACKGROUND));
         }
 
+        let font_size = picker.font_size();
         Self {
+            detection: Detection {
+                backend: match picker.protocol_type() {
+                    ProtocolType::Halfblocks => Backend::Blocks,
+                    ProtocolType::Sixel => Backend::Sixel,
+                    ProtocolType::Kitty => Backend::Kitty,
+                    ProtocolType::Iterm2 => Backend::Iterm2,
+                },
+                forced: requested != Backend::Auto,
+                font_size: (font_size.width, font_size.height),
+                in_tmux: in_tmux(),
+                error,
+            },
             picker,
             protocol: None,
             generation: None,
         }
+    }
+
+    /// What detection concluded, and why.
+    #[must_use]
+    pub const fn detection(&self) -> &Detection {
+        &self.detection
     }
 
     /// The name of the protocol in use.

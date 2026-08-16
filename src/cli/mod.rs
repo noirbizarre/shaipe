@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 
+pub mod doctor;
 pub mod inspect;
 pub mod render;
 pub mod tui;
@@ -44,6 +45,16 @@ pub enum Command {
     Inspect(InspectArgs),
     /// Open a project in the interactive workspace.
     Tui(TuiArgs),
+    /// Report what Shaipe can work out about this terminal.
+    Doctor(DoctorArgs),
+}
+
+/// Arguments to `shaipe doctor`.
+#[derive(Debug, Args)]
+pub struct DoctorArgs {
+    /// Report on a specific backend instead of detecting one.
+    #[arg(long)]
+    pub preview: Option<Backend>,
 }
 
 /// Arguments to `shaipe render`.

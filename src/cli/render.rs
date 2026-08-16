@@ -20,7 +20,7 @@ use crate::cli::RenderArgs;
 /// Returns whatever opening the project or rendering it returns. Nothing is
 /// written before every specification has rendered successfully, so a failure
 /// halfway through leaves no half-updated output directory behind.
-pub fn run(args: &RenderArgs, out: &mut impl Write) -> Result<()> {
+pub fn run(args: &RenderArgs, out: &mut dyn Write) -> Result<()> {
     let project = Project::open(&args.input)?;
 
     let options = RenderOptions {
