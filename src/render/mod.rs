@@ -113,7 +113,13 @@ impl<'a> Renderer<'a> {
             // one, every `end-of-file-fixer` hook appends it and the next
             // render takes it away again, forever.
             Format::Svg => format!("{isolated}\n").into_bytes(),
-            Format::Png => self.rasterise(&isolated, spec)?,
+            Format::Png => {
+                let pixmap = self.rasterise(&isolated, spec)?;
+                pixmap.encode_png().map_err(|source| Error::Encode {
+                    spec: spec.name.clone(),
+                    source,
+                })?
+            }
         };
 
         Ok(RenderedAsset {
@@ -122,8 +128,34 @@ impl<'a> Renderer<'a> {
         })
     }
 
+    /// Rasterise a specification, stopping at the pixels.
+    ///
+    /// The step before [`Renderer::render`] encodes anything. Callers that
+    /// want to *show* a render rather than write one — the workspace — take
+    /// this and skip a PNG encode and an immediate decode, which together cost
+    /// more than the rasterising did.
+    ///
+    /// # Errors
+    ///
+    /// As [`Renderer::render`], minus the encoding.
+    pub fn pixels(&self, spec: &RenderSpec) -> Result<Pixmap> {
+        if spec.width == 0 || spec.height == 0 {
+            return Err(Error::InvalidSize {
+                width: spec.width,
+                height: spec.height,
+            });
+        }
+
+        let source = self.project.source().to_owned();
+        let isolated = {
+            let parsed = document::parse(&source, self.project.path())?;
+            isolate::isolate(self.project, &parsed, spec)?
+        };
+        self.rasterise(&isolated, spec)
+    }
+
     /// Rasterise an isolated variant onto its canvas.
-    fn rasterise(&self, isolated: &str, spec: &RenderSpec) -> Result<Vec<u8>> {
+    fn rasterise(&self, isolated: &str, spec: &RenderSpec) -> Result<Pixmap> {
         let tree =
             usvg::Tree::from_str(isolated, &self.options).map_err(|source| Error::ParseSvg {
                 path: self.project.path().to_path_buf(),
@@ -149,10 +181,7 @@ impl<'a> Renderer<'a> {
         // centring and there is nothing left to apply here.
         resvg::render(&tree, Transform::identity(), &mut pixmap.as_mut());
 
-        pixmap.encode_png().map_err(|source| Error::Encode {
-            spec: spec.name.clone(),
-            source,
-        })
+        Ok(pixmap)
     }
 
     /// Render every specification the project declares.

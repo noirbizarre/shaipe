@@ -32,6 +32,15 @@ pub const DEFAULT_COLUMN: u16 = 38;
 /// How close together two clicks count as one double-click.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
+/// The largest a preview is rasterised, before it is fitted to the pane.
+const PREVIEW_SIZE: u32 = 512;
+
+/// The smallest a preview is allowed to shrink to.
+///
+/// Below this a logo stops being recognisable, and the rasterising is cheap
+/// enough that shrinking further buys nothing.
+const MIN_PREVIEW_SIZE: u32 = 32;
+
 /// Where a double-clicked render specification is written.
 ///
 /// The conventional output directory, matching `shaipe render`'s default, so
@@ -113,6 +122,8 @@ pub struct App {
     /// caused would be a click landing on the wrong pane.
     areas: [Rect; Focus::COUNT],
     preview_area: Rect,
+    /// The preview pane's size in pixels, or `(0, 0)` before the first frame.
+    preview_pixels: (u32, u32),
     /// The last click, for recognising a double-click.
     last_click: Option<(Focus, u16, Instant)>,
     /// Whether the column divider is being dragged.
@@ -146,6 +157,7 @@ impl App {
             notice: None,
             areas: [Rect::ZERO; Focus::COUNT],
             preview_area: Rect::ZERO,
+            preview_pixels: (0, 0),
             last_click: None,
             resizing: false,
             list_states: std::array::from_fn(|_| ListState::default()),
@@ -250,7 +262,7 @@ impl App {
     pub fn preview_spec(&self) -> Option<RenderSpec> {
         let metadata = self.project.metadata();
 
-        if self.focus == Focus::Renders
+        let mut spec = if self.focus == Focus::Renders
             && let Some(spec) = metadata.renders.get(self.selection(Focus::Renders))
         {
             let mut spec = spec.clone();
@@ -259,11 +271,43 @@ impl App {
             // layer instead put the words "not a PNG" in the pane, which is
             // true, useless, and looks like a bug in the project.
             spec.format = Format::Png;
-            return Some(spec);
+            spec
+        } else {
+            let variant = metadata.variants.get(self.selected_variant())?;
+            RenderSpec::square(&variant.name, &variant.name, PREVIEW_SIZE)
+        };
+
+        self.fit_to_pane(&mut spec);
+        Some(spec)
+    }
+
+    /// Shrink a specification to something the pane can actually show.
+    ///
+    /// Previewing `social` at its declared 1280x640 rasterises 819 000 pixels
+    /// to be drawn in a pane holding a few thousand — which is where the
+    /// workspace's stutter came from.
+    ///
+    /// Halving, rather than scaling to fit exactly, for three reasons: the
+    /// aspect ratio stays exact, so nothing letterboxes that would not have;
+    /// the size changes in a handful of steps, so dragging the divider does
+    /// not re-render on every mouse event; and a power-of-two reduction is the
+    /// one resamplers are kindest to.
+    ///
+    /// Never enlarges. A preview must not invent detail the asset lacks.
+    fn fit_to_pane(&self, spec: &mut RenderSpec) {
+        let (box_width, box_height) = self.preview_pixels;
+        if box_width == 0 || box_height == 0 {
+            return;
         }
 
-        let variant = metadata.variants.get(self.selected_variant())?;
-        Some(RenderSpec::square(&variant.name, &variant.name, 512))
+        while spec.width > box_width || spec.height > box_height {
+            let (half_width, half_height) = (spec.width / 2, spec.height / 2);
+            if half_width < MIN_PREVIEW_SIZE || half_height < MIN_PREVIEW_SIZE {
+                break;
+            }
+            spec.width = half_width;
+            spec.height = half_height;
+        }
     }
 
     /// Throw the cached preview away, so the next frame re-renders it.
@@ -321,9 +365,17 @@ impl App {
         }
     }
 
-    /// Record where the preview was drawn.
-    pub(crate) fn set_preview_area(&mut self, area: Rect) {
+    /// Record where the preview was drawn, and how big that is in pixels.
+    ///
+    /// The pixel size is what [`App::preview_spec`] fits the render to. It
+    /// comes from the backend, because only the backend knows the terminal's
+    /// cell size.
+    pub(crate) fn set_preview_area(&mut self, area: Rect, cell: (u16, u16)) {
         self.preview_area = area;
+        self.preview_pixels = (
+            u32::from(area.width) * u32::from(cell.0),
+            u32::from(area.height) * u32::from(cell.1),
+        );
     }
 
     /// Where the preview was drawn last frame.
@@ -610,6 +662,102 @@ mod tests {
             panic!("expected a preview");
         };
         assert_eq!((image.width(), image.height()), (128, 32));
+    }
+
+    /// Pretend a pane of `cells` at a 10x20 cell size has been drawn.
+    fn with_pane(app: &mut App, columns: u16, rows: u16) {
+        app.set_preview_area(Rect::new(0, 0, columns, rows), (10, 20));
+    }
+
+    #[test]
+    fn a_preview_is_halved_until_it_fits_the_pane() {
+        // `social` is 1280x640. In a 58x27 pane at 10x20 px per cell — 580x540
+        // — it must not be rasterised at its declared size, which is 819 000
+        // pixels for a few thousand cells' worth of screen.
+        let mut app = app();
+        app.project.metadata_mut().renders.clear();
+        app.project.metadata_mut().renders.push(RenderSpec {
+            name: "social".to_owned(),
+            variant: "icon".to_owned(),
+            width: 1280,
+            height: 640,
+            format: Format::Png,
+            background: crate::project::Background::Transparent,
+        });
+        app.focus = Focus::Renders;
+        with_pane(&mut app, 58, 27);
+
+        let spec = app.preview_spec().unwrap();
+        assert_eq!((spec.width, spec.height), (320, 160));
+    }
+
+    #[test]
+    fn fitting_a_preview_preserves_its_aspect_ratio_exactly() {
+        // Halving is used precisely so the ratio survives. Scaling each side
+        // to fit independently would letterbox an asset that does not.
+        let mut app = app();
+        app.project.metadata_mut().renders.clear();
+        app.project.metadata_mut().renders.push(RenderSpec {
+            name: "wide".to_owned(),
+            variant: "icon".to_owned(),
+            width: 1600,
+            height: 400,
+            format: Format::Png,
+            background: crate::project::Background::Transparent,
+        });
+        app.focus = Focus::Renders;
+        with_pane(&mut app, 30, 10);
+
+        let spec = app.preview_spec().unwrap();
+        assert_eq!(spec.width / spec.height, 4, "1600x400 is 4:1");
+        assert!(spec.width <= 300, "should have shrunk: {}", spec.width);
+    }
+
+    #[test]
+    fn a_preview_is_never_enlarged_to_fill_the_pane() {
+        // A preview must not invent detail the asset does not have.
+        let mut app = app();
+        app.focus = Focus::Variants;
+        with_pane(&mut app, 200, 60);
+
+        let spec = app.preview_spec().unwrap();
+        assert_eq!((spec.width, spec.height), (PREVIEW_SIZE, PREVIEW_SIZE));
+    }
+
+    #[test]
+    fn a_preview_stops_shrinking_before_it_becomes_unrecognisable() {
+        let mut app = app();
+        app.focus = Focus::Variants;
+        with_pane(&mut app, 1, 1);
+
+        let spec = app.preview_spec().unwrap();
+        assert!(spec.width >= MIN_PREVIEW_SIZE, "shrank to {}", spec.width);
+    }
+
+    #[test]
+    fn before_the_first_frame_a_preview_uses_its_declared_size() {
+        // `preview_pixels` is `(0, 0)` until something has been drawn, and a
+        // zero-sized pane must not be read as "shrink to nothing".
+        let mut app = app();
+        app.focus = Focus::Variants;
+        assert_eq!(app.preview_spec().unwrap().width, PREVIEW_SIZE);
+    }
+
+    #[test]
+    fn resizing_the_pane_eventually_re_renders_the_preview() {
+        // The fitted size is part of the cache key, so growing the pane has to
+        // produce a better preview rather than a stretched old one.
+        let mut app = app();
+        app.focus = Focus::Variants;
+        with_pane(&mut app, 10, 5);
+        app.refresh_preview();
+        let small = app.preview_image().unwrap().width();
+
+        with_pane(&mut app, 80, 40);
+        app.refresh_preview();
+        let large = app.preview_image().unwrap().width();
+
+        assert!(large > small, "{small} then {large}");
     }
 
     #[test]

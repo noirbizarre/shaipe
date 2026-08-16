@@ -227,6 +227,15 @@ impl Preview {
         &self.detection
     }
 
+    /// The terminal's cell size in pixels.
+    ///
+    /// What lets a caller work out how many pixels a pane can actually show,
+    /// and so how large a preview is worth rasterising.
+    #[must_use]
+    pub const fn cell_size(&self) -> (u16, u16) {
+        self.detection.font_size
+    }
+
     /// The name of the protocol in use.
     #[must_use]
     pub fn name(&self) -> &'static str {

@@ -38,6 +38,38 @@ impl Image {
         }
     }
 
+    /// Take the pixels straight from a rasterised pixmap.
+    ///
+    /// The path the workspace uses. Going through a PNG instead costs an
+    /// encode and an immediate decode of the same image, which together
+    /// measured *longer than the rasterising* — 53 ms against 22 ms at 512²
+    /// — for no purpose beyond moving bytes.
+    ///
+    /// Takes a `tiny_skia::Pixmap` rather than anything from `render`: the
+    /// preview layer already depends on `tiny-skia` for pixels, and on nothing
+    /// from `project` or `render`. The `preview-isolation` hook enforces that.
+    #[must_use]
+    pub fn from_pixmap(pixmap: &tiny_skia::Pixmap) -> Self {
+        Self::from_premultiplied(pixmap.width(), pixmap.height(), pixmap.pixels())
+    }
+
+    /// Convert premultiplied pixels to the straight alpha everything else uses.
+    fn from_premultiplied(
+        width: u32,
+        height: u32,
+        pixels: &[tiny_skia::PremultipliedColorU8],
+    ) -> Self {
+        // `tiny-skia` stores premultiplied pixels; `demultiply` recovers the
+        // colour of a partially transparent pixel, which is exactly what gets
+        // lost if the raw buffer is used as-is.
+        let mut out = Vec::with_capacity(pixels.len() * 4);
+        for pixel in pixels {
+            let colour = pixel.demultiply();
+            out.extend_from_slice(&[colour.red(), colour.green(), colour.blue(), colour.alpha()]);
+        }
+        Self::from_rgba(width, height, out)
+    }
+
     /// Decode a PNG into pixels.
     ///
     /// Takes bytes rather than a [`crate::render::RenderedAsset`] on purpose:
@@ -49,22 +81,7 @@ impl Image {
     /// Returns [`Error::NotAPng`] if the bytes are not a PNG.
     pub fn from_png(bytes: &[u8]) -> Result<Self> {
         let pixmap = tiny_skia::Pixmap::decode_png(bytes).map_err(|_| Error::NotAPng)?;
-
-        // `tiny-skia` stores premultiplied pixels; `demultiply` recovers the
-        // colour of a partially transparent pixel, which is exactly what gets
-        // lost if the raw buffer is used as-is.
-        let mut pixels = Vec::with_capacity(pixmap.pixels().len() * 4);
-        for pixel in pixmap.pixels() {
-            let colour = pixel.demultiply();
-            pixels.extend_from_slice(&[
-                colour.red(),
-                colour.green(),
-                colour.blue(),
-                colour.alpha(),
-            ]);
-        }
-
-        Ok(Self::from_rgba(pixmap.width(), pixmap.height(), pixels))
+        Ok(Self::from_pixmap(&pixmap))
     }
 
     /// Width, in pixels.
@@ -190,6 +207,19 @@ mod tests {
         let rgba = dynamic.to_rgba8();
         assert_eq!(rgba.get_pixel(0, 0).0, [0xf0, 0x50, 0x32, 0xff]);
         assert_eq!(rgba.get_pixel(1, 0).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn taking_pixels_directly_gives_the_same_image_as_going_through_a_png() {
+        // The workspace skips the PNG round-trip for speed. If the two paths
+        // disagreed, the preview would stop being the asset.
+        let mut pixmap = tiny_skia::Pixmap::new(4, 3).unwrap();
+        pixmap.fill(tiny_skia::Color::from_rgba8(0xf0, 0x50, 0x32, 0x80));
+
+        let direct = Image::from_pixmap(&pixmap);
+        let round_tripped = Image::from_png(&pixmap.encode_png().unwrap()).unwrap();
+
+        assert_eq!(direct, round_tripped);
     }
 
     #[test]

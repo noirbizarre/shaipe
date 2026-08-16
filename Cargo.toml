@@ -47,6 +47,28 @@ strip = true
 # propagated its own would open a conflict against every one of those PRs.
 # Resolve in favour of the project if `git tpl update` ever touches them.
 
+[profile.dev]
+# Shaipe's own code is not usually hot, with one exception: converting a
+# rasterised pixmap to straight-alpha pixels for the preview is a loop over
+# every pixel, and at `opt-level = 0` it cost 37ms for a 512x512 image against
+# 2ms optimised. That is the difference between the workspace feeling instant
+# and feeling stepped.
+#
+# Level 1 rather than 3: it recovers essentially all of that, keeps compile
+# times and debug information close to an unoptimised build, and does not
+# inline the code out from under a debugger.
+opt-level = 1
+
+[profile.dev.package."*"]
+# `resvg`, `tiny-skia` and `png` do every per-pixel operation in the project,
+# and at `opt-level = 0` a debug build rasterises around 25x slower than a
+# release one — enough that arrowing through the workspace's variants stutters.
+#
+# Dependencies only: this crate stays unoptimised, so it compiles quickly and
+# steps cleanly in a debugger, and none of the hot code is ours anyway. The
+# cost is one slower build, the first time.
+opt-level = 3
+
 [dependencies]
 # Errors & diagnostics. `thiserror` for typed errors inside the library,
 # `miette` to render them at the binary edge.

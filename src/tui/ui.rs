@@ -34,7 +34,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend) {
         .areas(body);
 
     draw_left(frame, app, left);
-    app.set_preview_area(right);
+    app.set_preview_area(right, backend.cell_size());
     draw_preview(frame, app, backend, right);
 
     frame.render_widget(panes::status(app), status);
