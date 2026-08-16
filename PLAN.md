@@ -92,6 +92,15 @@ The interactive TUI.
       specification declares
 - [x] The preview takes pixels directly, instead of encoding a PNG and decoding
       it again
+- [x] Rendering happens off the drawing thread, so the workspace never freezes
+      while a preview is produced
+- [x] A spinner while a render is in flight, with the previous preview left on
+      screen rather than blanked
+- [x] The selection is debounced, so arrowing through a list renders where you
+      stop rather than everywhere you passed
+- [x] Input is drained before drawing, so a burst of keys is one state change
+- [x] The workspace renders once at startup, not twice
+- [x] `--preview` works without naming a subcommand
 - [ ] Edit the prompt in place — needs a text widget; `tui-textarea` is ruled
       out (pins ratatui 0.29), `edtui` fits but is Vim-modal, so confirm first
 - [ ] `E` suspends the workspace and opens `$EDITOR` on the prompt
@@ -135,10 +144,13 @@ Measured, not guessed. `--dry-run` so no writes are timed; best of seven.
 - [ ] The document is parsed by `roxmltree` N + 2 times for N specs, and the
       source cloned N + 1 times — worth ~2 ms against 15-45 ms of rasterising,
       so measure before touching it
-- [ ] The workspace rebuilds the font database on every preview miss, because
-      `Renderer` borrows the project and so cannot be held
-- [ ] `preview_spec()` clones a `RenderSpec` four times a second to compare it
-      with the cache key
+- [x] The workspace rebuilds the font database on every preview miss — the
+      render worker now owns one renderer
+- [ ] Kitty transmits raw RGBA sized to the pane, so one change is ~1.4 MB
+      whatever the source size. Capping the transmitted resolution is the next
+      lever if a single settled change is still slow
+- [ ] `preview_spec()` clones a `RenderSpec` on every frame to compare it with
+      the cache key
 - [ ] With no variants, `refresh_preview` allocates an error string every tick
 
 ## Project

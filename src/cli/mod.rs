@@ -31,6 +31,15 @@ pub struct Cli {
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
+    /// Force a preview backend instead of detecting one.
+    ///
+    /// Global, so that it works on the bare invocation as well as on `tui` and
+    /// `doctor`. It is the documented escape hatch for a terminal whose
+    /// graphics detection goes wrong, and `shaipe --preview blocks` — the
+    /// obvious way to reach for it — was a parse error until it was.
+    #[arg(long, global = true)]
+    pub preview: Option<Backend>,
+
     /// The subcommand to run. Defaults to opening the workspace.
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -50,12 +59,11 @@ pub enum Command {
 }
 
 /// Arguments to `shaipe doctor`.
+///
+/// The backend comes from the global `--preview`, so there is nothing here
+/// yet. Kept as a type so adding one is not a signature change.
 #[derive(Debug, Args)]
-pub struct DoctorArgs {
-    /// Report on a specific backend instead of detecting one.
-    #[arg(long)]
-    pub preview: Option<Backend>,
-}
+pub struct DoctorArgs {}
 
 /// Arguments to `shaipe render`.
 #[derive(Debug, Args)]
@@ -131,15 +139,17 @@ pub struct InspectArgs {
 }
 
 /// Arguments to `shaipe tui`.
+///
+/// No `--preview` here: it is global, so `shaipe tui --preview blocks` and
+/// `shaipe --preview blocks` are the same flag and cannot disagree.
 #[derive(Debug, Args)]
 pub struct TuiArgs {
     /// The project SVG to open.
+    ///
+    /// Only on the subcommand. A top-level positional would make
+    /// `shaipe render` ambiguous between a subcommand and a file name.
     #[arg(default_value = DEFAULT_PROJECT)]
     pub input: PathBuf,
-
-    /// Force a preview backend instead of detecting one.
-    #[arg(long)]
-    pub preview: Option<Backend>,
 }
 
 #[cfg(test)]
@@ -199,5 +209,29 @@ mod tests {
     #[test]
     fn running_shaipe_with_no_subcommand_is_allowed() {
         assert!(Cli::parse_from(["shaipe"]).command.is_none());
+    }
+
+    #[test]
+    fn the_preview_backend_can_be_forced_without_naming_a_subcommand() {
+        // `shaipe --preview blocks` was a parse error, which made the
+        // documented escape hatch for broken graphics detection unusable from
+        // the invocation people actually type.
+        let cli = Cli::parse_from(["shaipe", "--preview", "blocks"]);
+        assert_eq!(cli.preview, Some(Backend::Blocks));
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn the_preview_backend_is_the_same_flag_on_every_subcommand() {
+        for arguments in [
+            vec!["shaipe", "--preview", "kitty"],
+            vec!["shaipe", "tui", "--preview", "kitty"],
+            vec!["shaipe", "--preview", "kitty", "tui"],
+            vec!["shaipe", "doctor", "--preview", "kitty"],
+        ] {
+            let cli = Cli::try_parse_from(&arguments)
+                .unwrap_or_else(|error| panic!("{arguments:?} should parse: {error}"));
+            assert_eq!(cli.preview, Some(Backend::Kitty), "{arguments:?}");
+        }
     }
 }

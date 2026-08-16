@@ -116,7 +116,15 @@ run = "cargo insta review"
 
 [tasks.check]
 description = "Run every check that does not modify the working tree"
-depends = ["format:check", "lint", "lint:actions", "spell", "test", "test:terminal"]
+depends = [
+  "format:check",
+  "lint",
+  "lint:actions",
+  "spell",
+  "test",
+  "test:terminal",
+  "test:traffic",
+]
 
 [tasks.ci]
 description = "Everything CI runs, locally"
@@ -226,6 +234,12 @@ git tpl diff --exit-code --stat
 [tasks."test:terminal"]
 description = "Check that the terminal capability query is actually sent"
 run = "python3 scripts/check-terminal-detection.py"
+
+# Also a pty test, for the same reason: how many megabytes the workspace asks
+# the terminal to swallow is not something `cargo test` can see.
+[tasks."test:traffic"]
+description = "Check the workspace does not flood the terminal with images"
+run = "python3 scripts/check-preview-traffic.py"
 
 [tasks.assets]
 description = "Regenerate the repository's artwork from logo.svg"

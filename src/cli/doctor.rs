@@ -29,10 +29,10 @@ use crate::cli::DoctorArgs;
 /// lock was released, so it was emitted *after* the report and every terminal
 /// looked incapable.
 #[must_use]
-pub fn report(args: &DoctorArgs) -> String {
+pub fn report(_args: &DoctorArgs, preview: Backend) -> String {
     let mut report = String::new();
     environment(&mut report);
-    detection(&mut report, args.preview.unwrap_or_default());
+    detection(&mut report, preview);
     report
 }
 
@@ -125,9 +125,7 @@ mod tests {
     use super::*;
 
     fn report_for(requested: Backend) -> String {
-        super::report(&DoctorArgs {
-            preview: Some(requested),
-        })
+        super::report(&DoctorArgs {}, requested)
     }
 
     #[test]

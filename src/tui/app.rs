@@ -16,6 +16,7 @@ use ratatui::widgets::ListState;
 use crate::preview::Image;
 use crate::project::{Format, Project, RenderSpec};
 use crate::render::{RenderOptions, Renderer};
+use crate::tui::render_worker::{Rendered, Worker};
 
 /// The narrowest the description column may be dragged.
 ///
@@ -40,6 +41,13 @@ const PREVIEW_SIZE: u32 = 512;
 /// Below this a logo stops being recognisable, and the rasterising is cheap
 /// enough that shrinking further buys nothing.
 const MIN_PREVIEW_SIZE: u32 = 32;
+
+/// How long the selection must sit still before a render starts.
+///
+/// Long enough that arrowing through a list renders once at the end rather
+/// than once per entry; short enough that a single deliberate step still feels
+/// immediate.
+const DEBOUNCE: Duration = Duration::from_millis(120);
 
 /// Where a double-clicked render specification is written.
 ///
@@ -108,6 +116,8 @@ pub struct App {
     /// The name of the preview backend in use, shown in the status line so a
     /// preview that looks wrong is diagnosable without a debugger.
     pub backend: &'static str,
+    /// How much detail to show. Only the render timing depends on it.
+    pub verbose: u8,
 
     /// How wide the description column is. Draggable.
     pub column_width: u16,
@@ -134,8 +144,20 @@ pub struct App {
 
     selected: [usize; Focus::COUNT],
     preview: Preview,
-    /// What the cached preview was rendered from. `None` forces a re-render.
+    /// What the on-screen preview was rendered from.
     rendered_from: Option<RenderSpec>,
+    /// What the selection currently calls for.
+    desired: Option<RenderSpec>,
+    /// When `desired` last changed, for the debounce.
+    changed_at: Instant,
+    /// The request the worker is busy with, and when it was sent.
+    in_flight: Option<(u64, RenderSpec, Instant)>,
+    /// The last request number handed out.
+    sequence: u64,
+    /// How long the last completed render took.
+    last_render: Option<Duration>,
+    /// Renders previews without blocking the drawing thread.
+    worker: Worker,
     /// Bumped whenever the preview image is replaced.
     ///
     /// The preview backend keeps the image in encoded form and must not be
@@ -148,11 +170,13 @@ impl App {
     /// Open a project in the workspace.
     #[must_use]
     pub fn new(project: Project, backend: &'static str) -> Self {
+        let project_for_worker = project.clone();
         Self {
             project,
             focus: Focus::Variants,
             should_quit: false,
             backend,
+            verbose: 0,
             column_width: DEFAULT_COLUMN,
             notice: None,
             areas: [Rect::ZERO; Focus::COUNT],
@@ -164,6 +188,14 @@ impl App {
             selected: [0; Focus::COUNT],
             preview: Preview::Pending,
             rendered_from: None,
+            desired: None,
+            // In the past, so the first preview starts at once rather than
+            // making the workspace wait out a debounce it has no reason to.
+            changed_at: Instant::now() - DEBOUNCE,
+            in_flight: None,
+            sequence: 0,
+            last_render: None,
+            worker: Worker::new(&project_for_worker),
             generation: 0,
         }
     }
@@ -310,41 +342,164 @@ impl App {
         }
     }
 
-    /// Throw the cached preview away, so the next frame re-renders it.
+    /// Throw the current preview away and render it again.
+    ///
+    /// Also hands the worker the project as it stands, so this is what picks
+    /// up a change to the file rather than merely redrawing what was already
+    /// rendered.
     pub fn invalidate_preview(&mut self) {
+        self.worker.reload(&self.project);
         self.rendered_from = None;
+        self.desired = None;
+        self.in_flight = None;
     }
 
-    /// Re-render the preview if the selection has moved since it was made.
-    pub fn refresh_preview(&mut self) {
+    /// Whether a render is in progress.
+    ///
+    /// Drives the spinner, and the shorter poll interval that lets it animate.
+    #[must_use]
+    pub const fn is_rendering(&self) -> bool {
+        self.in_flight.is_some()
+    }
+
+    /// How long the last completed render took.
+    #[must_use]
+    pub const fn last_render(&self) -> Option<Duration> {
+        self.last_render
+    }
+
+    /// The spinner's current frame, or `None` when nothing is rendering.
+    ///
+    /// Derived from how long the render has been running rather than from a
+    /// counter incremented per frame, so it turns at a steady rate however
+    /// often the workspace happens to redraw.
+    #[must_use]
+    pub fn spinner(&self) -> Option<&'static str> {
+        const FRAMES: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+        const PERIOD: Duration = Duration::from_millis(90);
+
+        let (_, _, started) = self.in_flight.as_ref()?;
+        let step = started.elapsed().as_millis() / PERIOD.as_millis();
+        Some(FRAMES[(step as usize) % FRAMES.len()])
+    }
+
+    /// Start a render if the selection has settled on something new.
+    ///
+    /// Never blocks. The work happens on [`Worker`]; this only decides whether
+    /// to ask for it.
+    pub fn update_preview(&mut self) {
         let Some(spec) = self.preview_spec() else {
             self.preview = Preview::Failed("this project declares no variants".to_owned());
+            self.desired = None;
             return;
         };
 
-        if self.rendered_from.as_ref() == Some(&spec) {
-            return;
+        if self.desired.as_ref() != Some(&spec) {
+            self.desired = Some(spec);
+            self.changed_at = Instant::now();
         }
 
-        // Through the same renderer `shaipe render` uses, so the preview is
-        // the asset rather than an impression of it.
-        self.preview = match Renderer::new(&self.project, RenderOptions::default())
-            .and_then(|renderer| renderer.render(&spec))
-            .and_then(|asset| {
-                Image::from_png(&asset.bytes).map(|image| (image, asset.spec.clone()))
-            }) {
-            Ok((image, spec)) => Preview::Ready {
+        // The debounce is the only thing separating "the selection moved" from
+        // "the selection settled". Everything else is decided by `wanted`.
+        if self.changed_at.elapsed() >= DEBOUNCE
+            && let Some(spec) = self.wanted()
+        {
+            self.start_render(spec);
+        }
+    }
+
+    /// The render that ought to be running, if it is not already.
+    fn wanted(&self) -> Option<RenderSpec> {
+        let desired = self.desired.as_ref()?;
+        let on_screen = self.rendered_from.as_ref() == Some(desired);
+        let under_way = self
+            .in_flight
+            .as_ref()
+            .is_some_and(|(_, spec, _)| spec == desired);
+
+        (!on_screen && !under_way).then(|| desired.clone())
+    }
+
+    /// Hand a specification to the worker.
+    fn start_render(&mut self, spec: RenderSpec) {
+        self.sequence = self.sequence.wrapping_add(1);
+        if self.worker.request(self.sequence, spec.clone()) {
+            self.in_flight = Some((self.sequence, spec, Instant::now()));
+        } else {
+            self.preview = Preview::Failed("the renderer stopped".to_owned());
+        }
+    }
+
+    /// Take delivery of any finished render.
+    ///
+    /// Returns whether anything changed, so the caller can tell a frame worth
+    /// drawing from one that is not.
+    pub fn collect_preview(&mut self) -> bool {
+        let mut changed = false;
+        while let Some(rendered) = self.worker.collect() {
+            changed |= self.apply(rendered);
+        }
+        changed
+    }
+
+    /// Show a finished render, if it is still the one being waited for.
+    ///
+    /// An answer to a superseded request is stale by definition, and showing
+    /// it would flick the preview back to something the selection has already
+    /// left.
+    fn apply(&mut self, rendered: Rendered) -> bool {
+        let Some((seq, spec, _)) = self.in_flight.as_ref() else {
+            return false;
+        };
+        if *seq != rendered.seq {
+            return false;
+        }
+
+        let spec = spec.clone();
+        self.last_render = Some(rendered.elapsed);
+        self.preview = match rendered.image {
+            Ok(image) => Preview::Ready {
                 image: Box::new(image),
                 caption: format!(
                     "{} — {}x{} on {}",
                     spec.variant, spec.width, spec.height, spec.background
                 ),
             },
-            Err(error) => Preview::Failed(error.to_string()),
+            Err(reason) => Preview::Failed(reason),
         };
-
         self.generation = self.generation.wrapping_add(1);
         self.rendered_from = Some(spec);
+        self.in_flight = None;
+        true
+    }
+
+    /// Ask for a preview and wait for it.
+    ///
+    /// The blocking form, for the first frame and for tests. Bypasses the
+    /// debounce, which exists to absorb a stream of keypresses and has nothing
+    /// to absorb here.
+    pub fn refresh_preview(&mut self) {
+        self.update_preview();
+        // Started regardless of the debounce, which exists to absorb a stream
+        // of keypresses and has nothing to absorb here.
+        if let Some(spec) = self.wanted() {
+            self.start_render(spec);
+        }
+
+        while self.is_rendering() {
+            // Applied through the same path a frame uses, so the blocking form
+            // cannot diverge from the asynchronous one.
+            match self.worker.wait(Duration::from_secs(30)) {
+                Some(rendered) => {
+                    self.apply(rendered);
+                }
+                None => {
+                    self.preview = Preview::Failed("the renderer stopped answering".to_owned());
+                    self.in_flight = None;
+                    return;
+                }
+            }
+        }
     }
 
     /// How many rows a pane would like, borders included.
@@ -775,6 +930,135 @@ mod tests {
         app.invalidate_preview();
         app.refresh_preview();
         assert!(matches!(app.preview(), Preview::Ready { .. }));
+    }
+
+    #[test]
+    fn a_render_in_progress_is_visible_as_a_spinner() {
+        // `Preview::Pending` and the spinner were unreachable while rendering
+        // was synchronous: the frame could only be drawn once the render had
+        // already finished, so there was never anything to report.
+        let mut app = app();
+        assert!(app.spinner().is_none(), "nothing is rendering yet");
+
+        app.update_preview();
+        if let Some(spec) = app.wanted() {
+            app.start_render(spec);
+        }
+
+        assert!(app.is_rendering());
+        assert!(app.spinner().is_some(), "a running render must be visible");
+
+        app.refresh_preview();
+        assert!(!app.is_rendering());
+        assert!(app.spinner().is_none());
+    }
+
+    #[test]
+    fn the_spinner_advances_over_time() {
+        let mut app = app();
+        app.update_preview();
+        if let Some(spec) = app.wanted() {
+            app.start_render(spec);
+        }
+        // Backdated rather than slept: a test that waits for an animation is a
+        // test that is slow and flaky for no benefit.
+        let first = app.spinner().unwrap();
+        if let Some((_, _, started)) = app.in_flight.as_mut() {
+            *started = Instant::now() - Duration::from_millis(200);
+        }
+        assert_ne!(first, app.spinner().unwrap());
+    }
+
+    #[test]
+    fn a_selection_that_is_still_moving_does_not_start_a_render() {
+        // Arrowing through a list must render the entry you stop on, not every
+        // entry you pass over — each one costs a rasterise and, under Kitty, a
+        // megabyte of terminal traffic.
+        let mut app = app();
+        app.refresh_preview();
+        app.focus = Focus::Renders;
+
+        app.select_next();
+        app.update_preview();
+        assert!(
+            !app.is_rendering(),
+            "a render started before the selection settled"
+        );
+
+        app.select_next();
+        app.update_preview();
+        assert!(!app.is_rendering());
+
+        // Once it settles, it renders.
+        app.changed_at = Instant::now() - DEBOUNCE;
+        app.update_preview();
+        assert!(app.is_rendering());
+    }
+
+    #[test]
+    fn a_burst_of_keys_costs_one_render_not_one_per_key() {
+        // The event loop drains everything that has arrived before drawing, so
+        // three queued arrow keys reach this as three selection moves and one
+        // decision. Under Kitty each render is over a megabyte of terminal
+        // traffic, so the difference is three megabytes nobody would see.
+        let mut app = app();
+        app.refresh_preview();
+        let after_initial = app.sequence;
+
+        app.focus = Focus::Variants;
+        for _ in 0..3 {
+            app.select_next();
+        }
+
+        app.update_preview();
+        assert_eq!(
+            app.sequence, after_initial,
+            "nothing should start while the selection is still moving"
+        );
+
+        app.changed_at = Instant::now() - DEBOUNCE;
+        app.update_preview();
+        assert_eq!(
+            app.sequence,
+            after_initial + 1,
+            "the whole burst should cost exactly one render"
+        );
+    }
+
+    #[test]
+    fn returning_to_what_is_already_shown_costs_nothing() {
+        // Arrowing down and back up again lands on the image already on
+        // screen. Re-rendering it would be a megabyte for no change at all.
+        let mut app = app();
+        app.refresh_preview();
+        let after_initial = app.sequence;
+
+        app.focus = Focus::Variants;
+        app.select_next();
+        app.select_previous();
+
+        app.changed_at = Instant::now() - DEBOUNCE;
+        app.update_preview();
+        assert_eq!(app.sequence, after_initial);
+        assert!(!app.is_rendering());
+    }
+
+    #[test]
+    fn a_stale_answer_is_discarded_rather_than_shown() {
+        // The worker answers requests in order, but a request can be
+        // superseded while it is running. Showing its answer would flick the
+        // preview back to something the selection has already left.
+        let mut app = app();
+        app.refresh_preview();
+        let before = app.preview().clone();
+
+        let stale = Rendered {
+            seq: app.sequence.wrapping_add(999),
+            image: Ok(Image::from_rgba(1, 1, vec![1, 2, 3, 4])),
+            elapsed: Duration::ZERO,
+        };
+        assert!(!app.apply(stale));
+        assert_eq!(app.preview(), &before);
     }
 
     #[test]

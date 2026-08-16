@@ -127,6 +127,13 @@ fn draw_preview(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend, are
         Preview::Ready { caption, .. } => format!(" preview — {caption} "),
         _ => " preview ".to_owned(),
     };
+    // In the title rather than over the image: a render can take a noticeable
+    // moment, and replacing the previous preview with a spinner would be a
+    // downgrade. The old image is more useful than an empty pane.
+    let caption = match app.spinner() {
+        Some(frame) => format!("{caption}{frame} rendering "),
+        None => caption,
+    };
 
     let block = ratatui::widgets::Block::default()
         .borders(ratatui::widgets::Borders::ALL)

@@ -180,6 +180,17 @@ pub fn status(app: &App) -> Paragraph<'static> {
         spans.extend(hint("q", "quit"));
     }
 
+    // Only under `-v`: the number matters when a preview feels slow, and is
+    // noise the rest of the time.
+    if app.verbose > 0
+        && let Some(elapsed) = app.last_render()
+    {
+        spans.push(Span::styled(
+            format!("render {}ms   ", elapsed.as_millis()),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
     spans.push(Span::styled(
         format!("preview: {}", app.backend),
         Style::default().fg(Color::DarkGray),

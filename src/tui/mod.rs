@@ -21,6 +21,7 @@
 
 pub mod app;
 pub mod panes;
+pub mod render_worker;
 mod ui;
 
 use std::io::{self, Stdout};
@@ -43,12 +44,18 @@ use crate::project::Project;
 
 use app::{App, Focus};
 
-/// How long to wait for a key before redrawing anyway.
+/// How long to wait for a key when nothing is happening.
 ///
 /// The workspace has nothing that changes on its own, so this only bounds how
 /// long a resize goes unnoticed. Long enough not to spin a CPU, short enough
 /// not to feel stuck.
-const TICK: Duration = Duration::from_millis(250);
+const IDLE_TICK: Duration = Duration::from_millis(250);
+
+/// How long to wait while a render is in flight.
+///
+/// Short enough for the spinner to animate and for a finished render to appear
+/// promptly. Only paid while something is actually happening.
+const BUSY_TICK: Duration = Duration::from_millis(80);
 
 /// Open a project in the interactive workspace.
 ///
@@ -60,7 +67,7 @@ const TICK: Duration = Duration::from_millis(250);
 /// The terminal is restored before any error is returned. A command that
 /// leaves a terminal in raw mode with the alternate screen active is worse
 /// than one that simply fails.
-pub fn run(project: Project, backend: Backend) -> Result<()> {
+pub fn run(project: Project, backend: Backend, verbose: u8) -> Result<()> {
     // Held for the whole session: a warning printed over the alternate screen
     // corrupts it and cannot be scrolled back to.
     let _quiet = crate::logging::suppress();
@@ -72,6 +79,7 @@ pub fn run(project: Project, backend: Backend) -> Result<()> {
     // anything else touching either would eat it.
     let mut preview = Preview::detect(backend);
     let mut app = App::new(project, preview.name());
+    app.verbose = verbose;
 
     let outcome = event_loop(&mut terminal, &mut app, &mut preview);
 
@@ -124,21 +132,42 @@ fn event_loop(
     let io_error = |source| Error::io("the terminal", source);
 
     while !app.should_quit {
-        app.refresh_preview();
-
+        // Drawn *before* the first render is asked for. That is what tells the
+        // application how large the preview pane is, so the first render is
+        // made once at the right size instead of once at a guessed 512 and
+        // again at the real one — two rasterises and, under Kitty, two
+        // megabyte-scale transmissions before anything appeared on screen.
         terminal
             .draw(|frame| ui::draw(frame, app, preview))
             .map_err(io_error)?;
 
-        if !event::poll(TICK).map_err(io_error)? {
+        app.collect_preview();
+        app.update_preview();
+
+        let tick = if app.is_rendering() {
+            BUSY_TICK
+        } else {
+            IDLE_TICK
+        };
+        if !event::poll(tick).map_err(io_error)? {
             continue;
         }
-        match event::read().map_err(io_error)? {
-            // Windows reports press *and* release; acting on both would move
-            // every selection two steps at a time.
-            Event::Key(key) if key.kind == KeyEventKind::Press => handle(app, key.code),
-            Event::Mouse(mouse) => handle_mouse(app, mouse),
-            _ => {}
+
+        // Every event that has already arrived is applied before the next
+        // frame. Without this, a burst of keys draws — and under Kitty
+        // transmits — one image per key, and nobody sees the intermediate
+        // ones.
+        loop {
+            match event::read().map_err(io_error)? {
+                // Windows reports press *and* release; acting on both would
+                // move every selection two steps at a time.
+                Event::Key(key) if key.kind == KeyEventKind::Press => handle(app, key.code),
+                Event::Mouse(mouse) => handle_mouse(app, mouse),
+                _ => {}
+            }
+            if app.should_quit || !event::poll(Duration::ZERO).map_err(io_error)? {
+                break;
+            }
         }
     }
 
