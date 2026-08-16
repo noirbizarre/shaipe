@@ -9,7 +9,7 @@ the query is never sent, no reply arrives, and Shaipe silently falls back to
 half-blocks on a terminal that supports Kitty.
 
 That shipped once in `main.rs`, and then again in `doctor.rs` itself — the
-diagnostic mis-diagnosing its own terminal. Neither could be caught by a unit
+diagnostic misdiagnosing its own terminal. Neither could be caught by a unit
 test, because both need a real pty and a terminal that answers.
 
 So: run `shaipe doctor` under a pty, pretend to be a Kitty terminal, and assert

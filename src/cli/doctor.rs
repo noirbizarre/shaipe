@@ -25,7 +25,7 @@ use crate::cli::DoctorArgs;
 /// keeps the query and the printing strictly apart.
 ///
 /// The first version of this file got that wrong and ran under the lock, which
-/// made `shaipe doctor` mis-diagnose itself: the query was blocked until the
+/// made `shaipe doctor` misdiagnose itself: the query was blocked until the
 /// lock was released, so it was emitted *after* the report and every terminal
 /// looked incapable.
 #[must_use]

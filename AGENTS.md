@@ -39,7 +39,15 @@ command that calls one, read `docs/adr/004-tools-not-a-model.md` first.
    `src/main.rs` are the binary; everything else must be usable without it —
    enforced by the `library-knows-no-commands` hook.
 
-6. **The project file stays a valid, ordinary SVG.** Its root draws the primary
+6. **The stdout lock is never held across the workspace.** `Stdout`'s lock is
+   re-entrant only for the thread holding it, and `ratatui-image` queries the
+   terminal from a spawned thread — a lock held across it silently downgrades
+   every preview to half-blocks. `stdout().lock()` appears exactly once, in
+   `write_lines`. Enforced by the `stdout-lock-not-held-across-the-tui` hook
+   and by `scripts/check-terminal-detection.py`, which runs `shaipe doctor`
+   under a pty that impersonates a Kitty terminal.
+
+7. **The project file stays a valid, ordinary SVG.** Its root draws the primary
    variant, so it renders in a browser and on GitHub rather than appearing
    blank. Metadata never affects geometry — by construction, since `usvg` never
    sees it.
@@ -95,6 +103,14 @@ decisions exist because the obvious API does not do what its name suggests:
 `usvg` discards `<metadata>`, and `node_by_id` cannot find a `<symbol>`. Both
 were found by probing, not by reading. Do the same before building on an
 assumption about `resvg`.
+
+## Plan
+
+`PLAN.md` is the single checklist of what is done and what is not. Its format
+is load-bearing and documented in the file: **checkboxes, never numbering**,
+items are never reordered or deleted, and finishing something is a
+one-character change in place. That is what lets several people edit it at once
+without conflicts. Read the rules at the top before changing it.
 
 ## Artwork
 

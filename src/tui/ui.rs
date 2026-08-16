@@ -15,78 +15,114 @@ use super::app::{App, Focus, Preview};
 use super::panes;
 
 /// Draw a frame.
-pub fn draw(frame: &mut Frame<'_>, app: &App, backend: &mut Backend) {
+pub fn draw(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend) {
     let [body, status] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(1)])
         .areas(frame.area());
 
-    // The left column is sized in characters, not proportions: its contents
-    // are names and hex values of known width, and the preview should take
-    // every column they do not need.
+    // Sized in characters, not proportions: the column's contents are names
+    // and hex values of known width, and the preview should have every column
+    // they do not need. Draggable, hence read from the app rather than fixed.
+    app.resize_column(app.column_width, body.width);
     let [left, right] = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(38), Constraint::Min(20)])
+        .constraints([
+            Constraint::Length(app.column_width),
+            Constraint::Min(crate::tui::app::MIN_PREVIEW),
+        ])
         .areas(body);
 
     draw_left(frame, app, left);
+    app.set_preview_area(right);
     draw_preview(frame, app, backend, right);
 
     frame.render_widget(panes::status(app), status);
 }
 
-/// Draw the description column.
-fn draw_left(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let metadata = app.project.metadata();
+/// Rows an unfocused pane may occupy, borders included.
+///
+/// Small enough that focusing a pane visibly hands it the column, large
+/// enough that a collapsed pane still shows something. A collapsed list
+/// scrolls, so its selection stays visible.
+const COLLAPSED: u16 = 5;
 
-    // The prompt is prose of unknown length and the lists are not, so the
-    // lists get exactly the rows they need and the prompt gets the rest.
-    let rows = |count: usize| Constraint::Length(u16::try_from(count).unwrap_or(u16::MAX) + 2);
+/// The height each pane should get.
+///
+/// The focused pane takes everything the others do not need; the others take
+/// what their contents want, up to [`COLLAPSED`]. This is what makes the
+/// prompt readable — as prose it is the one pane whose content has no natural
+/// height, and before this it was whatever the three lists left over.
+fn constraints(app: &App) -> [Constraint; Focus::COUNT] {
+    std::array::from_fn(|index| {
+        let focus = Focus::ALL[index];
+        if focus == app.focus {
+            Constraint::Min(5)
+        } else {
+            Constraint::Length(app.natural_height(focus).min(COLLAPSED))
+        }
+    })
+}
+
+/// Draw the description column.
+fn draw_left(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let [prompt, palette, variants, renders] = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(5),
-            rows(metadata.palette.len()),
-            rows(metadata.variants.len()),
-            rows(metadata.renders.len()),
-        ])
+        .constraints(constraints(app))
         .areas(area);
 
-    let framed = |focus: Focus| panes::frame(focus, app.focus == focus);
+    for (focus, pane) in [
+        (Focus::Prompt, prompt),
+        (Focus::Palette, palette),
+        (Focus::Variants, variants),
+        (Focus::Renders, renders),
+    ] {
+        app.set_area(focus, pane);
+    }
 
-    frame.render_widget(panes::prompt(app).block(framed(Focus::Prompt)), prompt);
+    // A value, not a closure: the closure would borrow `app` immutably for the
+    // rest of the function, and the list panes need it mutably for their
+    // scroll state.
+    let focus = app.focus;
+    let focused = move |candidate: Focus| candidate == focus;
+
     frame.render_widget(
-        panes::palette(
-            &metadata.palette,
-            app.selection(Focus::Palette),
-            app.focus == Focus::Palette,
-        )
-        .block(framed(Focus::Palette)),
-        palette,
+        panes::prompt(app).block(panes::frame(Focus::Prompt, focused(Focus::Prompt))),
+        prompt,
     );
-    frame.render_widget(
-        panes::variants(
-            &metadata.variants,
-            metadata.primary.as_deref(),
-            app.selection(Focus::Variants),
-            app.focus == Focus::Variants,
-        )
-        .block(framed(Focus::Variants)),
-        variants,
-    );
-    frame.render_widget(
-        panes::renders(
-            &metadata.renders,
-            app.selection(Focus::Renders),
-            app.focus == Focus::Renders,
-        )
-        .block(framed(Focus::Renders)),
-        renders,
-    );
+
+    // Built before the mutable borrow of `app` that the list state needs.
+    let metadata = app.project.metadata();
+    let lists = [
+        (
+            Focus::Palette,
+            palette,
+            panes::palette(&metadata.palette, focused(Focus::Palette)),
+        ),
+        (
+            Focus::Variants,
+            variants,
+            panes::variants(
+                &metadata.variants,
+                metadata.primary.as_deref(),
+                focused(Focus::Variants),
+            ),
+        ),
+        (
+            Focus::Renders,
+            renders,
+            panes::renders(&metadata.renders, focused(Focus::Renders)),
+        ),
+    ];
+
+    for (focus, pane, list) in lists {
+        let list = list.block(panes::frame(focus, focused(focus)));
+        frame.render_stateful_widget(list, pane, app.list_state(focus));
+    }
 }
 
 /// Draw the preview column.
-fn draw_preview(frame: &mut Frame<'_>, app: &App, backend: &mut Backend, area: Rect) {
+fn draw_preview(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend, area: Rect) {
     let caption = match app.preview() {
         Preview::Ready { caption, .. } => format!(" preview — {caption} "),
         _ => " preview ".to_owned(),
@@ -133,7 +169,7 @@ mod tests {
     /// Half-blocks are forced: the other protocols emit escape sequences that
     /// a `TestBackend` records as opaque cell contents, which would make these
     /// assertions depend on whichever terminal happened to run the tests.
-    fn frame(app: &App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+    fn frame(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let mut backend = Backend::detect(PreviewBackend::Blocks);
         terminal
@@ -143,7 +179,7 @@ mod tests {
     }
 
     /// The text of a frame.
-    fn render(app: &App, width: u16, height: u16) -> String {
+    fn render(app: &mut App, width: u16, height: u16) -> String {
         let buffer = frame(app, width, height);
         (0..height)
             .map(|y| {
@@ -173,7 +209,7 @@ mod tests {
     fn a_frame_shows_every_pane_and_the_key_hints() {
         let mut app = App::new(fixtures::project(), "blocks");
         app.refresh_preview();
-        let text = render(&app, 100, 30);
+        let text = render(&mut app, 100, 30);
 
         for expected in [
             "prompt", "palette", "variants", "renders", "preview", "quit",
@@ -195,7 +231,7 @@ mod tests {
         let mut app = App::new(fixtures::project(), "blocks");
         app.refresh_preview();
 
-        let drawn = painted(&frame(&app, 100, 30), PREVIEW);
+        let drawn = painted(&frame(&mut app, 100, 30), PREVIEW);
         assert!(drawn > 100, "only {drawn} cells were painted");
     }
 
@@ -206,7 +242,7 @@ mod tests {
         app.invalidate_preview();
         app.refresh_preview();
 
-        let rendered = frame(&app, 100, 30);
+        let rendered = frame(&mut app, 100, 30);
         let text = (0..30)
             .map(|y| {
                 (0..100)
@@ -225,13 +261,78 @@ mod tests {
     }
 
     #[test]
+    fn the_focused_pane_gets_the_column_and_the_others_collapse() {
+        // The prompt is prose with no natural height. Before this it got
+        // whatever the three lists left over, which for a real project was a
+        // handful of rows for several hundred characters.
+        let mut app = App::new(fixtures::project(), "blocks");
+
+        app.focus = Focus::Prompt;
+        frame(&mut app, 100, 30);
+        let prompt_focused = app.area(Focus::Prompt).height;
+
+        app.focus = Focus::Renders;
+        frame(&mut app, 100, 30);
+        let prompt_collapsed = app.area(Focus::Prompt).height;
+        let renders_focused = app.area(Focus::Renders).height;
+
+        assert!(
+            prompt_focused > prompt_collapsed * 2,
+            "focusing the prompt should visibly hand it the column: \
+             {prompt_focused} vs {prompt_collapsed}"
+        );
+        assert!(renders_focused > prompt_collapsed);
+    }
+
+    #[test]
+    fn a_collapsed_pane_still_shows_its_title() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.focus = Focus::Prompt;
+        let text = render(&mut app, 100, 30);
+
+        // Collapsed, but not gone: the point is to see the whole project at
+        // once and still be able to read the focused pane.
+        for title in ["palette", "variants", "renders"] {
+            assert!(text.contains(title), "{title} missing from:\n{text}");
+        }
+    }
+
+    #[test]
+    fn a_pane_smaller_than_its_contents_scrolls_to_keep_the_selection_visible() {
+        // Collapsing a pane is only acceptable because it scrolls; without
+        // this the selection could sit off-screen with no way to see it.
+        let mut app = App::new(fixtures::project(), "blocks");
+        for index in 0..10 {
+            app.project
+                .metadata_mut()
+                .renders
+                .push(crate::project::RenderSpec::square(
+                    format!("spec-{index}"),
+                    "icon",
+                    16,
+                ));
+        }
+
+        app.focus = Focus::Renders;
+        while app.selection(Focus::Renders) + 1 < app.project.metadata().renders.len() {
+            app.select_next();
+        }
+
+        let text = render(&mut app, 100, 30);
+        assert!(
+            text.contains("spec-9"),
+            "the selected entry should have scrolled into view:\n{text}"
+        );
+    }
+
+    #[test]
     fn drawing_into_a_tiny_terminal_does_not_panic() {
         // Terminals get dragged to absurd sizes, and a panic here leaves the
         // user in raw mode on the alternate screen.
         let mut app = App::new(fixtures::project(), "blocks");
         app.refresh_preview();
         for (width, height) in [(1, 1), (5, 3), (40, 2), (200, 60)] {
-            render(&app, width, height);
+            render(&mut app, width, height);
         }
     }
 }

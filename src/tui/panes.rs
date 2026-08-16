@@ -33,6 +33,10 @@ pub fn frame(title: Focus, focused: bool) -> Block<'static> {
 
 /// The style a selected row is drawn in.
 ///
+/// Applied by ratatui through `List::highlight_style`, which also scrolls the
+/// pane to keep the selection visible — the reason the panes no longer style
+/// the selected row themselves.
+///
 /// Only the pane holding the keyboard shows a highlight, so it is always
 /// unambiguous which selection an arrow key will move.
 fn selected(focused: bool) -> Style {
@@ -69,21 +73,15 @@ fn swatch(colour: Rgba) -> Span<'static> {
 }
 
 /// The palette pane.
-pub fn palette(palette: &Palette, selection: usize, focused: bool) -> List<'static> {
+pub fn palette(palette: &Palette, focused: bool) -> List<'static> {
     let items: Vec<ListItem> = palette
         .colours()
         .iter()
-        .enumerate()
-        .map(|(index, colour)| {
-            let style = if index == selection {
-                selected(focused)
-            } else {
-                Style::default()
-            };
+        .map(|colour| {
             let mut spans = vec![
                 swatch(colour.value),
                 Span::raw(" "),
-                Span::styled(colour.name.clone(), style),
+                Span::raw(colour.name.clone()),
                 Span::raw("  "),
                 Span::styled(
                     colour.value.to_string(),
@@ -100,26 +98,15 @@ pub fn palette(palette: &Palette, selection: usize, focused: bool) -> List<'stat
         })
         .collect();
 
-    List::new(items)
+    List::new(items).highlight_style(selected(focused))
 }
 
 /// The variants pane.
-pub fn variants(
-    variants: &[Variant],
-    primary: Option<&str>,
-    selection: usize,
-    focused: bool,
-) -> List<'static> {
+pub fn variants(variants: &[Variant], primary: Option<&str>, focused: bool) -> List<'static> {
     let items: Vec<ListItem> = variants
         .iter()
-        .enumerate()
-        .map(|(index, variant)| {
-            let style = if index == selection {
-                selected(focused)
-            } else {
-                Style::default()
-            };
-            let mut spans = vec![Span::styled(variant.name.clone(), style)];
+        .map(|variant| {
+            let mut spans = vec![Span::raw(variant.name.clone())];
             // Which variant the document's root draws is otherwise invisible,
             // and it is the one that shows up on GitHub.
             if primary == Some(variant.name.as_str()) {
@@ -133,22 +120,16 @@ pub fn variants(
         })
         .collect();
 
-    List::new(items)
+    List::new(items).highlight_style(selected(focused))
 }
 
 /// The render specifications pane.
-pub fn renders(specs: &[RenderSpec], selection: usize, focused: bool) -> List<'static> {
+pub fn renders(specs: &[RenderSpec], focused: bool) -> List<'static> {
     let items: Vec<ListItem> = specs
         .iter()
-        .enumerate()
-        .map(|(index, spec)| {
-            let style = if index == selection {
-                selected(focused)
-            } else {
-                Style::default()
-            };
+        .map(|spec| {
             ListItem::new(Line::from(vec![
-                Span::styled(spec.name.clone(), style),
+                Span::raw(spec.name.clone()),
                 Span::styled(
                     format!("  {}x{}", spec.width, spec.height),
                     Style::default().fg(Color::DarkGray),
@@ -161,7 +142,7 @@ pub fn renders(specs: &[RenderSpec], selection: usize, focused: bool) -> List<'s
         })
         .collect();
 
-    List::new(items)
+    List::new(items).highlight_style(selected(focused))
 }
 
 /// The key hints along the bottom.
@@ -182,10 +163,23 @@ pub fn status(app: &App) -> Paragraph<'static> {
     };
 
     let mut spans = Vec::new();
-    spans.extend(hint("tab", "pane"));
-    spans.extend(hint("↑↓", "select"));
-    spans.extend(hint("r", "re-render"));
-    spans.extend(hint("q", "quit"));
+
+    // A notice replaces the hints rather than crowding them: it reports what
+    // an export just wrote, which is the only thing worth reading afterwards.
+    if let Some(notice) = &app.notice {
+        spans.push(Span::styled(
+            notice.clone(),
+            Style::default().fg(Color::LightGreen),
+        ));
+        spans.push(Span::raw("   "));
+    } else {
+        spans.extend(hint("tab", "pane"));
+        spans.extend(hint("↑↓", "select"));
+        spans.extend(hint("r", "re-render"));
+        spans.extend(hint("2×click", "export"));
+        spans.extend(hint("q", "quit"));
+    }
+
     spans.push(Span::styled(
         format!("preview: {}", app.backend),
         Style::default().fg(Color::DarkGray),
@@ -221,7 +215,7 @@ mod tests {
     #[test]
     fn the_palette_pane_shows_each_colours_name_value_and_role() {
         let project = fixtures::project();
-        let output = drawn(palette(&project.metadata().palette, 0, true), 60, 4);
+        let output = drawn(palette(&project.metadata().palette, true), 60, 4);
 
         assert!(output.contains("accent"), "{output}");
         assert!(output.contains("#f05032"), "{output}");
@@ -233,7 +227,7 @@ mod tests {
         let project = fixtures::project();
         let metadata = project.metadata();
         let output = drawn(
-            variants(&metadata.variants, metadata.primary.as_deref(), 0, true),
+            variants(&metadata.variants, metadata.primary.as_deref(), true),
             60,
             4,
         );
@@ -245,7 +239,7 @@ mod tests {
     #[test]
     fn the_renders_pane_shows_each_specifications_size_and_variant() {
         let project = fixtures::project();
-        let output = drawn(renders(&project.metadata().renders, 0, true), 60, 4);
+        let output = drawn(renders(&project.metadata().renders, true), 60, 4);
 
         assert!(output.contains("favicon-32"), "{output}");
         assert!(output.contains("128x32"), "{output}");
@@ -258,6 +252,16 @@ mod tests {
         let app = App::new(project, "blocks");
 
         assert!(drawn(prompt(&app), 60, 4).contains("No prompt"));
+    }
+
+    #[test]
+    fn a_notice_replaces_the_key_hints_so_it_is_actually_read() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.notice = Some("wrote dist/favicon-32.png".to_owned());
+        let output = drawn(status(&app), 90, 1);
+
+        assert!(output.contains("wrote dist/favicon-32.png"), "{output}");
+        assert!(output.contains("preview: blocks"), "{output}");
     }
 
     #[test]

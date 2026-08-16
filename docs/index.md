@@ -91,9 +91,20 @@ shaipe            # opens ./logo.svg
 
 A four-pane description of the project on the left, a live preview on the
 right, drawn with whichever graphics protocol the terminal reports — Kitty,
-Sixel or iTerm2 — and Unicode half-blocks everywhere else. `--preview` forces a
-specific one: `auto`, `kitty`, `sixel`, `iterm2` or `blocks`. The fallback is
-occasionally necessary under `tmux`, where graphics need `allow-passthrough`.
+Sixel or iTerm2 — and Unicode half-blocks everywhere else.
+
+The focused pane takes the column, so the prompt is readable when you are
+reading it. The mouse works: click to focus and select, wheel to scroll, drag
+the divider to resize, double-click a render specification to export it.
+
+```bash
+shaipe doctor
+```
+
+reports the terminal, the tmux passthrough setting, the detected protocol and
+the cell size — ask it first when a preview looks wrong. `--preview` forces a
+specific backend: `auto`, `kitty`, `sixel`, `iterm2` or `blocks`. Under `tmux`,
+graphics also need `allow-passthrough`.
 
 ## Design
 

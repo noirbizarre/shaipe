@@ -8,9 +8,35 @@
 //! agent conversation all need somewhere to hold a draft and a dirty flag, and
 //! that somewhere is here rather than spread through the drawing code.
 
+use std::time::{Duration, Instant};
+
+use ratatui::layout::Rect;
+use ratatui::widgets::ListState;
+
 use crate::preview::Image;
-use crate::project::{Project, RenderSpec};
+use crate::project::{Format, Project, RenderSpec};
 use crate::render::{RenderOptions, Renderer};
+
+/// The narrowest the description column may be dragged.
+///
+/// Below this the hex colours and render sizes no longer fit, and the column
+/// stops being readable rather than merely cramped.
+pub const MIN_COLUMN: u16 = 24;
+
+/// How much room the preview column always keeps.
+pub const MIN_PREVIEW: u16 = 12;
+
+/// The description column's width before anyone drags it.
+pub const DEFAULT_COLUMN: u16 = 38;
+
+/// How close together two clicks count as one double-click.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// Where a double-clicked render specification is written.
+///
+/// The conventional output directory, matching `shaipe render`'s default, so
+/// the workspace and the command line do not disagree about where assets go.
+const EXPORT_DIRECTORY: &str = "dist";
 
 /// Which pane the keyboard is talking to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +100,27 @@ pub struct App {
     /// preview that looks wrong is diagnosable without a debugger.
     pub backend: &'static str,
 
+    /// How wide the description column is. Draggable.
+    pub column_width: u16,
+    /// A transient message, shown in the status line until something replaces
+    /// it. Used to report what an export actually wrote.
+    pub notice: Option<String>,
+
+    /// Where each pane was drawn last frame.
+    ///
+    /// Recorded during drawing rather than recomputed when a click arrives:
+    /// two copies of the layout arithmetic would drift, and the bug that
+    /// caused would be a click landing on the wrong pane.
+    areas: [Rect; Focus::COUNT],
+    preview_area: Rect,
+    /// The last click, for recognising a double-click.
+    last_click: Option<(Focus, u16, Instant)>,
+    /// Whether the column divider is being dragged.
+    resizing: bool,
+    /// Scroll state per list pane, so the selection stays visible when a pane
+    /// is smaller than its contents.
+    list_states: [ListState; Focus::COUNT],
+
     selected: [usize; Focus::COUNT],
     preview: Preview,
     /// What the cached preview was rendered from. `None` forces a re-render.
@@ -95,6 +142,13 @@ impl App {
             focus: Focus::Variants,
             should_quit: false,
             backend,
+            column_width: DEFAULT_COLUMN,
+            notice: None,
+            areas: [Rect::ZERO; Focus::COUNT],
+            preview_area: Rect::ZERO,
+            last_click: None,
+            resizing: false,
+            list_states: std::array::from_fn(|_| ListState::default()),
             selected: [0; Focus::COUNT],
             preview: Preview::Pending,
             rendered_from: None,
@@ -104,9 +158,14 @@ impl App {
 
     /// The index of the focused pane, for indexing `selected`.
     fn focus_index(&self) -> usize {
+        Self::index_of(self.focus)
+    }
+
+    /// A pane's position in the fixed pane order.
+    fn index_of(focus: Focus) -> usize {
         Focus::ALL
             .iter()
-            .position(|focus| *focus == self.focus)
+            .position(|candidate| *candidate == focus)
             .unwrap_or_default()
     }
 
@@ -194,7 +253,13 @@ impl App {
         if self.focus == Focus::Renders
             && let Some(spec) = metadata.renders.get(self.selection(Focus::Renders))
         {
-            return Some(spec.clone());
+            let mut spec = spec.clone();
+            // A preview is pixels on a screen, so an SVG specification is
+            // previewed by rasterising it. Handing SVG bytes to the preview
+            // layer instead put the words "not a PNG" in the pane, which is
+            // true, useless, and looks like a bug in the project.
+            spec.format = Format::Png;
+            return Some(spec);
         }
 
         let variant = metadata.variants.get(self.selected_variant())?;
@@ -236,6 +301,180 @@ impl App {
 
         self.generation = self.generation.wrapping_add(1);
         self.rendered_from = Some(spec);
+    }
+
+    /// How many rows a pane would like, borders included.
+    ///
+    /// A list wants one row per entry; the prompt is prose and wants as much
+    /// as it can get, so it reports a floor rather than a size.
+    #[must_use]
+    pub fn natural_height(&self, focus: Focus) -> u16 {
+        match focus {
+            // Prose has no natural height: it wants every row it can have, so
+            // it reports the maximum and lets the caller cap it. Returning
+            // "no rows, plus borders" instead made the collapsed prompt two
+            // rows of border with the text entirely hidden.
+            Focus::Prompt => u16::MAX,
+            _ => u16::try_from(self.pane_len(focus))
+                .unwrap_or(u16::MAX)
+                .saturating_add(2),
+        }
+    }
+
+    /// Record where the preview was drawn.
+    pub(crate) fn set_preview_area(&mut self, area: Rect) {
+        self.preview_area = area;
+    }
+
+    /// Where the preview was drawn last frame.
+    #[must_use]
+    pub const fn preview_area(&self) -> Rect {
+        self.preview_area
+    }
+
+    /// Record where a pane was drawn.
+    pub(crate) fn set_area(&mut self, focus: Focus, area: Rect) {
+        self.areas[Self::index_of(focus)] = area;
+    }
+
+    /// Where a pane was drawn last frame.
+    #[must_use]
+    pub fn area(&self, focus: Focus) -> Rect {
+        self.areas[Self::index_of(focus)]
+    }
+
+    /// The list scroll state for a pane, synchronised to its selection.
+    pub(crate) fn list_state(&mut self, focus: Focus) -> &mut ListState {
+        let index = Self::index_of(focus);
+        let len = self.pane_len(focus);
+        let selected = self.selected[index].min(len.saturating_sub(1));
+        let state = &mut self.list_states[index];
+        // Kept in step here rather than at every point that moves the
+        // selection: ratatui scrolls to whatever the state says, so the state
+        // is the thing that has to be right at draw time.
+        state.select((len > 0).then_some(selected));
+        state
+    }
+
+    /// The pane containing a point, if any.
+    #[must_use]
+    pub fn pane_at(&self, column: u16, row: u16) -> Option<Focus> {
+        Focus::ALL.into_iter().find(|focus| {
+            self.area(*focus)
+                .contains(ratatui::layout::Position::new(column, row))
+        })
+    }
+
+    /// Select the row a click landed on.
+    ///
+    /// Returns whether anything was selected. A click on a pane's border or
+    /// past the end of its list focuses the pane without moving the cursor,
+    /// which is what makes clicking a title bar harmless.
+    pub fn select_at(&mut self, focus: Focus, row: u16) -> bool {
+        let area = self.area(focus);
+        // One row of border at the top, and the list's own scroll offset.
+        let Some(offset) = row.checked_sub(area.y + 1) else {
+            return false;
+        };
+        let index = usize::from(offset) + self.list_states[Self::index_of(focus)].offset();
+        if index >= self.pane_len(focus) {
+            return false;
+        }
+        self.selected[Self::index_of(focus)] = index;
+        true
+    }
+
+    /// Move the description column's edge, keeping both columns usable.
+    pub fn resize_column(&mut self, column: u16, total_width: u16) {
+        let most = total_width.saturating_sub(MIN_PREVIEW).max(MIN_COLUMN);
+        self.column_width = column.clamp(MIN_COLUMN, most);
+    }
+
+    /// Note a click, reporting whether it is a repeat of the last one.
+    ///
+    /// "Same place, soon after" rather than a count: a double-click that moved
+    /// to a different row is two deliberate selections, not one gesture.
+    pub fn register_click(&mut self, focus: Focus, row: u16) -> bool {
+        let now = Instant::now();
+        let repeat = self.last_click.is_some_and(|(previous, at, when)| {
+            previous == focus && at == row && now.duration_since(when) < DOUBLE_CLICK
+        });
+        // Cleared on a repeat, so a third click starts a new gesture rather
+        // than firing the action again.
+        self.last_click = (!repeat).then_some((focus, row, now));
+        repeat
+    }
+
+    /// Begin dragging the column divider.
+    pub const fn begin_resize(&mut self) {
+        self.resizing = true;
+    }
+
+    /// Stop dragging the column divider.
+    pub const fn end_resize(&mut self) {
+        self.resizing = false;
+    }
+
+    /// Whether the column divider is being dragged.
+    #[must_use]
+    pub const fn is_resizing(&self) -> bool {
+        self.resizing
+    }
+
+    /// The full width of the last frame.
+    #[must_use]
+    pub const fn total_width(&self) -> u16 {
+        self.column_width + self.preview_area.width
+    }
+
+    /// Move the selection down in a named pane.
+    pub fn select_next_in(&mut self, focus: Focus) {
+        self.step(focus, 1);
+    }
+
+    /// Move the selection up in a named pane.
+    pub fn select_previous_in(&mut self, focus: Focus) {
+        self.step(focus, -1);
+    }
+
+    /// Move a pane's selection by one, wrapping.
+    fn step(&mut self, focus: Focus, delta: isize) {
+        let len = self.pane_len(focus);
+        if len == 0 {
+            return;
+        }
+        let index = Self::index_of(focus);
+        let current = self.selected[index].min(len - 1);
+        let next = (current as isize + delta).rem_euclid(len as isize);
+        self.selected[index] = next as usize;
+    }
+
+    /// Render the selected specification and write it to `dist/`.
+    ///
+    /// The result goes to the status line rather than being returned: an
+    /// export that fails must not close the workspace, and a project mid-edit
+    /// fails often.
+    pub fn export_selected_render(&mut self) {
+        let Some(spec) = self
+            .project
+            .metadata()
+            .renders
+            .get(self.selection(Focus::Renders))
+            .cloned()
+        else {
+            return;
+        };
+
+        let directory = std::path::Path::new(EXPORT_DIRECTORY);
+        self.notice = Some(
+            match Renderer::new(&self.project, RenderOptions::default())
+                .and_then(|renderer| renderer.render(&spec))
+                .and_then(|asset| asset.write_to(directory))
+            {
+                Ok(path) => format!("wrote {}", path.display()),
+                Err(error) => format!("export failed: {error}"),
+            },
+        );
     }
 
     /// Which image the preview currently holds.
@@ -371,6 +610,23 @@ mod tests {
             panic!("expected a preview");
         };
         assert_eq!((image.width(), image.height()), (128, 32));
+    }
+
+    #[test]
+    fn an_svg_render_specification_is_previewed_by_rasterising_it() {
+        // Otherwise the pane reads "not a PNG", which is true and useless.
+        let mut app = app();
+        app.project.metadata_mut().renders.clear();
+        let mut spec = RenderSpec::square("vector", "icon", 64);
+        spec.format = Format::Svg;
+        app.project.metadata_mut().renders.push(spec);
+
+        app.focus = Focus::Renders;
+        assert_eq!(app.preview_spec().unwrap().format, Format::Png);
+
+        app.invalidate_preview();
+        app.refresh_preview();
+        assert!(matches!(app.preview(), Preview::Ready { .. }));
     }
 
     #[test]

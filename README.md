@@ -158,9 +158,22 @@ shaipe tui logo.svg
 The preview uses whichever graphics protocol the terminal actually reports —
 Kitty, Sixel or iTerm2 — and falls back to Unicode half-blocks everywhere else.
 It is produced by the same renderer `shaipe render` uses, so it is the asset
-rather than an impression of it. `tab` moves between panes, `↑↓` selects, `r`
-re-renders, `q` quits; `--preview blocks` forces the fallback when detection
-gets it wrong.
+rather than an impression of it.
+
+`tab` moves between panes and the focused pane takes the column, `↑↓` selects,
+`r` re-renders, `q` quits. The mouse works: click to focus and select, wheel to
+scroll, drag the divider to resize, double-click a render specification to
+write it to `dist/`.
+
+If the preview looks wrong, ask:
+
+```bash
+shaipe doctor
+```
+
+It reports the terminal, the tmux passthrough setting, the protocol that was
+detected and the cell size, so a preview problem is diagnosable instead of
+mysterious. `--preview blocks` forces the fallback.
 
 ## Architecture
 
@@ -197,13 +210,16 @@ Early, but real. Nothing described above is a mock.
   repository's own artwork from `logo.svg` and fails if it drifted.
 - The terminal workspace, with Kitty, Sixel, iTerm2 and half-block previews.
 - A read-only tool registry: `inspect_project`, `list_variants`,
-  `inspect_palette`, `render`.
+  `inspect_palette`, `render` — **as a library API only. It has no transport,
+  so nothing outside this crate can call it yet.** What works today is an
+  agent running `shaipe render` and opening the PNG.
 
 **Not yet**
 
 - Any generation. There is no `shaipe generate`, no provider and no API key,
   and adding one is [explicitly not the plan](docs/adr/004-tools-not-a-model.md).
-- A transport for the tool registry. MCP is the obvious next step.
+- A transport for the tool registry. MCP is the obvious next step. Until then
+  the registry is a library API with no external consumer.
 - Editing from the workspace: the prompt pane displays, the palette pane has no
   colour picker yet.
 - Palette *binding*. The palette is recorded and reported, but the artwork does
@@ -215,6 +231,10 @@ Early, but real. Nothing described above is a mock.
 and every image in `docs/images/` is rendered from it. The artwork itself is
 still a hand-drawn placeholder — regenerating it *through Shaipe* is the point,
 and has not happened yet.
+
+## Plan
+
+[PLAN.md](PLAN.md) tracks what is done and what is not, in one checklist.
 
 ## Contributing
 

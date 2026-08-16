@@ -28,7 +28,10 @@ use std::time::Duration;
 
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
+    MouseEvent, MouseEventKind,
+};
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -38,7 +41,7 @@ use crate::error::{Error, Result};
 use crate::preview::{Backend, Preview};
 use crate::project::Project;
 
-use app::App;
+use app::{App, Focus};
 
 /// How long to wait for a key before redrawing anyway.
 ///
@@ -84,7 +87,16 @@ fn enter() -> Result<Terminal<CrosstermBackend<Stdout>>> {
 
     enable_raw_mode().map_err(io_error)?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, cursor::Hide).map_err(io_error)?;
+    // Mouse capture takes the terminal's own text selection with it. That is
+    // the accepted trade for a clickable interface, and every terminal worth
+    // using offers Shift-drag to select through it anyway.
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        cursor::Hide
+    )
+    .map_err(io_error)?;
     Terminal::new(CrosstermBackend::new(stdout)).map_err(io_error)
 }
 
@@ -93,7 +105,13 @@ fn leave(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
     let io_error = |source| Error::io("the terminal", source);
 
     disable_raw_mode().map_err(io_error)?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, cursor::Show).map_err(io_error)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen,
+        cursor::Show
+    )
+    .map_err(io_error)?;
     terminal.show_cursor().map_err(io_error)
 }
 
@@ -115,12 +133,12 @@ fn event_loop(
         if !event::poll(TICK).map_err(io_error)? {
             continue;
         }
-        if let Event::Key(key) = event::read().map_err(io_error)? {
+        match event::read().map_err(io_error)? {
             // Windows reports press *and* release; acting on both would move
             // every selection two steps at a time.
-            if key.kind == KeyEventKind::Press {
-                handle(app, key.code);
-            }
+            Event::Key(key) if key.kind == KeyEventKind::Press => handle(app, key.code),
+            Event::Mouse(mouse) => handle_mouse(app, mouse),
+            _ => {}
         }
     }
 
@@ -142,13 +160,63 @@ fn handle(app: &mut App, key: KeyCode) {
     }
 }
 
+/// Apply a mouse event.
+///
+/// Separated from the loop for the same reason as [`handle`]: none of this
+/// needs a terminal, and all of it is easy to get subtly wrong.
+fn handle_mouse(app: &mut App, mouse: MouseEvent) {
+    let (column, row) = (mouse.column, mouse.row);
+
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            // The divider is checked first: it sits on the preview pane's left
+            // edge, so a click there would otherwise be swallowed as a click
+            // on the preview.
+            if column == app.column_width || column + 1 == app.column_width {
+                app.begin_resize();
+                return;
+            }
+
+            let Some(focus) = app.pane_at(column, row) else {
+                return;
+            };
+            let repeat = app.register_click(focus, row);
+            app.focus = focus;
+            app.select_at(focus, row);
+
+            if repeat && focus == Focus::Renders {
+                app.export_selected_render();
+            }
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if app.is_resizing() {
+                app.resize_column(column, app.total_width());
+            }
+        }
+        MouseEventKind::Up(MouseButton::Left) => app.end_resize(),
+        // The pane under the pointer scrolls, not the focused one: reaching
+        // for the wheel over a list is an unambiguous statement about which
+        // list is meant.
+        MouseEventKind::ScrollDown => {
+            if let Some(focus) = app.pane_at(column, row) {
+                app.select_next_in(focus);
+            }
+        }
+        MouseEventKind::ScrollUp => {
+            if let Some(focus) = app.pane_at(column, row) {
+                app.select_previous_in(focus);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
     use crate::fixtures;
-    use app::Focus;
 
     fn app() -> App {
         App::new(fixtures::project(), "blocks")
@@ -182,6 +250,185 @@ mod tests {
         assert_eq!(app.selected_variant(), 1);
         handle(&mut app, KeyCode::Up);
         assert_eq!(app.selected_variant(), 0);
+    }
+
+    /// A left-button press at a point.
+    fn click(app: &mut App, column: u16, row: u16) {
+        handle_mouse(
+            app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+            },
+        );
+    }
+
+    /// A wheel event at a point.
+    fn wheel(app: &mut App, kind: MouseEventKind, column: u16, row: u16) {
+        handle_mouse(
+            app,
+            MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+            },
+        );
+    }
+
+    /// Lay the panes out, which is what gives them the areas clicks hit.
+    fn laid_out() -> App {
+        let mut app = app();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        let mut preview = Preview::detect(Backend::Blocks);
+        app.refresh_preview();
+        terminal
+            .draw(|frame| ui::draw(frame, &mut app, &mut preview))
+            .unwrap();
+        app
+    }
+
+    #[test]
+    fn clicking_a_pane_focuses_it() {
+        let mut app = laid_out();
+        app.focus = Focus::Prompt;
+
+        let renders = app.area(Focus::Renders);
+        click(&mut app, renders.x + 2, renders.y + 1);
+        assert_eq!(app.focus, Focus::Renders);
+    }
+
+    #[test]
+    fn clicking_a_row_selects_it() {
+        let mut app = laid_out();
+        let variants = app.area(Focus::Variants);
+
+        // The second row of content: one row of border, then one entry.
+        click(&mut app, variants.x + 2, variants.y + 2);
+        assert_eq!(app.selected_variant(), 1);
+    }
+
+    #[test]
+    fn clicking_a_panes_border_focuses_it_without_moving_the_selection() {
+        let mut app = laid_out();
+        let variants = app.area(Focus::Variants);
+        app.focus = Focus::Variants;
+        app.select_next();
+        let before = app.selected_variant();
+
+        click(&mut app, variants.x + 2, variants.y);
+        assert_eq!(app.focus, Focus::Variants);
+        assert_eq!(app.selected_variant(), before);
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_pane_under_the_pointer_not_the_focused_one() {
+        // Reaching for the wheel over a list is an unambiguous statement about
+        // which list is meant, and it must not require clicking first.
+        let mut app = laid_out();
+        app.focus = Focus::Prompt;
+        let variants = app.area(Focus::Variants);
+
+        wheel(
+            &mut app,
+            MouseEventKind::ScrollDown,
+            variants.x + 2,
+            variants.y + 1,
+        );
+        assert_eq!(app.focus, Focus::Prompt, "scrolling must not steal focus");
+        assert_eq!(app.selection(Focus::Variants), 1);
+
+        wheel(
+            &mut app,
+            MouseEventKind::ScrollUp,
+            variants.x + 2,
+            variants.y + 1,
+        );
+        assert_eq!(app.selection(Focus::Variants), 0);
+    }
+
+    #[test]
+    fn dragging_the_divider_resizes_the_description_column() {
+        let mut app = laid_out();
+        let divider = app.column_width;
+
+        click(&mut app, divider, 5);
+        assert!(app.is_resizing());
+
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Left),
+                column: 50,
+                row: 5,
+                modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(app.column_width, 50);
+
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: 50,
+                row: 5,
+                modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+            },
+        );
+        assert!(!app.is_resizing());
+    }
+
+    #[test]
+    fn the_column_cannot_be_dragged_narrow_enough_to_hide_either_side() {
+        let mut app = laid_out();
+        let width = app.total_width();
+
+        app.resize_column(0, width);
+        assert!(app.column_width >= app::MIN_COLUMN);
+
+        app.resize_column(width, width);
+        assert!(width - app.column_width >= app::MIN_PREVIEW);
+    }
+
+    #[test]
+    fn two_clicks_in_the_same_place_are_a_double_click_and_two_elsewhere_are_not() {
+        let mut app = laid_out();
+
+        assert!(
+            !app.register_click(Focus::Renders, 4),
+            "the first click is never a repeat"
+        );
+        assert!(app.register_click(Focus::Renders, 4), "the second is");
+        // Cleared afterwards, so a triple-click is one double-click and then a
+        // fresh gesture, rather than firing the action twice.
+        assert!(
+            !app.register_click(Focus::Renders, 4),
+            "the third starts again"
+        );
+        assert!(
+            !app.register_click(Focus::Renders, 9),
+            "a different row is a new click, however fast"
+        );
+    }
+
+    #[test]
+    fn double_clicking_a_render_specification_writes_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(directory.path()).unwrap();
+
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.focus = Focus::Renders;
+        app.export_selected_render();
+        let notice = app.notice.clone().unwrap_or_default();
+
+        std::env::set_current_dir(previous).unwrap();
+
+        assert!(notice.contains("favicon-32.png"), "{notice}");
+        assert!(directory.path().join("dist/favicon-32.png").is_file());
     }
 
     #[test]
