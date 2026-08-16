@@ -12,8 +12,15 @@
 #![warn(missing_docs)]
 
 pub mod error;
+pub mod project;
+pub mod render;
+
+#[cfg(test)]
+pub(crate) mod fixtures;
 
 pub use error::{Error, Result};
+pub use project::Project;
+pub use render::{RenderedAsset, Renderer, render};
 
 /// Run the thing.
 ///

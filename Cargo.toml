@@ -54,12 +54,42 @@ miette = { version = "7", features = ["fancy"] }
 
 # CLI
 clap = { version = "4", features = ["derive", "env", "wrap_help"] }
-console = "0.16"
-demand = "2"
 
-# Configuration & serialisation
+# Serialisation. Only `inspect --format json` and the tool registry use it:
+# the project format itself is XML, because the project format is an SVG.
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+
+# Rendering. `usvg` parses and resolves, `resvg` rasterises onto a `tiny-skia`
+# pixmap. `resvg` re-exports both, but they are named here anyway: the renderer
+# uses their types directly and a re-export is not a version contract.
+resvg = "0.48.1"
+usvg = "0.48.1"
+tiny-skia = "0.12.0"
+# Named directly only so `Error::Encode` can carry `png::EncodingError` as a
+# real `#[source]`. It arrives through `tiny-skia` regardless; keep the version
+# in step with whatever `tiny-skia` resolves, or the type stops matching.
+png = "0.18.1"
+
+# The metadata layer. `usvg` discards `<metadata>` and every foreign namespace
+# while resolving, so Shaipe metadata cannot be read through it and needs its
+# own pass over the same bytes. Reading only: metadata is written back by
+# splicing over the element's byte range, which `roxmltree` reports, so the
+# artwork around it survives untouched and no XML writer is needed.
+roxmltree = "0.21.1"
+
+# TUI. The terminal preview backends are hand-written in `src/preview/` rather
+# than delegated to `ratatui-image`: that crate hard-depends on `icy_sixel` ->
+# `quantette`, which requires rustc 1.90 and would have dragged the MSRV up by
+# two releases to supply a Sixel encoder Shaipe does not use. See ADR 002.
+ratatui = "0.30.2"
+
+# The Kitty graphics protocol transmits its PNG payload base64-encoded.
+base64 = "0.23.1"
+
+# Warnings the user should see but that must not fail a render — an unresolved
+# font family falling back to a system font, most of all.
+log = "0.4.33"
 
 [dev-dependencies]
 assert_cmd = "2"
