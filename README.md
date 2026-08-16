@@ -155,11 +155,12 @@ shaipe tui logo.svg
 └───────────────────────┴───────────────────────────┘
 ```
 
-The preview goes through the Kitty graphics protocol where the terminal
-supports it, and Unicode half-blocks everywhere else — and it is produced by
-the same renderer `shaipe render` uses, so it is the asset rather than an
-impression of it. `tab` moves between panes, `↑↓` selects, `r` re-renders, `q`
-quits.
+The preview uses whichever graphics protocol the terminal actually reports —
+Kitty, Sixel or iTerm2 — and falls back to Unicode half-blocks everywhere else.
+It is produced by the same renderer `shaipe render` uses, so it is the asset
+rather than an impression of it. `tab` moves between panes, `↑↓` selects, `r`
+re-renders, `q` quits; `--preview blocks` forces the fallback when detection
+gets it wrong.
 
 ## Architecture
 
@@ -174,7 +175,7 @@ cli ──> tui ──> preview ──┐
   knows nothing else.
 - **`render`** — project + specification → bytes. Headless and deterministic;
   contains no reference to a terminal or a model.
-- **`preview`** — pixels → terminal, behind a trait. Knows nothing about SVG.
+- **`preview`** — pixels → terminal. Knows nothing about SVG.
 - **`tui`** — the workspace.
 - **`tools`** — the operations an agent can perform, with no transport.
 
@@ -194,7 +195,7 @@ Early, but real. Nothing described above is a mock.
 - Deterministic rendering to PNG and SVG, at any size, with backgrounds.
 - `shaipe render`, `shaipe inspect`, and a CI workflow that regenerates this
   repository's own artwork from `logo.svg` and fails if it drifted.
-- The terminal workspace, with Kitty and half-block previews.
+- The terminal workspace, with Kitty, Sixel, iTerm2 and half-block previews.
 - A read-only tool registry: `inspect_project`, `list_variants`,
   `inspect_palette`, `render`.
 

@@ -90,9 +90,10 @@ shaipe            # opens ./logo.svg
 ```
 
 A four-pane description of the project on the left, a live preview on the
-right, drawn with the Kitty graphics protocol where the terminal supports it
-and Unicode half-blocks everywhere else. `--preview blocks` forces the
-fallback, which is occasionally necessary under `tmux`.
+right, drawn with whichever graphics protocol the terminal reports — Kitty,
+Sixel or iTerm2 — and Unicode half-blocks everywhere else. `--preview` forces a
+specific one: `auto`, `kitty`, `sixel`, `iterm2` or `blocks`. The fallback is
+occasionally necessary under `tmux`, where graphics need `allow-passthrough`.
 
 ## Design
 

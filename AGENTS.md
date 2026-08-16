@@ -56,7 +56,7 @@ src/
 ├── cli/          argument types and one module per command
 ├── project/      the format: document, metadata, palette, variants, specs
 ├── render/       project + spec -> bytes. Headless, deterministic
-├── preview/      pixels -> terminal. Kitty and half-blocks
+├── preview/      pixels -> terminal, via ratatui-image. See ADR 006
 ├── tui/          the interactive workspace
 └── tools/        the operations an agent can perform
 ```

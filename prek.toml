@@ -107,6 +107,17 @@ entry = "bash -c '! grep -rnE \"^ *use crate::(project|render)\" src/preview/'"
 files = "\\.rs$"
 pass_filenames = false
 
+# ADR 006 depends on `ratatui-image` being swappable, which is only true while
+# it is named in one module. `image` goes with it: the only reason that crate
+# is here at all is the `DynamicImage` `ratatui-image` speaks.
+[[repos.hooks]]
+id = "preview-backend-isolation"
+name = "the terminal graphics crate is confined to the preview layer"
+language = "system"
+entry = "bash -c '! grep -rnE \"^ *use (ratatui_image|::?image)\" src --include=*.rs | grep -v \"^src/preview/\"'"
+files = "\\.rs$"
+pass_filenames = false
+
 # `src/cli/` and `src/main.rs` are the binary. Everything else is the library,
 # and the library has to be usable without the CLI.
 [[repos.hooks]]

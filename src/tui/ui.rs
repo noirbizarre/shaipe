@@ -1,24 +1,21 @@
 //! Where the panes go.
 //!
-//! [`draw`] returns the area the preview occupies, because a backend that
-//! writes escape sequences straight to the terminal needs to know where to put
-//! them and cannot find out from inside ratatui's buffer.
+//! The preview draws through [`crate::preview::Preview`], which is a widget
+//! like everything else here, so this module never touches an escape
+//! sequence and never needs to know which protocol is in use.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Paragraph, Wrap};
 
-use crate::preview::blocks::HalfBlocks;
+use crate::preview::Preview as Backend;
 
 use super::app::{App, Focus, Preview};
 use super::panes;
 
-/// Draw a frame, returning the area a graphics backend should draw into.
-///
-/// `None` when there is nothing to draw there, so a backend is never asked to
-/// place an image over an error message.
-pub fn draw(frame: &mut Frame<'_>, app: &App) -> Option<Rect> {
+/// Draw a frame.
+pub fn draw(frame: &mut Frame<'_>, app: &App, backend: &mut Backend) {
     let [body, status] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(1)])
@@ -33,10 +30,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) -> Option<Rect> {
         .areas(body);
 
     draw_left(frame, app, left);
-    let preview = draw_preview(frame, app, right);
+    draw_preview(frame, app, backend, right);
 
     frame.render_widget(panes::status(app), status);
-    preview
 }
 
 /// Draw the description column.
@@ -89,8 +85,8 @@ fn draw_left(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
-/// Draw the preview column, returning the area inside its border.
-fn draw_preview(frame: &mut Frame<'_>, app: &App, area: Rect) -> Option<Rect> {
+/// Draw the preview column.
+fn draw_preview(frame: &mut Frame<'_>, app: &App, backend: &mut Backend, area: Rect) {
     let caption = match app.preview() {
         Preview::Ready { caption, .. } => format!(" preview — {caption} "),
         _ => " preview ".to_owned(),
@@ -110,26 +106,15 @@ fn draw_preview(frame: &mut Frame<'_>, app: &App, area: Rect) -> Option<Rect> {
     frame.render_widget(block, area);
 
     match app.preview() {
-        Preview::Pending => {
-            frame.render_widget(Paragraph::new("rendering…"), inner);
-            None
-        }
-        Preview::Failed(reason) => {
-            frame.render_widget(
-                Paragraph::new(reason.clone())
-                    .wrap(Wrap { trim: false })
-                    .style(Style::default().fg(Color::LightRed)),
-                inner,
-            );
-            None
-        }
+        Preview::Pending => frame.render_widget(Paragraph::new("rendering…"), inner),
+        Preview::Failed(reason) => frame.render_widget(
+            Paragraph::new(reason.clone())
+                .wrap(Wrap { trim: false })
+                .style(Style::default().fg(Color::LightRed)),
+            inner,
+        ),
         Preview::Ready { image, .. } => {
-            // Always drawn with half-blocks, even when a graphics backend is
-            // about to draw over the top. A terminal that ignores the escape
-            // sequence then shows a coarse preview rather than an empty box,
-            // which is the better failure.
-            frame.render_widget(HalfBlocks::new(image), inner);
-            Some(inner)
+            backend.draw(image, app.preview_generation(), inner, frame);
         }
     }
 }
@@ -141,30 +126,54 @@ mod tests {
 
     use super::*;
     use crate::fixtures;
+    use crate::preview::Backend as PreviewBackend;
 
     /// Draw one frame into an in-memory terminal.
-    fn render(app: &App, width: u16, height: u16) -> (String, Option<Rect>) {
+    ///
+    /// Half-blocks are forced: the other protocols emit escape sequences that
+    /// a `TestBackend` records as opaque cell contents, which would make these
+    /// assertions depend on whichever terminal happened to run the tests.
+    fn frame(app: &App, width: u16, height: u16) -> ratatui::buffer::Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        let mut area = None;
-        terminal.draw(|frame| area = draw(frame, app)).unwrap();
+        let mut backend = Backend::detect(PreviewBackend::Blocks);
+        terminal
+            .draw(|frame| draw(frame, app, &mut backend))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
 
-        let buffer = terminal.backend().buffer();
-        let text = (0..height)
+    /// The text of a frame.
+    fn render(app: &App, width: u16, height: u16) -> String {
+        let buffer = frame(app, width, height);
+        (0..height)
             .map(|y| {
                 (0..width)
                     .map(|x| buffer[(x, y)].symbol())
                     .collect::<String>()
             })
             .collect::<Vec<_>>()
-            .join("\n");
-        (text, area)
+            .join("\n")
+    }
+
+    /// How many cells in `area` have been given a background colour.
+    ///
+    /// The evidence that an image was drawn, for two reasons. Not the `▀`
+    /// character, because a region of uniform colour collapses to a coloured
+    /// space — which is exactly what flat artwork produces. And not the
+    /// foreground either, because styled *text* sets that, so counting it
+    /// would make an error message look like a picture.
+    fn painted(buffer: &ratatui::buffer::Buffer, area: Rect) -> usize {
+        (area.y..area.y + area.height)
+            .flat_map(|y| (area.x..area.x + area.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| buffer[(x, y)].bg != Color::Reset)
+            .count()
     }
 
     #[test]
     fn a_frame_shows_every_pane_and_the_key_hints() {
         let mut app = App::new(fixtures::project(), "blocks");
         app.refresh_preview();
-        let (text, _) = render(&app, 100, 30);
+        let text = render(&app, 100, 30);
 
         for expected in [
             "prompt", "palette", "variants", "renders", "preview", "quit",
@@ -173,29 +182,46 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_ready_preview_reports_the_area_a_graphics_backend_should_draw_into() {
-        let mut app = App::new(fixtures::project(), "kitty");
-        app.refresh_preview();
-        let (_, area) = render(&app, 100, 30);
+    /// The preview pane's interior, for a 100x30 frame.
+    const PREVIEW: Rect = Rect {
+        x: 40,
+        y: 1,
+        width: 58,
+        height: 27,
+    };
 
-        let area = area.expect("a ready preview has an area");
-        assert!(area.width > 0 && area.height > 0);
-        // Inside the border, never over it.
-        assert!(area.x > 38, "preview must sit in the right-hand column");
+    #[test]
+    fn a_ready_preview_draws_pixels_in_the_right_hand_column() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.refresh_preview();
+
+        let drawn = painted(&frame(&app, 100, 30), PREVIEW);
+        assert!(drawn > 100, "only {drawn} cells were painted");
     }
 
     #[test]
-    fn a_failed_preview_reports_no_area_and_shows_the_reason() {
-        // A backend must not place an image on top of an error message.
-        let mut app = App::new(fixtures::project(), "kitty");
+    fn a_failed_preview_shows_the_reason_instead_of_an_image() {
+        let mut app = App::new(fixtures::project(), "blocks");
         app.project.metadata_mut().variants.clear();
         app.invalidate_preview();
         app.refresh_preview();
 
-        let (text, area) = render(&app, 100, 30);
-        assert!(area.is_none());
+        let rendered = frame(&app, 100, 30);
+        let text = (0..30)
+            .map(|y| {
+                (0..100)
+                    .map(|x| rendered[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
         assert!(text.contains("no variants"), "{text}");
+        assert_eq!(
+            painted(&rendered, PREVIEW),
+            0,
+            "an error message must not have an image drawn over it"
+        );
     }
 
     #[test]

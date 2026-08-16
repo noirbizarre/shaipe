@@ -104,6 +104,17 @@ impl Image {
         ]
     }
 
+    /// Convert to the image type `ratatui-image` speaks.
+    ///
+    /// Confined to this module on purpose: it is the single point at which
+    /// the preview backend's vocabulary enters, and keeping it here is what
+    /// lets everything else in the crate deal only in [`Image`].
+    pub(crate) fn to_dynamic(&self) -> ::image::DynamicImage {
+        let buffer = ::image::RgbaImage::from_raw(self.width, self.height, self.pixels.clone())
+            .expect("an `Image` always carries exactly four bytes per pixel");
+        ::image::DynamicImage::ImageRgba8(buffer)
+    }
+
     /// Encode as a PNG.
     ///
     /// # Errors
@@ -168,6 +179,17 @@ mod tests {
     fn sampling_outside_an_image_is_transparent_rather_than_a_panic() {
         let image = Image::from_rgba(1, 1, vec![0xff, 0xff, 0xff, 0xff]);
         assert_eq!(image.pixel(9, 9), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn converting_for_the_preview_backend_preserves_size_and_colour() {
+        let image = Image::from_rgba(2, 1, vec![0xf0, 0x50, 0x32, 0xff, 0, 0, 0, 0]);
+        let dynamic = image.to_dynamic();
+
+        assert_eq!((::image::GenericImageView::dimensions(&dynamic)), (2, 1));
+        let rgba = dynamic.to_rgba8();
+        assert_eq!(rgba.get_pixel(0, 0).0, [0xf0, 0x50, 0x32, 0xff]);
+        assert_eq!(rgba.get_pixel(1, 0).0, [0, 0, 0, 0]);
     }
 
     #[test]

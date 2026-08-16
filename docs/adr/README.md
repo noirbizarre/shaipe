@@ -22,7 +22,8 @@ by editing the old one. The history is the value.
 ## Index
 
 - [ADR-001](001-svg-as-source-of-truth.md) — The project SVG is the source of truth
-- [ADR-002](002-preview-backends.md) — The terminal preview is hand-written, behind a trait
+- [ADR-002](002-preview-backends.md) — The terminal preview is hand-written, behind a trait *(superseded by ADR-006)*
 - [ADR-003](003-variant-isolation.md) — A variant is rendered by isolating it, not by rendering a node
 - [ADR-004](004-tools-not-a-model.md) — Shaipe provides tools; it does not provide a model
 - [ADR-005](005-declared-fonts.md) — Fonts are declared by the project, not resolved from the system
+- [ADR-006](006-ratatui-image.md) — Use `ratatui-image` for terminal previews

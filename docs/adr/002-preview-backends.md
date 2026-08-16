@@ -2,7 +2,12 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-006](006-ratatui-image.md).
+
+The decision below rested entirely on `ratatui-image` requiring rustc 1.90.
+That MSRV is now accepted, and with the premise gone the conclusion does not
+stand. Kept as written, because the reasoning is still the right shape — it was
+the input that changed, not the argument.
 
 ## Context
 

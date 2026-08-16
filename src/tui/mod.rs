@@ -11,9 +11,9 @@
 //!
 //! The left column describes the project, the right shows what the selection
 //! renders to. The preview goes through [`crate::preview`], so the TUI knows
-//! nothing about escape sequences, and it renders through
-//! [`crate::render`], so it shows exactly what `shaipe render` would write —
-//! not an approximation of it.
+//! nothing about escape sequences or which graphics protocol is in use, and
+//! it renders through [`crate::render`], so it shows exactly what
+//! `shaipe render` would write — not an approximation of it.
 //!
 //! There is no editor here yet. The prompt pane displays and scrolls; editing
 //! text, picking colours and driving an agent are all later work, and the
@@ -35,7 +35,7 @@ use ratatui::crossterm::terminal::{
 use ratatui::crossterm::{cursor, execute};
 
 use crate::error::{Error, Result};
-use crate::preview::{self, Backend};
+use crate::preview::{Backend, Preview};
 use crate::project::Project;
 
 use app::App;
@@ -63,10 +63,14 @@ pub fn run(project: Project, backend: Backend) -> Result<()> {
     let _quiet = crate::logging::suppress();
 
     let mut terminal = enter()?;
-    let mut preview = preview::detect(backend);
+
+    // After the alternate screen is up and before any event is read: the
+    // capability query writes to stdout and reads the reply from stdin, and
+    // anything else touching either would eat it.
+    let mut preview = Preview::detect(backend);
     let mut app = App::new(project, preview.name());
 
-    let outcome = event_loop(&mut terminal, &mut app, preview.as_mut());
+    let outcome = event_loop(&mut terminal, &mut app, &mut preview);
 
     // Restored first, and its own failure reported only if nothing worse
     // happened, so the original error is never masked by the cleanup.
@@ -97,27 +101,16 @@ fn leave(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
-    preview: &mut dyn preview::Preview,
+    preview: &mut Preview,
 ) -> Result<()> {
     let io_error = |source| Error::io("the terminal", source);
 
     while !app.should_quit {
         app.refresh_preview();
 
-        // Anything the previous frame placed out of band has to go before the
-        // new frame is drawn, or images pile up on top of each other.
-        preview.clear().map_err(io_error)?;
-
-        let mut preview_area = None;
         terminal
-            .draw(|frame| preview_area = ui::draw(frame, app))
+            .draw(|frame| ui::draw(frame, app, preview))
             .map_err(io_error)?;
-
-        // After `draw`, so the backend writes over a frame that has already
-        // reached the terminal rather than one about to be overwritten.
-        if let (Some(area), Some(image)) = (preview_area, app.preview_image()) {
-            preview.draw(image, area).map_err(io_error)?;
-        }
 
         if !event::poll(TICK).map_err(io_error)? {
             continue;

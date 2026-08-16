@@ -78,6 +78,12 @@ pub struct App {
     preview: Preview,
     /// What the cached preview was rendered from. `None` forces a re-render.
     rendered_from: Option<RenderSpec>,
+    /// Bumped whenever the preview image is replaced.
+    ///
+    /// The preview backend keeps the image in encoded form and must not be
+    /// asked to compare pixels to notice a change; a counter is both cheaper
+    /// and impossible to get subtly wrong.
+    generation: u64,
 }
 
 impl App {
@@ -92,6 +98,7 @@ impl App {
             selected: [0; Focus::COUNT],
             preview: Preview::Pending,
             rendered_from: None,
+            generation: 0,
         }
     }
 
@@ -227,7 +234,16 @@ impl App {
             Err(error) => Preview::Failed(error.to_string()),
         };
 
+        self.generation = self.generation.wrapping_add(1);
         self.rendered_from = Some(spec);
+    }
+
+    /// Which image the preview currently holds.
+    ///
+    /// Changes whenever the pixels do, and never otherwise.
+    #[must_use]
+    pub const fn preview_generation(&self) -> u64 {
+        self.generation
     }
 
     /// The current preview.

@@ -7,10 +7,11 @@
 name = "shaipe"
 version = "0.1.0"
 edition = "2024"
-# The MSRV. Checked by a dedicated CI job, which greps this very line — keep it
-# a plain literal. `rust-toolchain.toml` separately pins the channel to develop
+# The MSRV. Set by `ratatui-image` -> `icy_sixel` -> `quantette`; nothing else
+# in the tree needs anything this recent. Checked by a dedicated CI job, which
+# greps this very line — keep it a plain literal. `rust-toolchain.toml` separately pins the channel to develop
 # against; the two answer different questions.
-rust-version = "1.88"
+rust-version = "1.90"
 license = "MIT"
 authors = ["Axel H. <noirbizarre@gmail.com>"]
 description = "An LLM-native SVG asset workspace"
@@ -78,13 +79,22 @@ png = "0.18.1"
 # artwork around it survives untouched and no XML writer is needed.
 roxmltree = "0.21.1"
 
-# TUI. The terminal preview backends are hand-written in `src/preview/` rather
-# than delegated to `ratatui-image`: that crate hard-depends on `icy_sixel` ->
-# `quantette`, which requires rustc 1.90 and would have dragged the MSRV up by
-# two releases to supply a Sixel encoder Shaipe does not use. See ADR 002.
+# TUI. `ratatui-image` carries the four terminal graphics protocols and the
+# capability query; it is confined to `src/preview/` and named nowhere else.
+# See ADR 006 — and note that it is what sets this crate's MSRV, through
+# `icy_sixel` -> `quantette`.
+#
+# Default features are off deliberately: they include `chafa-dyn`, which links
+# a system library through `pkg-config` that no CI runner is guaranteed to
+# have. Only `crossterm` is needed, matching the backend the TUI drives.
 ratatui = "0.30.2"
+ratatui-image = { version = "11.0.6", default-features = false, features = ["crossterm"] }
 
-# The Kitty graphics protocol transmits its PNG payload base64-encoded.
+# `ratatui-image` speaks `DynamicImage`, so `preview::Image` needs the type to
+# hand it one. No codec is enabled: pixels come from `tiny-skia`, never a file.
+image = { version = "0.25.10", default-features = false }
+
+# The `render` tool returns its PNG to an agent base64-encoded.
 base64 = "0.23.1"
 
 # Warnings the user should see but that must not fail a render — an unresolved
