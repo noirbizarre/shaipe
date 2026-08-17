@@ -18,6 +18,7 @@ fn main() -> ExitCode {
     // Global, so every path reads the same flag.
     let preview = args.preview.unwrap_or_default();
     let args_verbose = args.verbose;
+    let scale = args.preview_scale;
 
     let result = match &args.command {
         Some(Command::Render(args)) => write_lines(|out| cli::render::run(args, out)),
@@ -25,13 +26,13 @@ fn main() -> ExitCode {
         // The report is built *before* the lock is taken: producing it queries
         // the terminal from another thread, which the lock would block.
         Some(Command::Doctor(args)) => {
-            let report = cli::doctor::report(args, preview);
+            let report = cli::doctor::report(args, preview, scale);
             write_lines(|out| {
                 out.write_all(report.as_bytes())
                     .map_err(|source| shaipe::Error::io("stdout", source))
             })
         }
-        Some(Command::Tui(args)) => cli::tui::run(args, preview, args_verbose),
+        Some(Command::Tui(args)) => cli::tui::run(args, preview, scale, args_verbose),
         // Bare `shaipe` opens the workspace on the conventional project, which
         // is the thing a person in a project directory almost always wants.
         None => cli::tui::run(
@@ -39,6 +40,7 @@ fn main() -> ExitCode {
                 input: cli::DEFAULT_PROJECT.into(),
             },
             preview,
+            scale,
             args_verbose,
         ),
     };

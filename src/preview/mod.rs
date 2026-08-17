@@ -98,6 +98,67 @@ pub fn in_tmux() -> bool {
         || std::env::var("TERM_PROGRAM").is_ok_and(|program| program == "tmux")
 }
 
+/// How much smaller than the pane an image is transmitted.
+///
+/// Kitty transmits raw RGBA — a pane-sized preview is over a megabyte — and
+/// under tmux every 4 KiB chunk is wrapped in its own passthrough sequence.
+/// That is slow enough to be the difference between a workspace that feels
+/// instant and one that appears to hang, and it is slow *only* under tmux:
+/// the same image over a direct connection is imperceptible.
+///
+/// So the image is transmitted at a fraction of the pane's resolution and the
+/// terminal scales it back up. A preview is for judging shape and colour, and
+/// halving costs four times less traffic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scale(u32);
+
+impl Scale {
+    /// Full resolution.
+    pub const FULL: Self = Self(1);
+
+    /// What to use when nothing says otherwise.
+    ///
+    /// Halved under tmux, full otherwise. Detected rather than configured,
+    /// because the person who needs it least is the one who would have to know
+    /// to set it.
+    #[must_use]
+    pub fn detect() -> Self {
+        if in_tmux() { Self(2) } else { Self::FULL }
+    }
+
+    /// The divisor.
+    #[must_use]
+    pub const fn factor(self) -> u32 {
+        self.0
+    }
+
+    /// Shrink a pixel size by this scale, never below one pixel.
+    #[must_use]
+    pub const fn apply(self, size: u32) -> u32 {
+        let scaled = size / self.0;
+        if scaled == 0 { 1 } else { scaled }
+    }
+}
+
+impl FromStr for Scale {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.parse::<u32>() {
+            Ok(factor @ 1..=8) => Ok(Self(factor)),
+            _ => Err(format!(
+                "preview scale must be a whole number from 1 to 8, not `{s}`"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for Scale {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// What transparency is flattened against in the half-block fallback.
 ///
 /// Mid grey, so that neither near-black nor near-white artwork disappears
@@ -143,6 +204,7 @@ const fn name_of(protocol: ProtocolType) -> &'static str {
 /// image or the area it is drawn in changes — which `ratatui-image` detects
 /// for itself, given the same state back each frame.
 pub struct Preview {
+    scale: Scale,
     picker: Picker,
     protocol: Option<StatefulProtocol>,
     /// Which image the protocol holds. `None` means nothing is prepared yet.
@@ -203,6 +265,7 @@ impl Preview {
 
         let font_size = picker.font_size();
         Self {
+            scale: Scale::detect(),
             detection: Detection {
                 backend: match picker.protocol_type() {
                     ProtocolType::Halfblocks => Backend::Blocks,
@@ -234,6 +297,17 @@ impl Preview {
     #[must_use]
     pub const fn cell_size(&self) -> (u16, u16) {
         self.detection.font_size
+    }
+
+    /// How much smaller than the pane images are transmitted.
+    #[must_use]
+    pub const fn scale(&self) -> Scale {
+        self.scale
+    }
+
+    /// Transmit at a fixed scale instead of the detected one.
+    pub const fn set_scale(&mut self, scale: Scale) {
+        self.scale = scale;
     }
 
     /// The name of the protocol in use.
@@ -331,6 +405,31 @@ mod tests {
         // `--preview blocks` has to work on a Kitty terminal, or it is useless
         // as an escape hatch when detection gets it right but rendering wrong.
         assert_eq!(Preview::detect(Backend::Blocks).name(), "blocks");
+    }
+
+    #[test]
+    fn the_transmit_scale_halves_under_tmux_and_not_otherwise() {
+        // The whole point of the scale: it is slow *only* through tmux
+        // passthrough, so a direct connection should not pay for it.
+        assert_eq!(Scale::FULL.factor(), 1);
+        assert_eq!(Scale::detect().factor(), if in_tmux() { 2 } else { 1 });
+    }
+
+    #[test]
+    fn a_scale_shrinks_a_size_but_never_to_nothing() {
+        assert_eq!(Scale::FULL.apply(640), 640);
+        assert_eq!("2".parse::<Scale>().unwrap().apply(640), 320);
+        assert_eq!("4".parse::<Scale>().unwrap().apply(640), 160);
+        // A pane one pixel wide must still render something.
+        assert_eq!("4".parse::<Scale>().unwrap().apply(1), 1);
+    }
+
+    #[test]
+    fn an_unusable_scale_is_refused_with_the_range() {
+        for bad in ["0", "9", "-1", "half", ""] {
+            let error = bad.parse::<Scale>().unwrap_err();
+            assert!(error.contains("1 to 8"), "{bad}: {error}");
+        }
     }
 
     #[test]

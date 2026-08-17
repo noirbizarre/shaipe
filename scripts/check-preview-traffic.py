@@ -44,13 +44,23 @@ ONE_IMAGE = 1_500_000
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def run(binary: str, keys: bytes = b"", settle: float = 6.0, at: float = 4.0) -> int:
+def run(
+    binary: str,
+    keys: bytes = b"",
+    settle: float = 6.0,
+    at: float = 4.0,
+    tmux: bool = False,
+) -> int:
     """Run the workspace under a pty and return the bytes it wrote."""
     pid, fd = pty.fork()
     if pid == 0:
         for name in ("TMUX", "TERM_PROGRAM", "KITTY_WINDOW_ID"):
             os.environ.pop(name, None)
         os.environ["TERM"] = "xterm-kitty"
+        if tmux:
+            # Enough for the tmux detection every layer uses.
+            os.environ["TMUX"] = "/tmp/fake,1,0"
+            os.environ["TERM"] = "tmux-256color"
         os.chdir(ROOT)
         # Kitty is forced rather than detected: this measures the expensive
         # path, and the pty will not answer a capability query.
@@ -98,7 +108,22 @@ def main() -> int:
             f"the first frame has established the preview pane's size."
         )
 
-    print(f"preview traffic: ok (opening transmits {opening / 1e6:.2f} MB, one image)")
+    # Under tmux every 4 KiB chunk is wrapped in its own passthrough sequence,
+    # which is slow enough to be the whole problem — and only there. So the
+    # image is transmitted at half resolution when tmux is detected, and the
+    # terminal scales it back up.
+    through_tmux = run(binary, tmux=True)
+    if through_tmux > opening / 2:
+        raise AssertionError(
+            f"under tmux the workspace transmitted {through_tmux / 1e6:.2f} MB "
+            f"against {opening / 1e6:.2f} MB without it. The transmit scale is "
+            f"not being applied; see `Scale::detect` in src/preview/mod.rs."
+        )
+
+    print(
+        f"preview traffic: ok (direct {opening / 1e6:.2f} MB, "
+        f"tmux {through_tmux / 1e6:.2f} MB)"
+    )
     return 0
 
 

@@ -13,7 +13,7 @@ pub mod tui;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use shaipe::preview::Backend;
+use shaipe::preview::{Backend, Scale};
 use shaipe::project::Format;
 
 /// Where a project is looked for when the command line does not say.
@@ -39,6 +39,14 @@ pub struct Cli {
     /// obvious way to reach for it — was a parse error until it was.
     #[arg(long, global = true)]
     pub preview: Option<Backend>,
+
+    /// Transmit previews at 1/N of the pane's resolution.
+    ///
+    /// Defaults to 2 under tmux and 1 otherwise. Kitty transmits raw pixels,
+    /// and tmux passthrough is slow enough that a full-resolution preview
+    /// takes seconds; the terminal scales the smaller image back up.
+    #[arg(long, global = true, value_name = "N")]
+    pub preview_scale: Option<Scale>,
 
     /// The subcommand to run. Defaults to opening the workspace.
     #[command(subcommand)]

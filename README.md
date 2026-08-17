@@ -172,8 +172,14 @@ shaipe doctor
 ```
 
 It reports the terminal, the tmux passthrough setting, the protocol that was
-detected and the cell size, so a preview problem is diagnosable instead of
-mysterious. `--preview blocks` forces the fallback.
+detected, the cell size and the transmit scale, so a preview problem is
+diagnosable instead of mysterious. `--preview blocks` forces the fallback.
+
+Under `tmux`, Kitty images go through a passthrough sequence per 4 KiB chunk,
+which is slow enough to be noticeable — and slow *only* there. So previews are
+transmitted at half resolution when tmux is detected and the terminal scales
+them back up. `--preview-scale N` overrides it: `1` for full sharpness, `4` for
+speed.
 
 ## Architecture
 

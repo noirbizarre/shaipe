@@ -101,10 +101,15 @@ the divider to resize, double-click a render specification to export it.
 shaipe doctor
 ```
 
-reports the terminal, the tmux passthrough setting, the detected protocol and
-the cell size — ask it first when a preview looks wrong. `--preview` forces a
-specific backend: `auto`, `kitty`, `sixel`, `iterm2` or `blocks`. Under `tmux`,
-graphics also need `allow-passthrough`.
+reports the terminal, the tmux passthrough setting, the detected protocol, the
+cell size and the transmit scale — ask it first when a preview looks wrong.
+`--preview` forces a specific backend: `auto`, `kitty`, `sixel`, `iterm2` or
+`blocks`. Under `tmux`, graphics also need `allow-passthrough`.
+
+Kitty transmits raw pixels, and under tmux each 4 KiB chunk needs its own
+passthrough sequence — enough to make a full-resolution preview take seconds.
+Previews are therefore transmitted at half resolution when tmux is detected,
+and the terminal scales them back up. `--preview-scale N` overrides that.
 
 ## Design
 

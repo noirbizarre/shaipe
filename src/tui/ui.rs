@@ -34,7 +34,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend) {
         .areas(body);
 
     draw_left(frame, app, left);
-    app.set_preview_area(right, backend.cell_size());
+    app.set_preview_area(right, backend.cell_size(), backend.scale());
     draw_preview(frame, app, backend, right);
 
     frame.render_widget(panes::status(app), status);
@@ -157,7 +157,17 @@ fn draw_preview(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend, are
             inner,
         ),
         Preview::Ready { image, .. } => {
-            backend.draw(image, app.preview_generation(), inner, frame);
+            // Withheld for exactly one frame after a new image arrives, so the
+            // spinner reaches the screen before the write that blocks on it.
+            if app.is_holding_image() {
+                frame.render_widget(
+                    Paragraph::new("sending to the terminal…")
+                        .style(Style::default().fg(Color::DarkGray)),
+                    inner,
+                );
+            } else {
+                backend.draw(image, app.preview_generation(), inner, frame);
+            }
         }
     }
 }
@@ -330,6 +340,47 @@ mod tests {
             text.contains("spec-9"),
             "the selected entry should have scrolled into view:\n{text}"
         );
+    }
+
+    #[test]
+    fn a_running_render_puts_a_spinner_on_the_screen() {
+        // The reported symptom was an empty preview box with no sign that
+        // anything was happening. `App::spinner` being `Some` is not enough —
+        // it has to reach the frame.
+        let mut app = App::new(fixtures::project(), "blocks");
+        assert!(app.begin_render(), "a render should have started");
+        assert!(app.is_rendering());
+
+        let text = render(&mut app, 100, 30);
+        assert!(
+            text.contains("rendering"),
+            "no spinner reached the screen:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_frame_before_a_new_image_says_so_instead_of_drawing_it() {
+        // Writing an image is what blocks, and it happens inside the draw
+        // call, so nothing can animate during it. One cheap frame goes out
+        // first to say the workspace is busy rather than wedged.
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.refresh_preview();
+
+        app.hold_image();
+        let held = frame(&mut app, 100, 30);
+        let text: String = (0..30)
+            .map(|y| (0..100).map(|x| held[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("sending to the terminal"), "{text}");
+        assert_eq!(
+            painted(&held, PREVIEW),
+            0,
+            "the image must not be drawn on the frame that announces it"
+        );
+
+        app.release_image();
+        assert!(painted(&frame(&mut app, 100, 30), PREVIEW) > 100);
     }
 
     #[test]

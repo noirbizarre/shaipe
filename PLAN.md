@@ -101,6 +101,8 @@ The interactive TUI.
 - [x] Input is drained before drawing, so a burst of keys is one state change
 - [x] The workspace renders once at startup, not twice
 - [x] `--preview` works without naming a subcommand
+- [x] A frame announcing the image is drawn before the write that blocks on it,
+      so the workspace looks busy rather than wedged
 - [ ] Edit the prompt in place — needs a text widget; `tui-textarea` is ruled
       out (pins ratatui 0.29), `edtui` fits but is Vim-modal, so confirm first
 - [ ] `E` suspends the workspace and opens `$EDITOR` on the prompt
@@ -146,9 +148,9 @@ Measured, not guessed. `--dry-run` so no writes are timed; best of seven.
       so measure before touching it
 - [x] The workspace rebuilds the font database on every preview miss — the
       render worker now owns one renderer
-- [ ] Kitty transmits raw RGBA sized to the pane, so one change is ~1.4 MB
-      whatever the source size. Capping the transmitted resolution is the next
-      lever if a single settled change is still slow
+- [x] Kitty transmits raw RGBA sized to the pane, so one change was ~1.4 MB.
+      Halved under tmux, where passthrough makes it slow: 1.46 MB -> 0.38 MB.
+      `--preview-scale` overrides it
 - [ ] `preview_spec()` clones a `RenderSpec` on every frame to compare it with
       the cache key
 - [ ] With no variants, `refresh_preview` allocates an error string every tick

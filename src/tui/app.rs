@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use ratatui::layout::Rect;
 use ratatui::widgets::ListState;
 
-use crate::preview::Image;
+use crate::preview::{Image, Scale};
 use crate::project::{Format, Project, RenderSpec};
 use crate::render::{RenderOptions, Renderer};
 use crate::tui::render_worker::{Rendered, Worker};
@@ -138,6 +138,8 @@ pub struct App {
     last_click: Option<(Focus, u16, Instant)>,
     /// Whether the column divider is being dragged.
     resizing: bool,
+    /// Whether to skip drawing the image for one frame.
+    holding_image: bool,
     /// Scroll state per list pane, so the selection stays visible when a pane
     /// is smaller than its contents.
     list_states: [ListState; Focus::COUNT],
@@ -184,6 +186,7 @@ impl App {
             preview_pixels: (0, 0),
             last_click: None,
             resizing: false,
+            holding_image: false,
             list_states: std::array::from_fn(|_| ListState::default()),
             selected: [0; Focus::COUNT],
             preview: Preview::Pending,
@@ -368,6 +371,24 @@ impl App {
         self.last_render
     }
 
+    /// Draw everything except the image, for one frame.
+    ///
+    /// Used to get a spinner on screen before the blocking write that follows.
+    pub const fn hold_image(&mut self) {
+        self.holding_image = true;
+    }
+
+    /// Resume drawing the image.
+    pub const fn release_image(&mut self) {
+        self.holding_image = false;
+    }
+
+    /// Whether the image is being withheld for a frame.
+    #[must_use]
+    pub const fn is_holding_image(&self) -> bool {
+        self.holding_image
+    }
+
     /// The spinner's current frame, or `None` when nothing is rendering.
     ///
     /// Derived from how long the render has been running rather than from a
@@ -378,7 +399,13 @@ impl App {
         const FRAMES: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
         const PERIOD: Duration = Duration::from_millis(90);
 
-        let (_, _, started) = self.in_flight.as_ref()?;
+        let started = match (self.in_flight.as_ref(), self.holding_image) {
+            (Some((_, _, started)), _) => *started,
+            // Nothing is rendering, but an image is about to be written and
+            // that write is the slow part under tmux.
+            (None, true) => Instant::now(),
+            (None, false) => return None,
+        };
         let step = started.elapsed().as_millis() / PERIOD.as_millis();
         Some(FRAMES[(step as usize) % FRAMES.len()])
     }
@@ -405,6 +432,23 @@ impl App {
             && let Some(spec) = self.wanted()
         {
             self.start_render(spec);
+        }
+    }
+
+    /// Start a render at once, without waiting out the debounce.
+    ///
+    /// The debounce exists to absorb a stream of keypresses; a caller that has
+    /// decided it wants a render now has nothing to absorb.
+    ///
+    /// Returns whether one was started.
+    pub fn begin_render(&mut self) -> bool {
+        self.update_preview();
+        match self.wanted() {
+            Some(spec) => {
+                self.start_render(spec);
+                true
+            }
+            None => false,
         }
     }
 
@@ -479,12 +523,7 @@ impl App {
     /// debounce, which exists to absorb a stream of keypresses and has nothing
     /// to absorb here.
     pub fn refresh_preview(&mut self) {
-        self.update_preview();
-        // Started regardless of the debounce, which exists to absorb a stream
-        // of keypresses and has nothing to absorb here.
-        if let Some(spec) = self.wanted() {
-            self.start_render(spec);
-        }
+        self.begin_render();
 
         while self.is_rendering() {
             // Applied through the same path a frame uses, so the blocking form
@@ -525,11 +564,14 @@ impl App {
     /// The pixel size is what [`App::preview_spec`] fits the render to. It
     /// comes from the backend, because only the backend knows the terminal's
     /// cell size.
-    pub(crate) fn set_preview_area(&mut self, area: Rect, cell: (u16, u16)) {
+    pub(crate) fn set_preview_area(&mut self, area: Rect, cell: (u16, u16), scale: Scale) {
         self.preview_area = area;
+        // Scaled down here rather than at transmission time, so the renderer
+        // produces fewer pixels in the first place instead of producing them
+        // and throwing them away.
         self.preview_pixels = (
-            u32::from(area.width) * u32::from(cell.0),
-            u32::from(area.height) * u32::from(cell.1),
+            scale.apply(u32::from(area.width) * u32::from(cell.0)),
+            scale.apply(u32::from(area.height) * u32::from(cell.1)),
         );
     }
 
@@ -821,7 +863,7 @@ mod tests {
 
     /// Pretend a pane of `cells` at a 10x20 cell size has been drawn.
     fn with_pane(app: &mut App, columns: u16, rows: u16) {
-        app.set_preview_area(Rect::new(0, 0, columns, rows), (10, 20));
+        app.set_preview_area(Rect::new(0, 0, columns, rows), (10, 20), Scale::FULL);
     }
 
     #[test]
@@ -940,10 +982,7 @@ mod tests {
         let mut app = app();
         assert!(app.spinner().is_none(), "nothing is rendering yet");
 
-        app.update_preview();
-        if let Some(spec) = app.wanted() {
-            app.start_render(spec);
-        }
+        app.begin_render();
 
         assert!(app.is_rendering());
         assert!(app.spinner().is_some(), "a running render must be visible");
@@ -956,10 +995,7 @@ mod tests {
     #[test]
     fn the_spinner_advances_over_time() {
         let mut app = app();
-        app.update_preview();
-        if let Some(spec) = app.wanted() {
-            app.start_render(spec);
-        }
+        app.begin_render();
         // Backdated rather than slept: a test that waits for an animation is a
         // test that is slow and flaky for no benefit.
         let first = app.spinner().unwrap();

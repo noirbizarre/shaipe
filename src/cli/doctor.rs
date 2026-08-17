@@ -12,7 +12,7 @@
 //! Runs without the alternate screen, so its own output is readable and can be
 //! pasted into a bug report.
 
-use shaipe::preview::{Backend, Preview};
+use shaipe::preview::{Backend, Preview, Scale};
 
 use crate::cli::DoctorArgs;
 
@@ -29,10 +29,10 @@ use crate::cli::DoctorArgs;
 /// lock was released, so it was emitted *after* the report and every terminal
 /// looked incapable.
 #[must_use]
-pub fn report(_args: &DoctorArgs, preview: Backend) -> String {
+pub fn report(_args: &DoctorArgs, preview: Backend, scale: Option<Scale>) -> String {
     let mut report = String::new();
     environment(&mut report);
-    detection(&mut report, preview);
+    detection(&mut report, preview, scale);
     report
 }
 
@@ -70,10 +70,13 @@ fn environment(out: &mut String) {
 }
 
 /// What the terminal itself says.
-fn detection(out: &mut String, requested: Backend) {
+fn detection(out: &mut String, requested: Backend, scale: Option<Scale>) {
     use std::fmt::Write as _;
 
-    let preview = Preview::detect(requested);
+    let mut preview = Preview::detect(requested);
+    if let Some(scale) = scale {
+        preview.set_scale(scale);
+    }
     let detected = preview.detection();
 
     let _ = writeln!(out, "\npreview");
@@ -91,6 +94,13 @@ fn detection(out: &mut String, requested: Backend) {
         "cell size", detected.font_size.0, detected.font_size.1
     );
     let _ = writeln!(out, "  {:<20} {}", "tmux", detected.in_tmux);
+    let _ = writeln!(
+        out,
+        "  {:<20} 1/{}{}",
+        "transmit scale",
+        preview.scale().factor(),
+        if scale.is_some() { " (forced)" } else { "" }
+    );
 
     match &detected.error {
         Some(reason) => {
@@ -125,7 +135,7 @@ mod tests {
     use super::*;
 
     fn report_for(requested: Backend) -> String {
-        super::report(&DoctorArgs {}, requested)
+        super::report(&DoctorArgs {}, requested, None)
     }
 
     #[test]

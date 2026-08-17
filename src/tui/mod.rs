@@ -39,7 +39,7 @@ use ratatui::crossterm::terminal::{
 use ratatui::crossterm::{cursor, execute};
 
 use crate::error::{Error, Result};
-use crate::preview::{Backend, Preview};
+use crate::preview::{Backend, Preview, Scale};
 use crate::project::Project;
 
 use app::{App, Focus};
@@ -67,7 +67,7 @@ const BUSY_TICK: Duration = Duration::from_millis(80);
 /// The terminal is restored before any error is returned. A command that
 /// leaves a terminal in raw mode with the alternate screen active is worse
 /// than one that simply fails.
-pub fn run(project: Project, backend: Backend, verbose: u8) -> Result<()> {
+pub fn run(project: Project, backend: Backend, scale: Option<Scale>, verbose: u8) -> Result<()> {
     // Held for the whole session: a warning printed over the alternate screen
     // corrupts it and cannot be scrolled back to.
     let _quiet = crate::logging::suppress();
@@ -78,6 +78,9 @@ pub fn run(project: Project, backend: Backend, verbose: u8) -> Result<()> {
     // capability query writes to stdout and reads the reply from stdin, and
     // anything else touching either would eat it.
     let mut preview = Preview::detect(backend);
+    if let Some(scale) = scale {
+        preview.set_scale(scale);
+    }
     let mut app = App::new(project, preview.name());
     app.verbose = verbose;
 
@@ -132,17 +135,27 @@ fn event_loop(
     let io_error = |source| Error::io("the terminal", source);
 
     while !app.should_quit {
-        // Drawn *before* the first render is asked for. That is what tells the
-        // application how large the preview pane is, so the first render is
-        // made once at the right size instead of once at a guessed 512 and
-        // again at the real one — two rasterises and, under Kitty, two
-        // megabyte-scale transmissions before anything appeared on screen.
+        let arrived = app.collect_preview();
+        app.update_preview();
+
+        // A new image is written *inside* `draw`, and under tmux that write is
+        // over a megabyte of passthrough sequences and takes seconds. Nothing
+        // can animate during it, because the call that would paint the spinner
+        // is the call that is blocked. So one cheap frame is drawn first, with
+        // the spinner and whatever was previously on screen, and the image
+        // goes out on the frame after it. That is the difference between a
+        // workspace that looks wedged and one that looks busy.
+        if arrived {
+            app.hold_image();
+            terminal
+                .draw(|frame| ui::draw(frame, app, preview))
+                .map_err(io_error)?;
+            app.release_image();
+        }
+
         terminal
             .draw(|frame| ui::draw(frame, app, preview))
             .map_err(io_error)?;
-
-        app.collect_preview();
-        app.update_preview();
 
         let tick = if app.is_rendering() {
             BUSY_TICK
