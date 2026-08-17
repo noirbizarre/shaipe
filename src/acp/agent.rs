@@ -737,6 +737,22 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_that_is_not_installed_still_lets_the_workspace_open() {
+        // Reading your own project has never depended on having an agent, and
+        // it does not start now. The reason travels with the choice so the
+        // prompt pane can say it.
+        let choice = AgentChoice::discover("definitely-not-installed acp", &fixtures::project());
+
+        let AgentChoice::Unavailable(reason) = choice else {
+            panic!("a missing agent should be reported, not fatal");
+        };
+
+        assert!(reason.contains("definitely-not-installed"), "{reason}");
+        // The help, which is the half that says what to do about it.
+        assert!(reason.contains("--no-agent"), "{reason}");
+    }
+
+    #[test]
     fn an_explicit_path_is_used_as_given() {
         // `--agent ./my-agent` has to work without being on PATH.
         assert!(which("/does/not/exist").is_none());

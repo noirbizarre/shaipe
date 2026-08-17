@@ -23,10 +23,11 @@ pub async fn run(
 ) -> Result<()> {
     let project = Project::open(&args.input)?;
 
-    // Resolved here, and a failure to resolve is *not* fatal: the reason is
-    // carried into the workspace and shown in the prompt pane. Somebody
-    // without OpenCode installed must still be able to open and read their own
-    // project — the same rule as a preview backend that will not start.
+    // Resolved here, and a failure to resolve is *not* fatal: the reason
+    // travels into the workspace and is shown in the prompt pane, where the
+    // person who cannot send a prompt is looking. Somebody without an agent
+    // installed must still be able to open and read their own project — the
+    // same rule as a preview backend that will not start.
     let agent = if args.no_agent {
         AgentChoice::None
     } else {

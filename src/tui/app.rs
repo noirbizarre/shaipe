@@ -497,7 +497,13 @@ impl App {
     /// one place and the cursor cannot be left pointing past the new end.
     pub fn set_draft(&mut self, text: &str) {
         self.editor = Self::editor_for(text);
-        self.commit_prompt();
+        // Only the prompt is metadata. `$EDITOR` is only reachable in that
+        // mode today, but a `set_draft` that committed whatever it was given
+        // would put an agent message into `<shaipe:prompt>` the first time
+        // that stopped being true.
+        if self.mode == EditorMode::Prompt {
+            self.commit_prompt();
+        }
     }
 
     /// Apply a keypress to the prompt editor.
@@ -1628,5 +1634,19 @@ mod tests {
         app.refresh_preview();
 
         assert!(matches!(app.preview(), Preview::Failed(_)));
+    }
+    #[test]
+    fn setting_the_draft_while_asking_does_not_touch_the_projects_prompt() {
+        // `$EDITOR` is only reachable from the prompt today, but a `set_draft`
+        // that committed whatever it was given would put an agent message into
+        // `<shaipe:prompt>` the first time that stopped being true.
+        let mut app = App::new(fixtures::project(), "blocks");
+        let before = app.project.metadata().prompt.clone();
+
+        app.engage_ask();
+        app.set_draft("make it bluer");
+
+        assert_eq!(app.draft(), "make it bluer");
+        assert_eq!(app.project.metadata().prompt, before);
     }
 }

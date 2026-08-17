@@ -285,6 +285,65 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_editor_stays_on_screen_however_much_is_above_it() {
+        // The editor is given the bottom of the pane rather than flowing after
+        // the content, because the content grows without bound: the project's
+        // prompt, then why there is no agent, then every turn of a
+        // conversation. A field that scrolls out of view is one nobody can
+        // type into, and the pane would look inert rather than full.
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.engage_ask();
+        app.set_draft("STILLVISIBLE");
+
+        for turn in 0..40 {
+            app.transcript.push_user(format!("turn number {turn}"));
+            app.transcript
+                .apply(crate::acp::AgentUpdate::Message(format!("answer {turn}")));
+        }
+
+        let text = render(&mut app, 100, 30);
+        assert!(
+            text.contains("STILLVISIBLE"),
+            "the editor was pushed off the pane by the transcript:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_transcript_shows_its_newest_entries_rather_than_its_oldest() {
+        // A conversation scrolls the way every other conversation does.
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.focus = Focus::Prompt;
+
+        for turn in 0..30 {
+            app.transcript.push_user(format!("question {turn}"));
+        }
+
+        let text = render(&mut app, 100, 30);
+        assert!(
+            text.contains("question 29"),
+            "the newest entry is not on screen:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_prompt_pane_says_why_there_is_no_agent() {
+        // The diagnostic belongs where the person who cannot ask for anything
+        // is looking. Said before a message is typed and swallowed, because
+        // that reads like a bug rather than like a missing dependency.
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.focus = Focus::Prompt;
+        app.agent = crate::tui::app::AgentStatus::Absent {
+            reason: "cannot find `no-such-agent`".to_owned(),
+        };
+
+        let text = render(&mut app, 100, 30);
+        assert!(
+            text.contains("no-such-agent"),
+            "the pane did not say why the agent is missing:\n{text}"
+        );
+    }
+
     /// The preview pane's interior, for a 100x30 frame.
     const PREVIEW: Rect = Rect {
         x: 40,
