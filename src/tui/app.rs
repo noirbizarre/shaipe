@@ -21,6 +21,7 @@ use crate::project::{Format, Project, RenderSpec};
 use crate::render::{RenderOptions, Renderer};
 use crate::tui::render_worker::{Rendered, Worker};
 use crate::tui::transcript::Transcript;
+use crate::tui::watch::Watcher;
 
 /// The narrowest the description column may be dragged.
 ///
@@ -230,6 +231,14 @@ pub struct App {
     dirty: bool,
     /// Whether a quit was refused because of [`App::dirty`].
     confirm_quit: bool,
+    /// Whether the file has changed since the workspace last read or wrote it.
+    watcher: Watcher,
+    /// Whether somebody else's write is waiting to be taken.
+    ///
+    /// Set when the file changes while there is unsaved work, which is the one
+    /// case the workspace must not resolve on its own: both versions are
+    /// somebody's, and picking is a decision.
+    stale: bool,
     /// What the agent has said and done.
     pub transcript: Transcript,
     /// Whether there is an agent at all, and if not, why not.
@@ -299,6 +308,8 @@ impl App {
             editor_requested: false,
             dirty: false,
             confirm_quit: false,
+            watcher: Watcher::new(project_for_worker.path()),
+            stale: false,
             mode: EditorMode::Prompt,
             transcript: Transcript::default(),
             agent: AgentStatus::Absent {
@@ -657,15 +668,97 @@ impl App {
     /// failed write must not close the workspace, which is the one place the
     /// unsaved work still exists.
     pub fn save(&mut self) {
+        // Refused rather than resolved. Writing here would overwrite somebody
+        // else's work — very likely an agent's, since nothing over ACP can
+        // stop one using its own editor — with bytes read before they wrote.
+        // `R` takes theirs; saving again takes yours.
+        if self.stale {
+            self.stale = false;
+            self.notice = Some(format!(
+                "{} changed on disk — R to take it, or ctrl-s again to overwrite it",
+                self.project.path().display()
+            ));
+            return;
+        }
+
         self.commit_prompt();
         self.notice = Some(match self.project.save() {
             Ok(()) => {
                 self.dirty = false;
                 self.confirm_quit = false;
+                // Its own write must not come back as somebody else's change.
+                self.watcher.accept(self.project.path());
                 format!("wrote {}", self.project.path().display())
             }
             Err(error) => format!("save failed: {error}"),
         });
+    }
+
+    /// Notice, and act on, the file changing underneath the workspace.
+    ///
+    /// Called from the event loop's tick. Reads two fields of one `stat`, and
+    /// only when they differ does it do anything more.
+    ///
+    /// With nothing to lose, the change is taken: that is what makes an agent
+    /// reaching for its own editor — which nothing over ACP can prevent —
+    /// still update the preview. With unsaved work it is *not* taken, because
+    /// both versions are somebody's and choosing between them is a decision,
+    /// not a default.
+    pub fn poll_file(&mut self) {
+        if !self.watcher.changed(self.project.path()) {
+            return;
+        }
+
+        if self.dirty {
+            self.stale = true;
+            self.notice = Some(format!(
+                "{} changed on disk — R to take it, losing your edits",
+                self.project.path().display()
+            ));
+            return;
+        }
+
+        self.reload_from_disk();
+    }
+
+    /// Whether somebody else's write is waiting to be taken.
+    #[must_use]
+    pub const fn is_stale(&self) -> bool {
+        self.stale
+    }
+
+    /// Re-read the project from disk, discarding whatever is in memory.
+    ///
+    /// The deliberate act `R` performs, and what `poll_file` does on its own
+    /// when there is nothing to lose.
+    pub fn reload_from_disk(&mut self) {
+        let path = self.project.path().to_path_buf();
+
+        match Project::open(&path) {
+            Ok(project) => {
+                self.project = project;
+                self.dirty = false;
+                self.stale = false;
+                self.confirm_quit = false;
+                self.watcher.accept(&path);
+
+                // The editor holds a copy of the prompt and the preview holds
+                // a copy of the artwork. Both are now somebody else's.
+                self.editor = Self::editor_for(
+                    self.project
+                        .metadata()
+                        .prompt
+                        .clone()
+                        .unwrap_or_default()
+                        .as_str(),
+                );
+                self.invalidate_preview();
+                self.notice = Some(format!("reloaded {}", path.display()));
+            }
+            // Reported, not fatal. A half-written file is a normal thing to
+            // catch mid-save, and the next tick will find it finished.
+            Err(error) => self.notice = Some(format!("could not reload: {error}")),
+        }
     }
 
     /// Ask to leave the workspace.
@@ -1670,5 +1763,149 @@ mod tests {
 
         assert_eq!(app.draft(), "make it bluer");
         assert_eq!(app.project.metadata().prompt, before);
+    }
+    /// A project in a temporary directory, so the tests can write to it.
+    fn on_disk() -> (tempfile::TempDir, App) {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).expect("the fixture is writable");
+        let project = Project::open(&path).expect("it opens");
+        (directory, App::new(project, "blocks"))
+    }
+
+    #[test]
+    fn a_change_on_disk_is_taken_when_there_is_nothing_to_lose() {
+        // The reason this exists: nothing over ACP can stop an agent reaching
+        // for its own editor, so the workspace has to notice when one does.
+        let (directory, mut app) = on_disk();
+        let path = app.project.path().to_path_buf();
+
+        std::fs::write(&path, fixtures::PROJECT.replace("#f05032", "#0066ff")).unwrap();
+        app.poll_file();
+
+        assert_eq!(
+            app.project.metadata().palette.colours()[0]
+                .value
+                .to_string(),
+            "#0066ff",
+            "somebody else's write was not picked up"
+        );
+        assert!(!app.is_dirty());
+        assert!(!app.is_stale());
+        drop(directory);
+    }
+
+    #[test]
+    fn a_change_on_disk_does_not_discard_unsaved_work() {
+        // Both versions are somebody's. Choosing between them is a decision,
+        // not a default.
+        let (directory, mut app) = on_disk();
+        let path = app.project.path().to_path_buf();
+
+        app.engage_editor();
+        app.set_draft("a wordless circular mark");
+        assert!(app.is_dirty());
+
+        std::fs::write(&path, fixtures::PROJECT.replace("#f05032", "#0066ff")).unwrap();
+        app.poll_file();
+
+        assert!(app.is_stale());
+        assert_eq!(
+            app.project.metadata().prompt.as_deref(),
+            Some("a wordless circular mark"),
+            "the unsaved prompt was thrown away"
+        );
+        assert!(
+            app.notice
+                .as_deref()
+                .is_some_and(|n| n.contains("changed on disk"))
+        );
+        drop(directory);
+    }
+
+    #[test]
+    fn saving_over_somebody_elses_write_is_refused_once() {
+        // Saving here would overwrite their work with bytes read before they
+        // wrote. Refused once, then allowed, so there is a way through.
+        let (directory, mut app) = on_disk();
+        let path = app.project.path().to_path_buf();
+
+        app.engage_editor();
+        app.set_draft("mine");
+        std::fs::write(&path, fixtures::PROJECT.replace("#f05032", "#0066ff")).unwrap();
+        app.poll_file();
+
+        app.save();
+        assert!(app.is_dirty(), "the save should not have gone through");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap().contains("#0066ff"),
+            true,
+            "their write was overwritten"
+        );
+
+        app.save();
+        assert!(!app.is_dirty(), "a second save should go through");
+        assert!(std::fs::read_to_string(&path).unwrap().contains("mine"));
+        drop(directory);
+    }
+
+    #[test]
+    fn the_workspaces_own_save_is_not_somebody_elses_change() {
+        // Otherwise every `ctrl-s` would immediately report the file as
+        // modified underneath, and refuse the next one.
+        let (directory, mut app) = on_disk();
+
+        app.engage_editor();
+        app.set_draft("mine");
+        app.save();
+        app.poll_file();
+
+        assert!(!app.is_stale());
+        assert!(!app.is_dirty());
+        drop(directory);
+    }
+
+    #[test]
+    fn reloading_takes_the_file_and_forgets_the_editors_copy() {
+        // The editor holds a copy of the prompt. Reloading without replacing
+        // it would write the abandoned one back on the next keystroke.
+        let (directory, mut app) = on_disk();
+        let path = app.project.path().to_path_buf();
+
+        app.engage_editor();
+        app.set_draft("mine");
+
+        std::fs::write(
+            &path,
+            fixtures::PROJECT.replace("A square and a bar.", "theirs"),
+        )
+        .unwrap();
+
+        app.reload_from_disk();
+
+        assert_eq!(app.draft(), "theirs");
+        assert_eq!(app.project.metadata().prompt.as_deref(), Some("theirs"));
+        assert!(!app.is_dirty());
+        drop(directory);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_reloaded_reports_it_rather_than_quitting() {
+        // Catching a half-written file mid-save is normal.
+        let (directory, mut app) = on_disk();
+        let path = app.project.path().to_path_buf();
+        std::fs::write(&path, "<svg truncated").unwrap();
+
+        app.reload_from_disk();
+
+        assert!(
+            app.notice
+                .as_deref()
+                .is_some_and(|n| n.contains("could not reload"))
+        );
+        assert!(!app.should_quit);
+        // And the project in memory is untouched, so nothing was lost.
+        assert_eq!(app.project.source(), fixtures::PROJECT);
+        drop(directory);
     }
 }

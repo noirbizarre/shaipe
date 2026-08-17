@@ -26,6 +26,7 @@ pub mod panes;
 pub mod render_worker;
 pub mod transcript;
 mod ui;
+pub mod watch;
 
 use std::io::{self, Stdout};
 use std::time::Duration;
@@ -225,7 +226,14 @@ async fn event_loop(
     // A receiver that never yields, when there is no agent. Cleaner than an
     // `Option` in the `select!`, which would need a branch that is disabled
     // rather than merely empty.
-    let mut updates = updates.unwrap_or_else(|| mpsc::channel(1).1);
+    //
+    // The sender is *kept*, and that is the whole point. A receiver whose
+    // senders have all been dropped does not block — it returns `None`
+    // immediately, forever. Sitting where it does in a `biased` select, that
+    // spun the workspace at a full core and starved the tick underneath it, so
+    // nothing that depends on the tick ever ran.
+    let (_agentless, idle) = mpsc::channel(1);
+    let mut updates = updates.unwrap_or(idle);
 
     // Constructed here rather than in `run`, and the placement is
     // load-bearing: `EventStream` spawns a reader on standard input, and one
@@ -343,7 +351,13 @@ async fn event_loop(
                 app.transcript.apply(update);
             }
 
-            _ = ticks.tick() => {}
+            _ = ticks.tick() => {
+                // Two fields of one `stat`, four times a second at worst. This
+                // is what makes an agent that reached for its own editor —
+                // which nothing over ACP can prevent — still reach the
+                // preview. See ADR 012.
+                app.poll_file();
+            }
         }
 
         // Anything a keypress asked the agent for. Done out here rather than
@@ -604,6 +618,10 @@ fn handle(app: &mut App, key: KeyEvent) {
         KeyCode::Down => app.select_next(),
         KeyCode::Up => app.select_previous(),
         KeyCode::Char('r') => app.invalidate_preview(),
+        // Lowercase re-renders what is in memory; uppercase re-reads the file.
+        // Not `ctrl-r`, which is redo inside the prompt editor and worth more
+        // there than a second way to reach this.
+        KeyCode::Char('R') => app.reload_from_disk(),
         _ => {}
     }
 }
