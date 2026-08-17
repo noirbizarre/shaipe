@@ -259,7 +259,12 @@ This needs no ACP and no agent. It opens the file itself, and works headlessly.
 shaipe logo.svg
 ```
 
-Tab to the prompt pane, type what you want, and press Enter. Shaipe starts
+Tab to the prompt pane and press `a`. The same editor that writes the project's
+prompt is handed to you with an empty buffer, the pane's title changes to say
+so, and `enter` sends rather than adding a line — because a prompt is a
+paragraph and a question is one thing said once. What you type there is never
+written into the project's `<shaipe:prompt>`; asking for a change is not the
+same as changing the description of the artwork. Shaipe starts
 `opencode acp`, gives it a session-scoped MCP server pointing at *the project
 you are looking at*, and shows you what the agent does with it. When the agent
 edits the SVG, the preview follows on its own.
@@ -274,6 +279,16 @@ shaipe --agent "some-other-agent acp"   # any ACP agent, not just OpenCode
 shaipe --no-agent                       # open the workspace without one
 shaipe --yes                            # approve the agent's own tools
 ```
+
+Inside the prompt pane:
+
+| Key | |
+|---|---|
+| `enter` | edit the project's prompt — committed as you type |
+| `a` | ask the agent — sent on `enter`, committed nowhere |
+| `e` | open the project's prompt in `$EDITOR` |
+| `ctrl-c` | stop the turn the agent is on; again to quit |
+| `ctrl-s` | save the project |
 
 `--yes` is worth understanding before you use it. Shaipe's tools never ask for
 permission and never write to disk. Your agent's tools are a different matter:

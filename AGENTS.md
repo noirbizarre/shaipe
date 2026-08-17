@@ -172,6 +172,15 @@ that always run: `src/mcp/server.rs` drives a real MCP client over a duplex,
 `src/mcp/bridge.rs` carries a call over a real socket, and `tests/mcp_stdio.rs`
 runs the binary. Never add a test that needs a network to `mise run ci`.
 
+The prompt pane's editor serves two purposes and they must not be confused.
+`enter` edits the project's `<shaipe:prompt>`, which is metadata and is
+committed to the document on every keystroke; `a` composes a message to the
+agent, which is committed nowhere. A single buffer with a mode rather than two
+widgets, because one pane with two text fields in it is worse than one pane
+with two states. `EditorMode` is what keeps them apart, and
+`a_message_to_the_agent_never_reaches_the_projects_prompt` is what stops them
+merging back.
+
 `--yes` grants the *agent's* own tools — its editor, its shell — and an agent
 asked to change a colour may use them instead of `write_svg`, writing to the
 working tree past every guarantee above. Shaipe's own tools never ask and never

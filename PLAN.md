@@ -149,6 +149,8 @@ see `docs/adr/004-tools-not-a-model.md`.
 - [ ] Show the agent's plan in the transcript
 - [ ] Prove the vision loop against a vision-capable model, and say in the
       README which models can and cannot see a render
+- [x] `a` on the prompt pane asks the agent, using the prompt editor with a
+      buffer that is never committed to the project
 
 ## Artwork
 
