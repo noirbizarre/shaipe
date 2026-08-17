@@ -725,6 +725,74 @@ mod tests {
         app
     }
 
+    /// A keypress with Alt held.
+    fn alt(app: &mut App, code: KeyCode) {
+        handle(app, KeyEvent::new(code, KeyModifiers::ALT));
+    }
+
+    #[test]
+    fn alt_a_reaches_the_agent_from_inside_the_editor() {
+        // The bug this fixes: while the editor has the keyboard it swallows
+        // every key, so bare `a` typed a letter, the whole message went into
+        // the project's prompt, and nothing was ever sent.
+        let mut app = app();
+        app.focus = Focus::Prompt;
+        press(&mut app, KeyCode::Enter);
+        assert!(app.is_editing());
+
+        alt(&mut app, KeyCode::Char('a'));
+
+        assert!(app.is_editing(), "it should stay in the editor");
+        assert_eq!(app.mode(), app::EditorMode::Ask);
+    }
+
+    #[test]
+    fn alt_a_is_not_typed_into_the_prompt() {
+        // The other half. If the chord ever reaches the text area it becomes
+        // an `a` in someone's prompt, silently.
+        let mut app = app();
+        let before = app.project.metadata().prompt.clone();
+
+        app.focus = Focus::Prompt;
+        press(&mut app, KeyCode::Enter);
+        alt(&mut app, KeyCode::Char('a'));
+
+        assert_eq!(app.project.metadata().prompt, before);
+        assert_eq!(app.draft(), "", "the ask buffer should start empty");
+    }
+
+    #[test]
+    fn alt_a_toggles_back_to_the_prompt() {
+        let mut app = app();
+        app.focus = Focus::Prompt;
+        press(&mut app, KeyCode::Enter);
+
+        alt(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.mode(), app::EditorMode::Ask);
+
+        alt(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.mode(), app::EditorMode::Prompt);
+        assert!(app.is_editing(), "toggling should not leave the editor");
+        assert_eq!(
+            app.draft(),
+            app.project.metadata().prompt.clone().unwrap_or_default(),
+            "coming back should show the project's prompt, not the message"
+        );
+    }
+
+    #[test]
+    fn a_plain_a_is_still_a_letter_inside_the_editor() {
+        // Only the chord switches. `a` has to remain typeable, or the prompt
+        // cannot contain the word "a".
+        let mut app = app();
+        app.focus = Focus::Prompt;
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('a'));
+
+        assert_eq!(app.mode(), app::EditorMode::Prompt);
+        assert!(app.draft().contains('a'));
+    }
+
     #[test]
     fn a_on_the_prompt_pane_asks_the_agent_rather_than_editing_the_prompt() {
         // One editor, two jobs. The project's prompt is metadata and is

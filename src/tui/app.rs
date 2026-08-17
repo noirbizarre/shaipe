@@ -10,7 +10,7 @@
 
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::ListState;
@@ -430,6 +430,19 @@ impl App {
         self.mode
     }
 
+    /// Swap between writing the project's prompt and asking the agent.
+    ///
+    /// The way out of the trap this fixes: while the editor has the keyboard
+    /// it swallows every key, so `a` — the way in from the pane — typed a
+    /// letter instead, and a whole message went into the project's prompt
+    /// while nothing was ever sent.
+    pub fn toggle_mode(&mut self) {
+        self.set_mode(match self.mode {
+            EditorMode::Prompt => EditorMode::Ask,
+            EditorMode::Ask => EditorMode::Prompt,
+        });
+    }
+
     /// Whether keys are going to the prompt editor.
     #[must_use]
     pub const fn is_editing(&self) -> bool {
@@ -514,6 +527,15 @@ impl App {
     /// is navigated, and a literal tab in a paragraph of prose is worth much
     /// less than a consistent way out.
     pub fn edit_key(&mut self, key: KeyEvent) {
+        // Taken before the text area sees it. `alt+a` is free in its key map,
+        // where `alt+f`, `alt+b`, `alt+d` and `alt+h` are not, and unlike
+        // `alt+enter` it cannot be swallowed: the text area matches
+        // `Key::Enter, ..`, which ignores every modifier.
+        if key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::ALT) {
+            self.toggle_mode();
+            return;
+        }
+
         match key.code {
             KeyCode::Esc => {
                 self.disengage_editor();

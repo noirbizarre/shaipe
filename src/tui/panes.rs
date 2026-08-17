@@ -120,6 +120,14 @@ pub fn agent_title(app: &App) -> &'static str {
     match app.agent {
         AgentStatus::Absent { .. } => "",
         AgentStatus::Connecting => "  starting the agent…",
+        // The key named here has to be the one that works from where the user
+        // is. While the editor has the keyboard it swallows every key, so bare
+        // `a` types a letter — saying otherwise is how a whole message ends up
+        // in the project's prompt with nothing sent.
+        AgentStatus::Ready if app.is_editing() && app.mode() == EditorMode::Prompt => {
+            "  alt+a to ask the agent"
+        }
+        AgentStatus::Ready if app.is_editing() => "  ready",
         AgentStatus::Ready if app.transcript.is_empty() => "  a to ask the agent",
         AgentStatus::Ready => "  ready",
         AgentStatus::Busy => "  working…",
@@ -310,7 +318,11 @@ pub fn status(app: &App) -> Paragraph<'static> {
             spans.extend(hint("enter", "send"));
             if waiting {
                 spans.extend(hint("ctrl-c", "stop"));
+            } else {
+                spans.extend(hint("alt+a", "prompt"));
             }
+        } else if !waiting {
+            spans.extend(hint("alt+a", "ask"));
         }
         spans.extend(hint("ctrl-s", "save"));
     } else {
@@ -513,6 +525,33 @@ mod tests {
         assert!(output.contains("preview: blocks"), "overflows:\n{output}");
         assert!(output.contains("send"), "{output}");
         assert!(output.contains("stop"), "{output}");
+    }
+
+    #[test]
+    fn the_pane_never_names_a_key_that_cannot_work_from_where_it_says_it() {
+        // The title read "a to ask the agent" *while editing*, where `a` types
+        // a letter. That is what sent a whole message into the project's
+        // prompt with nothing reaching the agent.
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.agent = AgentStatus::Ready;
+        app.engage_editor();
+
+        let title = agent_title(&app);
+        assert!(
+            !title.contains("  a to ask"),
+            "the title names bare `a` while the editor would swallow it: {title}"
+        );
+        assert!(title.contains("alt+a"), "{title}");
+    }
+
+    #[test]
+    fn the_status_line_names_the_chord_while_the_editor_has_the_keyboard() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.engage_editor();
+        assert!(drawn(status(&app), 80, 1).contains("alt+a"));
+
+        app.engage_ask();
+        assert!(drawn(status(&app), 80, 1).contains("alt+a"));
     }
 
     #[test]
