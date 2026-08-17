@@ -14,10 +14,11 @@ use serde_json::{Value, json};
 
 use crate::error::Result;
 use crate::inspect::Report;
-use crate::preview::Image;
 use crate::project::{Format, Project, RenderSpec};
 use crate::render::{RenderOptions, Renderer};
-use crate::tools::{Parameter, Tool, required_str};
+use crate::tools::{
+    Tool, ToolImage, ToolOutput, integer, object, optional_u32, required_str, string,
+};
 
 /// Every tool Shaipe implements.
 pub fn all() -> Vec<Box<dyn Tool>> {
@@ -43,12 +44,14 @@ impl Tool for InspectProject {
          only way to learn what the project's variants and colours are named."
     }
 
-    fn parameters(&self) -> &'static [Parameter] {
-        &[]
+    fn input_schema(&self) -> Value {
+        object(&[], &[])
     }
 
-    fn call(&self, project: &mut Project, _input: &Value) -> Result<Value> {
-        Ok(serde_json::to_value(Report::of(project)).expect("a report is always serialisable"))
+    fn call(&self, project: &mut Project, _input: &Value) -> Result<ToolOutput> {
+        Ok(ToolOutput::json(
+            serde_json::to_value(Report::of(project)).expect("a report is always serialisable"),
+        ))
     }
 }
 
@@ -66,13 +69,13 @@ impl Tool for ListVariants {
          id in the document that draws each one."
     }
 
-    fn parameters(&self) -> &'static [Parameter] {
-        &[]
+    fn input_schema(&self) -> Value {
+        object(&[], &[])
     }
 
-    fn call(&self, project: &mut Project, _input: &Value) -> Result<Value> {
+    fn call(&self, project: &mut Project, _input: &Value) -> Result<ToolOutput> {
         let metadata = project.metadata();
-        Ok(Value::Array(
+        Ok(ToolOutput::json(Value::Array(
             metadata
                 .variants
                 .iter()
@@ -84,7 +87,7 @@ impl Tool for ListVariants {
                     })
                 })
                 .collect(),
-        ))
+        )))
     }
 }
 
@@ -102,12 +105,12 @@ impl Tool for InspectPalette {
          editing the artwork."
     }
 
-    fn parameters(&self) -> &'static [Parameter] {
-        &[]
+    fn input_schema(&self) -> Value {
+        object(&[], &[])
     }
 
-    fn call(&self, project: &mut Project, _input: &Value) -> Result<Value> {
-        Ok(Value::Array(
+    fn call(&self, project: &mut Project, _input: &Value) -> Result<ToolOutput> {
+        Ok(ToolOutput::json(Value::Array(
             project
                 .metadata()
                 .palette
@@ -121,7 +124,7 @@ impl Tool for InspectPalette {
                     })
                 })
                 .collect(),
-        ))
+        )))
     }
 }
 
@@ -134,71 +137,66 @@ impl Tool for Render {
     }
 
     fn description(&self) -> &'static str {
-        "Render a variant of the project to a PNG and return it as base64. \
-         This is how to see what the SVG actually looks like: rendering is \
+        "Render a variant of the project to a PNG and look at it. Rendering is \
          local and exact, so the image returned is the asset a build would \
-         produce, not an approximation of it."
+         produce, not an approximation of it. This is the only way to find out \
+         what the artwork actually looks like."
     }
 
-    fn parameters(&self) -> &'static [Parameter] {
-        &[
-            Parameter {
-                name: "variant",
-                description: "Which variant to draw. One of the names from `list_variants`.",
-                required: true,
-            },
-            Parameter {
-                name: "width",
-                description: "Canvas width in pixels. Defaults to 512.",
-                required: false,
-            },
-            Parameter {
-                name: "height",
-                description: "Canvas height in pixels. Defaults to the width.",
-                required: false,
-            },
-        ]
+    fn input_schema(&self) -> Value {
+        object(
+            &[
+                (
+                    "variant",
+                    string("Which variant to draw. One of the names from `list_variants`."),
+                ),
+                ("width", integer("Canvas width in pixels. Defaults to 512.")),
+                (
+                    "height",
+                    integer("Canvas height in pixels. Defaults to the width, giving a square."),
+                ),
+            ],
+            &["variant"],
+        )
     }
 
-    fn call(&self, project: &mut Project, input: &Value) -> Result<Value> {
+    fn call(&self, project: &mut Project, input: &Value) -> Result<ToolOutput> {
         let variant = required_str(self.name(), input, "variant")?;
 
         // A default rather than a required argument: a model asking to see a
         // logo has no basis for choosing a size, and being forced to invent
         // one adds a decision that can be wrong.
-        let dimension = |key: &str, fallback: u32| {
-            input
-                .get(key)
-                .and_then(Value::as_u64)
-                .and_then(|value| u32::try_from(value).ok())
-                .unwrap_or(fallback)
-        };
-        let width = dimension("width", 512);
+        let width = optional_u32(input, "width", 512);
 
         let spec = RenderSpec {
             name: variant.to_owned(),
             variant: variant.to_owned(),
             width,
-            height: dimension("height", width),
+            height: optional_u32(input, "height", width),
             format: Format::Png,
             background: crate::project::Background::Transparent,
         };
 
-        let asset = Renderer::new(project, RenderOptions::default())?.render(&spec)?;
-        // Decoded and re-encoded through `Image` so that the dimensions
-        // reported are the ones actually in the PNG rather than the ones that
-        // were asked for.
-        let image = Image::from_png(&asset.bytes)?;
-
-        use base64::Engine as _;
-        Ok(json!({
-            "variant": variant,
-            "width": image.width(),
-            "height": image.height(),
-            "mime_type": "image/png",
-            "base64": base64::engine::general_purpose::STANDARD.encode(&asset.bytes),
-        }))
+        render_one(project, &spec)
     }
+}
+
+/// Rasterise one spec into an answer and an image to look at.
+///
+/// Shared rather than inlined because two tools rasterise, and a second copy
+/// is a second place for the reported size to drift from the encoded one.
+fn render_one(project: &Project, spec: &RenderSpec) -> Result<ToolOutput> {
+    let asset = Renderer::new(project, RenderOptions::default())?.render(spec)?;
+
+    Ok(ToolOutput::json(json!({
+        "variant": spec.variant,
+        "width": spec.width,
+        "height": spec.height,
+    }))
+    .with_image(ToolImage::png(
+        format!("{} at {}x{}", spec.variant, spec.width, spec.height),
+        asset.bytes,
+    )))
 }
 
 #[cfg(test)]
@@ -209,21 +207,26 @@ mod tests {
     use crate::fixtures;
     use crate::tools::Registry;
 
-    fn call(name: &str, input: Value) -> Result<Value> {
+    fn call(name: &str, input: Value) -> Result<ToolOutput> {
         Registry::new().call(name, &mut fixtures::project(), &input)
+    }
+
+    /// The structured half of an answer, for the tools that have no images.
+    fn value(name: &str, input: Value) -> Value {
+        call(name, input).unwrap().value
     }
 
     #[test]
     fn inspect_project_returns_the_same_report_the_cli_prints() {
         // One description of a project, not two that can disagree.
-        let value = call("inspect_project", Value::Null).unwrap();
+        let value = value("inspect_project", Value::Null);
         assert_eq!(value["schema_version"], 1);
         assert_eq!(value["variants"][1]["element"], "mark-wide");
     }
 
     #[test]
     fn list_variants_says_which_variant_the_document_root_draws() {
-        let value = call("list_variants", Value::Null).unwrap();
+        let value = value("list_variants", Value::Null);
         assert_eq!(value[0]["name"], "icon");
         assert_eq!(value[0]["primary"], true);
         assert_eq!(value[1]["primary"], false);
@@ -231,7 +234,7 @@ mod tests {
 
     #[test]
     fn inspect_palette_returns_every_colour_with_its_role() {
-        let value = call("inspect_palette", Value::Null).unwrap();
+        let value = value("inspect_palette", Value::Null);
         assert_eq!(value[0]["value"], "#f05032");
         assert_eq!(value[0]["role"], "accent");
         assert_eq!(value[1]["role"], Value::Null);
@@ -239,22 +242,26 @@ mod tests {
 
     #[test]
     fn render_returns_a_decodable_png_of_the_requested_size() {
-        let value = call("render", json!({ "variant": "icon", "width": 64 })).unwrap();
+        let output = call("render", json!({ "variant": "icon", "width": 64 })).unwrap();
 
-        assert_eq!(value["width"], 64);
-        assert_eq!(value["height"], 64);
-        assert_eq!(value["mime_type"], "image/png");
+        assert_eq!(output.value["width"], 64);
+        assert_eq!(output.value["height"], 64);
 
-        use base64::Engine as _;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(value["base64"].as_str().unwrap())
-            .unwrap();
-        assert!(tiny_skia::Pixmap::decode_png(&bytes).is_ok());
+        // The image travels beside the JSON, not inside it. A model that gets
+        // base64 in a string field sees a string.
+        let [image] = &output.images[..] else {
+            panic!("expected exactly one image, got {}", output.images.len());
+        };
+        assert_eq!(image.mime_type, "image/png");
+        assert_eq!(image.label, "icon at 64x64");
+
+        let pixmap = tiny_skia::Pixmap::decode_png(&image.bytes).unwrap();
+        assert_eq!((pixmap.width(), pixmap.height()), (64, 64));
     }
 
     #[test]
     fn render_defaults_to_a_square_so_a_model_need_not_invent_a_size() {
-        let value = call("render", json!({ "variant": "icon" })).unwrap();
+        let value = value("render", json!({ "variant": "icon" }));
         assert_eq!(value["width"], 512);
         assert_eq!(value["height"], 512);
     }
@@ -274,5 +281,14 @@ mod tests {
         let rendered = format!("{:?}", miette::Report::new(error));
         assert!(rendered.contains("icon"), "{rendered}");
         assert!(rendered.contains("wordmark"), "{rendered}");
+    }
+
+    #[test]
+    fn no_tool_yet_changes_the_project() {
+        // The whole set is read-only at this point. When that stops being
+        // true, this test is the one that says so out loud.
+        for tool in Registry::new().tools() {
+            assert!(!tool.mutates(), "`{}` claims to mutate", tool.name());
+        }
     }
 }

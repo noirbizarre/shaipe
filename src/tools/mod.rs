@@ -7,62 +7,64 @@
 //! what it lacks is the ability to *see* an SVG and to know what the project
 //! around it says. This module is the vocabulary of those abilities.
 //!
-//! There is deliberately **no transport here**. An MCP server, a JSON-RPC
-//! endpoint or a subprocess protocol are all things that would call
-//! [`Registry::call`]; none of them are things this crate has to be. Adding
-//! one is additive, and building one before there is anything to serve would
-//! be inventing requirements.
+//! There is deliberately **no transport here**. [`crate::mcp`] serves this
+//! registry over MCP and [`crate::acp`] drives an agent that calls it, and
+//! neither is something this module knows about: a tool is a name, a schema
+//! and a JSON-in/JSON-out call, and it stays that way so the CLI, the
+//! workspace and a server all expose the same operations with the same
+//! semantics.
 //!
 //! # Why a registry at all
 //!
 //! Because the alternative — an agent shelling out to `shaipe` and parsing
 //! stdout — makes every tool's contract the accident of a print statement.
 //! Naming the tools, their inputs and their outputs in one place means the
-//! CLI, a future MCP server and the TUI expose the same operations with the
-//! same semantics.
+//! CLI, the MCP server and the TUI cannot drift into three dialects.
 //!
-//! Everything here is read-only for now. Mutating tools are the natural next
-//! set — editing the palette, writing a variant, recording a generation — and
-//! the trait is shaped to take them: [`Tool::call`] receives the project by
-//! `&mut`, so a tool that changes something does not need a different trait.
+//! # Mutation
+//!
+//! [`Tool::call`] receives the project by `&mut`, so a tool that changes
+//! something needs no different trait. What it does *not* get is a way to save
+//! it: writing to a working tree is a decision, not a side effect, and it is
+//! taken by whoever owns the project — see [`Tool::mutates`].
 
 mod builtin;
+mod output;
 
 use std::collections::BTreeMap;
 
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 use crate::error::{Error, Result};
 use crate::project::Project;
 
-/// A description of what a tool accepts.
-///
-/// Not a JSON Schema type, deliberately: a transport that needs one can build
-/// it from this, and the alternative is a schema dependency in a crate whose
-/// job is drawing logos. What every transport actually needs is a name, a
-/// sentence and a list of parameters, and that is what this is.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Parameter {
-    /// The key in the input object.
-    pub name: &'static str,
-    /// What it means, in a sentence a model can act on.
-    pub description: &'static str,
-    /// Whether omitting it is an error.
-    pub required: bool,
-}
+pub use output::{ToolImage, ToolOutput};
 
 /// An operation an agent can perform on a project.
-pub trait Tool {
+pub trait Tool: Send + Sync {
     /// The name the agent calls it by. Stable; renaming one is a breaking
-    /// change in the same way a diagnostic code is.
+    /// change in the same way a diagnostic code is. See ADR 007.
     fn name(&self) -> &'static str;
 
     /// What it does, in a sentence. This is prompt text: it is the only thing
     /// the model reads before deciding whether to call it.
     fn description(&self) -> &'static str;
 
-    /// What it accepts.
-    fn parameters(&self) -> &'static [Parameter];
+    /// A JSON Schema for the arguments object.
+    ///
+    /// Hand-written rather than derived. This is prompt text as much as the
+    /// description is, and a derived schema carries Rust's vocabulary —
+    /// `Option<u32>`, `nullable`, `format: uint32` — into a place a model
+    /// reads. See ADR 008.
+    fn input_schema(&self) -> Value;
+
+    /// Whether calling it can change the project.
+    ///
+    /// Drives MCP's read-only hint, and tells a workspace whether a call means
+    /// its preview is now stale.
+    fn mutates(&self) -> bool {
+        false
+    }
 
     /// Perform it.
     ///
@@ -70,7 +72,24 @@ pub trait Tool {
     ///
     /// Returns [`Error::InvalidToolInput`] when the arguments do not make
     /// sense, and otherwise whatever the underlying operation returns.
-    fn call(&self, project: &mut Project, input: &Value) -> Result<Value>;
+    fn call(&self, project: &mut Project, input: &Value) -> Result<ToolOutput>;
+}
+
+/// Everything a transport needs to advertise one tool.
+///
+/// Owned rather than borrowed: an MCP server builds this once and then holds
+/// it across an `await`, which a `&dyn Tool` into a registry owned by another
+/// task cannot survive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolDescriptor {
+    /// What the agent calls it.
+    pub name: &'static str,
+    /// What it does.
+    pub description: &'static str,
+    /// A JSON Schema for its arguments.
+    pub input_schema: Value,
+    /// Whether it can change the project.
+    pub mutates: bool,
 }
 
 /// The tools available for a project.
@@ -129,13 +148,26 @@ impl Registry {
         self.tools.get(name).map(AsRef::as_ref)
     }
 
+    /// Everything a transport needs to advertise the whole registry.
+    #[must_use]
+    pub fn descriptors(&self) -> Vec<ToolDescriptor> {
+        self.tools()
+            .map(|tool| ToolDescriptor {
+                name: tool.name(),
+                description: tool.description(),
+                input_schema: tool.input_schema(),
+                mutates: tool.mutates(),
+            })
+            .collect()
+    }
+
     /// Call a tool by name.
     ///
     /// # Errors
     ///
     /// Returns [`Error::UnknownTool`], listing what does exist, and otherwise
     /// whatever the tool returns.
-    pub fn call(&self, name: &str, project: &mut Project, input: &Value) -> Result<Value> {
+    pub fn call(&self, name: &str, project: &mut Project, input: &Value) -> Result<ToolOutput> {
         self.get(name)
             .ok_or_else(|| Error::UnknownTool {
                 tool: name.to_owned(),
@@ -143,6 +175,35 @@ impl Registry {
             })?
             .call(project, input)
     }
+}
+
+/// An object schema with the given properties, of which some are required.
+///
+/// A helper rather than a literal at each call site so that every tool
+/// advertises the same shape: `additionalProperties: false` throughout, so a
+/// model that invents an argument is told rather than silently ignored.
+pub(crate) fn object(properties: &[(&str, Value)], required: &[&str]) -> Value {
+    let properties: Map<String, Value> = properties
+        .iter()
+        .map(|(name, schema)| ((*name).to_owned(), schema.clone()))
+        .collect();
+
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": false,
+    })
+}
+
+/// A string argument.
+pub(crate) fn string(description: &str) -> Value {
+    json!({ "type": "string", "description": description })
+}
+
+/// A positive integer argument. Every dimension Shaipe takes is one.
+pub(crate) fn integer(description: &str) -> Value {
+    json!({ "type": "integer", "minimum": 1, "description": description })
 }
 
 /// Read a required string argument.
@@ -159,6 +220,20 @@ pub(crate) fn required_str<'a>(tool: &str, input: &'a Value, name: &str) -> Resu
             tool: tool.to_owned(),
             reason: format!("`{name}` is required and must be a string"),
         })
+}
+
+/// Read an optional positive integer, falling back when it is absent.
+///
+/// A zero or a negative is treated as absent rather than as an error: it can
+/// only produce an empty render, which [`Error::InvalidSize`] would report
+/// later and less clearly.
+pub(crate) fn optional_u32(input: &Value, name: &str, fallback: u32) -> u32 {
+    input
+        .get(name)
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(fallback)
 }
 
 #[cfg(test)]
@@ -179,6 +254,46 @@ mod tests {
                 "`{}` needs a description a model can act on",
                 tool.name()
             );
+        }
+    }
+
+    #[test]
+    fn every_tool_publishes_a_schema_a_model_can_read() {
+        // A schema is prompt text too. An argument with no description is one
+        // the model has to guess the meaning of from its name alone.
+        for tool in Registry::new().tools() {
+            let schema = tool.input_schema();
+            let name = tool.name();
+
+            assert_eq!(schema["type"], "object", "`{name}` must take an object");
+            assert_eq!(
+                schema["additionalProperties"], false,
+                "`{name}` must reject arguments it does not understand, so a \
+                 model that invents one is told rather than ignored"
+            );
+
+            let properties = schema["properties"].as_object().unwrap_or_else(|| {
+                panic!("`{name}` must list its properties, even if there are none")
+            });
+
+            for (argument, description) in properties {
+                assert!(
+                    description["description"]
+                        .as_str()
+                        .is_some_and(|text| text.len() > 10),
+                    "`{name}.{argument}` needs a description a model can act on"
+                );
+            }
+
+            // Anything required must actually be described, or the model is
+            // told to send an argument it has never been told the meaning of.
+            for required in schema["required"].as_array().into_iter().flatten() {
+                let required = required.as_str().expect("a required name is a string");
+                assert!(
+                    properties.contains_key(required),
+                    "`{name}` requires `{required}` without describing it"
+                );
+            }
         }
     }
 
@@ -211,11 +326,11 @@ mod tests {
             fn description(&self) -> &'static str {
                 "a replacement, for testing that registration overrides"
             }
-            fn parameters(&self) -> &'static [Parameter] {
-                &[]
+            fn input_schema(&self) -> Value {
+                object(&[], &[])
             }
-            fn call(&self, _: &mut Project, _: &Value) -> Result<Value> {
-                Ok(Value::String("stub".to_owned()))
+            fn call(&self, _: &mut Project, _: &Value) -> Result<ToolOutput> {
+                Ok(ToolOutput::json(Value::String("stub".to_owned())))
             }
         }
 
@@ -227,8 +342,31 @@ mod tests {
         assert_eq!(
             registry
                 .call("inspect_project", &mut fixtures::project(), &Value::Null)
-                .unwrap(),
+                .unwrap()
+                .value,
             Value::String("stub".to_owned())
         );
+    }
+
+    #[test]
+    fn a_descriptor_says_the_same_thing_the_tool_does() {
+        // The descriptor is what a transport advertises. If it can disagree
+        // with the tool, a model is told about arguments that do not exist.
+        let registry = Registry::new();
+        for (descriptor, tool) in registry.descriptors().iter().zip(registry.tools()) {
+            assert_eq!(descriptor.name, tool.name());
+            assert_eq!(descriptor.description, tool.description());
+            assert_eq!(descriptor.input_schema, tool.input_schema());
+            assert_eq!(descriptor.mutates, tool.mutates());
+        }
+    }
+
+    #[test]
+    fn an_optional_dimension_falls_back_rather_than_rendering_nothing() {
+        // Zero is the interesting case: it is a number, so a naive read
+        // accepts it, and it can only produce an empty image.
+        assert_eq!(optional_u32(&json!({ "width": 64 }), "width", 512), 64);
+        assert_eq!(optional_u32(&json!({ "width": 0 }), "width", 512), 512);
+        assert_eq!(optional_u32(&json!({}), "width", 512), 512);
     }
 }
