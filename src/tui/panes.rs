@@ -362,6 +362,16 @@ pub fn status(app: &App) -> Paragraph<'static> {
         ));
     }
 
+    // Somebody else's write, waiting to be taken. Distinct from unsaved and
+    // worth more: unsaved means the file is behind the screen, stale means the
+    // screen is behind the file, and only one of the two is fixed by saving.
+    if app.is_stale() {
+        spans.push(Span::styled(
+            "● on disk  ",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ));
+    }
+
     // Outside the branches above, because a notice or a quit warning must not
     // be able to hide the fact that there is unsaved work.
     if app.is_dirty() {
@@ -388,6 +398,7 @@ mod tests {
     use ratatui::widgets::Widget;
 
     use super::*;
+    use crate::Project;
     use crate::fixtures;
 
     /// Everything a widget drew, as one string.
@@ -574,6 +585,27 @@ mod tests {
 
         app.engage_ask();
         assert_eq!(app.mode().title(), "ask the agent");
+    }
+
+    #[test]
+    fn the_status_line_distinguishes_unsaved_work_from_a_change_on_disk() {
+        // Two different problems with two different answers: one is fixed by
+        // saving, the other is made worse by it.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        let mut app = App::new(Project::open(&path).unwrap(), "blocks");
+
+        app.set_draft("mine");
+        let unsaved = drawn(status(&app), 120, 1);
+        assert!(unsaved.contains("unsaved"), "{unsaved}");
+        assert!(!unsaved.contains("on disk"), "{unsaved}");
+
+        std::fs::write(&path, fixtures::PROJECT.replace("#f05032", "#0066ff")).unwrap();
+        app.poll_file();
+
+        let stale = drawn(status(&app), 120, 1);
+        assert!(stale.contains("on disk"), "{stale}");
     }
 
     #[test]
