@@ -172,6 +172,11 @@ that always run: `src/mcp/server.rs` drives a real MCP client over a duplex,
 `src/mcp/bridge.rs` carries a call over a real socket, and `tests/mcp_stdio.rs`
 runs the binary. Never add a test that needs a network to `mise run ci`.
 
+`--yes` grants the *agent's* own tools — its editor, its shell — and an agent
+asked to change a colour may use them instead of `write_svg`, writing to the
+working tree past every guarantee above. Shaipe's own tools never ask and never
+save. Do not conflate the two when documenting either.
+
 When a test asserts something about a model's behaviour, make sure it can fail.
 `an_agent_can_see_the_artwork_rather_than_only_read_it` originally passed
 against a model that said "I cannot see images" and then looked the answer up

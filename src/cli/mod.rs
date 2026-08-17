@@ -203,9 +203,15 @@ pub struct TuiArgs {
 
     /// Approve everything the agent asks permission for.
     ///
-    /// Only affects the agent's *own* tools — reading files, running commands.
-    /// Shaipe's tools never ask: a call from the session is the user's own
-    /// workspace acting on the user's own project.
+    /// This is about the agent's *own* tools — reading files, editing them,
+    /// running commands — and it is a real grant: an agent told to change a
+    /// colour may well reach for its own editor and write to your working tree
+    /// rather than going through Shaipe. Without this flag those requests are
+    /// declined, because there is no dialogue to ask you with yet.
+    ///
+    /// Shaipe's own tools never ask, and never write to disk: a call from the
+    /// session is your workspace acting on the project you have open, and
+    /// `write_svg` changes it in memory until you press Ctrl-S.
     #[arg(long)]
     pub yes: bool,
 }

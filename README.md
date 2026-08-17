@@ -272,7 +272,16 @@ the agent's edits and your preview cannot drift apart
 ```bash
 shaipe --agent "some-other-agent acp"   # any ACP agent, not just OpenCode
 shaipe --no-agent                       # open the workspace without one
+shaipe --yes                            # approve the agent's own tools
 ```
+
+`--yes` is worth understanding before you use it. Shaipe's tools never ask for
+permission and never write to disk. Your agent's tools are a different matter:
+it has its own editor and its own shell, and an agent asked to change a colour
+may reach for those rather than for `write_svg`. `--yes` approves them, which
+means it can write to your working tree directly, past everything above.
+Without it they are declined — there is no dialogue to ask you with yet, and a
+[permission prompt](PLAN.md) is the obvious next thing.
 
 If OpenCode is not installed, the workspace still opens and says so in the
 prompt pane. Reading your own project has never depended on an agent, and it
