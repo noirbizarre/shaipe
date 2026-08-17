@@ -95,7 +95,13 @@ Sixel or iTerm2 — and Unicode half-blocks everywhere else.
 
 The focused pane takes the column, so the prompt is readable when you are
 reading it. The mouse works: click to focus and select, wheel to scroll, drag
-the divider to resize, double-click a render specification to export it.
+the divider to resize, double-click the prompt to edit it and a render
+specification to export it.
+
+`enter` on the prompt pane — or a double-click on it — hands the keyboard to an
+editor, `esc` or `tab` gives it back, and `e` opens the prompt in `$VISUAL` or
+`$EDITOR`. `ctrl-s` saves; the status line marks unsaved work and
+quitting with any asks first.
 
 ```bash
 shaipe doctor

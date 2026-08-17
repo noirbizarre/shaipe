@@ -162,8 +162,13 @@ rather than an impression of it.
 
 `tab` moves between panes and the focused pane takes the column, `↑↓` selects,
 `r` re-renders, `q` quits. The mouse works: click to focus and select, wheel to
-scroll, drag the divider to resize, double-click a render specification to
-write it to `dist/`.
+scroll, drag the divider to resize, double-click the prompt to edit it and a
+render specification to write it to `dist/`.
+
+`enter` on the prompt pane — or a double-click on it — hands the keyboard to an
+editor; `esc` or `tab` gives it back, and `e` opens the prompt in `$VISUAL` or
+`$EDITOR` instead. `ctrl-s` writes the project back to its file. The status line
+marks unsaved work, and quitting with any asks first.
 
 If the preview looks wrong, ask:
 

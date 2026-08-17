@@ -86,10 +86,18 @@ fn draw_left(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let focus = app.focus;
     let focused = move |candidate: Focus| candidate == focus;
 
-    frame.render_widget(
-        panes::prompt(app).block(panes::frame(Focus::Prompt, focused(Focus::Prompt))),
-        prompt,
-    );
+    let prompt_block = panes::frame(Focus::Prompt, focused(Focus::Prompt));
+    if app.is_editing() {
+        // The frame is drawn separately and the editor fills its interior,
+        // rather than the editor carrying a block of its own: a block would
+        // have to be set on the text area, and that mutable borrow cannot
+        // coexist with the immutable one the list panes take below.
+        let interior = prompt_block.inner(prompt);
+        frame.render_widget(&prompt_block, prompt);
+        frame.render_widget(app.editor(), interior);
+    } else {
+        frame.render_widget(panes::prompt(app).block(prompt_block), prompt);
+    }
 
     // Built before the mutable borrow of `app` that the list state needs.
     let metadata = app.project.metadata();
@@ -220,6 +228,22 @@ mod tests {
             .flat_map(|y| (area.x..area.x + area.width).map(move |x| (x, y)))
             .filter(|&(x, y)| buffer[(x, y)].bg != Color::Reset)
             .count()
+    }
+
+    #[test]
+    fn an_engaged_editor_takes_over_the_prompt_pane_of_a_whole_frame() {
+        // Through `draw` rather than the widget alone: this is the path where
+        // the editor's mutable borrow of the state has to coexist with the
+        // list panes' immutable borrow of the project.
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.engage_editor();
+        app.set_draft("an engaged editor");
+
+        let text = render(&mut app, 100, 30);
+
+        assert!(text.contains("an engaged editor"), "{text}");
+        // The rest of the workspace is still drawn around it.
+        assert!(text.contains("variants"), "{text}");
     }
 
     #[test]

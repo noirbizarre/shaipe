@@ -15,9 +15,11 @@
 //! it renders through [`crate::render`], so it shows exactly what
 //! `shaipe render` would write — not an approximation of it.
 //!
-//! There is no editor here yet. The prompt pane displays and scrolls; editing
-//! text, picking colours and driving an agent are all later work, and the
-//! state in [`app::App`] is arranged to receive them.
+//! The prompt pane is editable: `enter` or a double-click hands the keyboard
+//! to the editor, `esc` or `tab` gives it back, and `e` opens the prompt in
+//! `$EDITOR`.
+//! Picking colours, editing variants and driving an agent are still later
+//! work, and the state in [`app::App`] is arranged to receive them.
 
 pub mod app;
 pub mod panes;
@@ -30,8 +32,8 @@ use std::time::Duration;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
-    MouseEvent, MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -92,37 +94,49 @@ pub fn run(project: Project, backend: Backend, scale: Option<Scale>, verbose: u8
     outcome.and(restored)
 }
 
-/// Put the terminal into the state the workspace needs.
-fn enter() -> Result<Terminal<CrosstermBackend<Stdout>>> {
+/// Take the terminal, putting it into the state the workspace needs.
+///
+/// Separate from [`enter`] because the terminal is also given up and taken
+/// back mid-session, when the prompt is handed to `$EDITOR`. One definition of
+/// "the state the workspace needs" rather than two that can drift.
+fn grab(out: &mut impl io::Write) -> Result<()> {
     let io_error = |source| Error::io("the terminal", source);
 
     enable_raw_mode().map_err(io_error)?;
-    let mut stdout = io::stdout();
     // Mouse capture takes the terminal's own text selection with it. That is
     // the accepted trade for a clickable interface, and every terminal worth
     // using offers Shift-drag to select through it anyway.
-    execute!(
-        stdout,
-        EnterAlternateScreen,
-        EnableMouseCapture,
-        cursor::Hide
-    )
-    .map_err(io_error)?;
-    Terminal::new(CrosstermBackend::new(stdout)).map_err(io_error)
+    execute!(out, EnterAlternateScreen, EnableMouseCapture, cursor::Hide).map_err(io_error)
+}
+
+/// Give the terminal back, exactly as it was found.
+fn release(out: &mut impl io::Write) -> Result<()> {
+    let io_error = |source| Error::io("the terminal", source);
+
+    disable_raw_mode().map_err(io_error)?;
+    execute!(out, DisableMouseCapture, LeaveAlternateScreen, cursor::Show).map_err(io_error)
+}
+
+/// A terminal over the standard output, which [`grab`] must already have taken.
+///
+/// Its buffers start empty, so the first frame drawn through it paints every
+/// cell rather than a diff against whatever was there before.
+fn fresh_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
+    Terminal::new(CrosstermBackend::new(io::stdout()))
+        .map_err(|source| Error::io("the terminal", source))
+}
+
+/// Put the terminal into the state the workspace needs.
+fn enter() -> Result<Terminal<CrosstermBackend<Stdout>>> {
+    grab(&mut io::stdout())?;
+    fresh_terminal()
 }
 
 /// Put it back.
 fn leave(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
     let io_error = |source| Error::io("the terminal", source);
 
-    disable_raw_mode().map_err(io_error)?;
-    execute!(
-        terminal.backend_mut(),
-        DisableMouseCapture,
-        LeaveAlternateScreen,
-        cursor::Show
-    )
-    .map_err(io_error)?;
+    release(terminal.backend_mut())?;
     terminal.show_cursor().map_err(io_error)
 }
 
@@ -174,7 +188,7 @@ fn event_loop(
             match event::read().map_err(io_error)? {
                 // Windows reports press *and* release; acting on both would
                 // move every selection two steps at a time.
-                Event::Key(key) if key.kind == KeyEventKind::Press => handle(app, key.code),
+                Event::Key(key) if key.kind == KeyEventKind::Press => handle(app, key),
                 Event::Mouse(mouse) => handle_mouse(app, mouse),
                 _ => {}
             }
@@ -182,17 +196,175 @@ fn event_loop(
                 break;
             }
         }
+
+        // After the drain rather than inside it: the terminal is torn down and
+        // rebuilt here, and doing that with events still queued would feed
+        // them to whatever `$EDITOR` turns out to be.
+        open_editor(terminal, app, preview)?;
     }
 
+    Ok(())
+}
+
+/// The editor the user has nominated, and the arguments it came with.
+///
+/// `$VISUAL` before `$EDITOR`: the former is by definition the one that can
+/// use a whole screen, which is the only kind worth handing a terminal to.
+fn editor_command() -> Result<Vec<String>> {
+    let settings = ["VISUAL", "EDITOR"]
+        .iter()
+        .filter_map(|name| std::env::var(name).ok());
+    nominated_editor(settings).ok_or(Error::NoEditor)
+}
+
+/// The first of `settings` that actually nominates something.
+///
+/// Split on whitespace, because `EDITOR="emacsclient -nw"` and
+/// `EDITOR="code -w"` are entirely ordinary, and treating the whole string as
+/// a program name fails with a "not found" that names the arguments too.
+///
+/// Taken as an argument rather than read here, so it can be tested without the
+/// process-wide environment, which the rest of the suite is also running in.
+fn nominated_editor(settings: impl IntoIterator<Item = String>) -> Option<Vec<String>> {
+    settings
+        .into_iter()
+        .map(|value| {
+            value
+                .split_whitespace()
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        // A setting that is empty or all whitespace is not a nomination, and
+        // treating it as one would try to run a program with no name.
+        .find(|words| !words.is_empty())
+}
+
+/// Hand the prompt to `$EDITOR` and take the terminal back afterwards.
+///
+/// Everything that can go wrong here ends up in the status line rather than
+/// being returned: the workspace is the only place an unsaved prompt still
+/// exists, so an editor that is missing, refuses to start or exits angrily
+/// must not close it.
+fn open_editor(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    app: &mut App,
+    preview: &mut Preview,
+) -> Result<()> {
+    if !app.take_system_editor_request() {
+        return Ok(());
+    }
+
+    match edit_externally(&app.draft()) {
+        Ok(Some(edited)) => app.set_draft(&edited),
+        // The editor exited non-zero, which is how every editor worth the name
+        // says the edit was abandoned. The buffer is left exactly as it was.
+        Ok(None) => app.notice = Some("editor exited without saving".to_owned()),
+        Err(error) => app.notice = Some(format!("editor failed: {error}")),
+    }
+
+    // The alternate screen was left, and the terminal dropped the transmitted
+    // image with it. Without this the preview comes back empty and stays that
+    // way until something unrelated happens to change the render.
+    preview.invalidate();
+
+    // A new terminal rather than `Terminal::clear`, which snapshots the cursor
+    // position first — and reading that means writing a query and blocking on
+    // the reply over the same stdin the event loop reads, which fails outright
+    // wherever nothing answers, a pty under test included. A fresh terminal
+    // has an empty previous buffer, so the next frame repaints every cell,
+    // which is the only thing that was wanted from the clear.
+    *terminal = fresh_terminal()?;
+
+    Ok(())
+}
+
+/// Run the editor over `text`, returning what came back.
+///
+/// `None` means the editor exited non-zero and the text should be left alone.
+///
+/// The terminal is given up for the duration and taken back afterwards
+/// whatever happens, including when the editor cannot be started at all: a
+/// workspace that returns to a raw-mode terminal with no alternate screen is
+/// unusable, and that must not depend on the editor behaving.
+fn edit_externally(text: &str) -> Result<Option<String>> {
+    let command = editor_command()?;
+
+    // `.md` so the editor reaches for prose mode and spell checking rather
+    // than treating a paragraph as source.
+    let file = tempfile::Builder::new()
+        .prefix("shaipe-prompt-")
+        .suffix(".md")
+        .tempfile()
+        .map_err(|source| Error::io("a temporary file", source))?;
+    let path = file.path().to_path_buf();
+    std::fs::write(&path, text).map_err(|source| Error::io(&path, source))?;
+
+    release(&mut io::stdout())?;
+    let status = std::process::Command::new(&command[0])
+        .args(&command[1..])
+        .arg(&path)
+        .status();
+    let regrabbed = grab(&mut io::stdout());
+
+    // The editor is likely to have asked the terminal a question on its way
+    // out — vim asks for the background colour — and the reply arrives on
+    // stdin once we already have the terminal back. Left there it is read as
+    // a keypress, or painted into the workspace as stray escape codes. See
+    // https://ratatui.rs/recipes/apps/spawn-vim/.
+    drain_events()?;
+
+    regrabbed?;
+
+    let status = status.map_err(|source| Error::io(&command[0], source))?;
+    if !status.success() {
+        return Ok(None);
+    }
+
+    std::fs::read_to_string(&path)
+        .map(Some)
+        .map_err(|source| Error::io(&path, source))
+}
+
+/// Throw away everything the terminal has queued up.
+fn drain_events() -> Result<()> {
+    let io_error = |source| Error::io("the terminal", source);
+
+    while event::poll(Duration::ZERO).map_err(io_error)? {
+        let _ = event::read().map_err(io_error)?;
+    }
     Ok(())
 }
 
 /// Apply a keypress.
 ///
 /// Separated from the loop so it can be tested without a terminal.
-fn handle(app: &mut App, key: KeyCode) {
-    match key {
-        KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+fn handle(app: &mut App, key: KeyEvent) {
+    // The editor owns every printable key while it is engaged, so it is asked
+    // first. Saving is the exception: the editor's key map leaves `ctrl-s`
+    // alone, and a save that only works from outside the editor would be a
+    // save nobody reaches for.
+    let save = key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL);
+    if app.is_editing() && !save {
+        app.edit_key(key);
+        return;
+    }
+
+    // Any key other than another quit withdraws a pending confirmation, so the
+    // warning does not sit over an unrelated action.
+    if !matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
+        app.cancel_quit_confirmation();
+    }
+
+    match key.code {
+        _ if save => app.save(),
+        KeyCode::Char('q') | KeyCode::Esc => app.request_quit(),
+        KeyCode::Enter if app.focus == Focus::Prompt => app.engage_editor(),
+        // Only on the focused prompt pane, and only while the editor is not
+        // engaged — once it is, `e` is a letter someone is writing. The
+        // editor's own key map has `ctrl-e` for the end of the line, so there
+        // is no chord left inside it that would not be taking something else
+        // away.
+        KeyCode::Char('e') if app.focus == Focus::Prompt => app.request_system_editor(),
         KeyCode::Tab | KeyCode::Char('j') => app.focus_next(),
         KeyCode::BackTab | KeyCode::Char('k') => app.focus_previous(),
         KeyCode::Down => app.select_next(),
@@ -208,6 +380,20 @@ fn handle(app: &mut App, key: KeyCode) {
 /// needs a terminal, and all of it is easy to get subtly wrong.
 fn handle_mouse(app: &mut App, mouse: MouseEvent) {
     let (column, row) = (mouse.column, mouse.row);
+
+    // While editing, the prompt pane's rectangle belongs to the editor. Only
+    // the wheel does anything with it — the editor has no way to place the
+    // cursor at a screen cell — but a click there must still not be taken as
+    // a click on a pane. A click anywhere else is a statement that the prompt
+    // is no longer what the user is working on, so the editor is let go of
+    // before that click is handled as it normally would be.
+    if app.is_editing() {
+        if app.pane_at(column, row) == Some(Focus::Prompt) {
+            app.edit_mouse(mouse);
+            return;
+        }
+        app.disengage_editor();
+    }
 
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
@@ -226,8 +412,16 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
             app.focus = focus;
             app.select_at(focus, row);
 
-            if repeat && focus == Focus::Renders {
-                app.export_selected_render();
+            // A second click means "act on this", and what that is depends on
+            // the pane: a render specification is exported, and the prompt is
+            // opened for editing. Double-clicking prose to edit it is what
+            // every other text field does.
+            if repeat {
+                match focus {
+                    Focus::Renders => app.export_selected_render(),
+                    Focus::Prompt => app.engage_editor(),
+                    _ => {}
+                }
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
@@ -264,11 +458,44 @@ mod tests {
         App::new(fixtures::project(), "blocks")
     }
 
+    /// A keypress with no modifiers.
+    fn press(app: &mut App, code: KeyCode) {
+        handle(app, KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    /// A keypress with control held.
+    fn control(app: &mut App, code: KeyCode) {
+        handle(app, KeyEvent::new(code, KeyModifiers::CONTROL));
+    }
+
+    /// Type text into an engaged editor.
+    fn type_text(app: &mut App, text: &str) {
+        for character in text.chars() {
+            press(app, KeyCode::Char(character));
+        }
+    }
+
+    /// Focus the prompt pane and hand the keyboard to the editor.
+    ///
+    /// On a project with no prompt, so that what a test types is the whole
+    /// buffer rather than the fixture's prose with an insertion in front of
+    /// it, and so that the workspace starts out clean.
+    fn engaged() -> App {
+        let mut project = fixtures::project();
+        project.metadata_mut().prompt = None;
+
+        let mut app = App::new(project, "blocks");
+        app.focus = Focus::Prompt;
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.is_dirty(), "engaging the editor is not an edit");
+        app
+    }
+
     #[test]
     fn q_and_escape_both_leave_the_workspace() {
         for key in [KeyCode::Char('q'), KeyCode::Esc] {
             let mut app = app();
-            handle(&mut app, key);
+            press(&mut app, key);
             assert!(app.should_quit, "{key:?} should quit");
         }
     }
@@ -278,7 +505,7 @@ mod tests {
         let mut app = app();
         let first = app.focus;
         for _ in 0..Focus::COUNT {
-            handle(&mut app, KeyCode::Tab);
+            press(&mut app, KeyCode::Tab);
         }
         assert_eq!(app.focus, first);
     }
@@ -288,10 +515,176 @@ mod tests {
         let mut app = app();
         app.focus = Focus::Variants;
 
-        handle(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
         assert_eq!(app.selected_variant(), 1);
-        handle(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Up);
         assert_eq!(app.selected_variant(), 0);
+    }
+
+    #[test]
+    fn enter_on_the_prompt_pane_hands_the_keyboard_to_the_editor() {
+        let mut app = app();
+        app.focus = Focus::Prompt;
+
+        press(&mut app, KeyCode::Enter);
+        assert!(app.is_editing());
+    }
+
+    #[test]
+    fn typing_in_the_prompt_editor_changes_the_project_prompt() {
+        let mut app = engaged();
+        type_text(&mut app, "a bold mark");
+
+        assert!(
+            app.project
+                .metadata()
+                .prompt
+                .as_deref()
+                .is_some_and(|prompt| prompt.starts_with("a bold mark")),
+            "{:?}",
+            app.project.metadata().prompt
+        );
+        assert!(app.is_dirty());
+    }
+
+    #[test]
+    fn a_key_typed_into_the_editor_is_not_a_workspace_shortcut() {
+        // Every letter the workspace binds is also a letter someone writes.
+        for character in ['q', 'j', 'k', 'r', 'e'] {
+            let mut app = engaged();
+            type_text(&mut app, &character.to_string());
+
+            assert!(!app.should_quit, "{character} was typed, not pressed");
+            assert!(app.is_editing(), "{character} left the editor");
+            assert_eq!(
+                app.draft(),
+                character.to_string(),
+                "{character} did not reach the buffer"
+            );
+        }
+    }
+
+    #[test]
+    fn escape_leaves_the_editor_rather_than_quitting_the_workspace() {
+        let mut app = engaged();
+        type_text(&mut app, "x");
+
+        press(&mut app, KeyCode::Esc);
+
+        assert!(!app.is_editing());
+        assert!(!app.should_quit, "leaving the editor is not quitting");
+        assert_eq!(app.focus, Focus::Prompt, "and does not move the focus");
+    }
+
+    #[test]
+    fn tab_while_editing_moves_to_the_next_pane_rather_than_indenting() {
+        // Tab is how the whole workspace is navigated, and a literal tab in a
+        // paragraph of prose is worth much less than a consistent way out.
+        let mut app = engaged();
+        type_text(&mut app, "prose");
+
+        press(&mut app, KeyCode::Tab);
+
+        assert!(!app.is_editing());
+        assert_eq!(app.focus, Focus::Palette);
+        assert_eq!(app.draft(), "prose", "no tab reached the buffer");
+    }
+
+    #[test]
+    fn opening_and_closing_the_prompt_editor_without_typing_changes_nothing() {
+        let mut app = app();
+        let before = app.project.metadata().prompt.clone();
+
+        app.focus = Focus::Prompt;
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Esc);
+
+        assert_eq!(app.project.metadata().prompt, before);
+        assert!(!app.is_dirty(), "nothing was typed, so nothing is unsaved");
+    }
+
+    #[test]
+    fn e_on_the_focused_prompt_pane_requests_the_system_editor() {
+        let mut app = app();
+        app.focus = Focus::Prompt;
+
+        press(&mut app, KeyCode::Char('e'));
+        assert!(app.wants_system_editor());
+    }
+
+    #[test]
+    fn e_on_another_pane_is_not_a_request_for_the_system_editor() {
+        let mut app = app();
+        app.focus = Focus::Variants;
+
+        press(&mut app, KeyCode::Char('e'));
+        assert!(!app.wants_system_editor());
+    }
+
+    #[test]
+    fn quitting_with_unsaved_changes_asks_before_discarding_them() {
+        let mut app = engaged();
+        type_text(&mut app, "unsaved");
+        press(&mut app, KeyCode::Esc);
+
+        press(&mut app, KeyCode::Char('q'));
+        assert!(!app.should_quit, "unsaved work is worth one question");
+        assert!(app.wants_quit_confirmation());
+
+        press(&mut app, KeyCode::Char('q'));
+        assert!(app.should_quit, "and no more than one");
+    }
+
+    #[test]
+    fn an_unedited_workspace_quits_without_asking() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('q'));
+
+        assert!(app.should_quit);
+        assert!(!app.wants_quit_confirmation());
+    }
+
+    #[test]
+    fn anything_but_another_quit_withdraws_the_unsaved_changes_question() {
+        let mut app = engaged();
+        type_text(&mut app, "unsaved");
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('q'));
+
+        press(&mut app, KeyCode::Char('j'));
+        assert!(!app.wants_quit_confirmation());
+
+        press(&mut app, KeyCode::Char('q'));
+        assert!(!app.should_quit, "the question is asked again");
+    }
+
+    #[test]
+    fn control_s_saves_even_from_inside_the_editor() {
+        // A real file, because the shared fixture's path is a bare
+        // `logo.svg` — saving that from a test would rewrite the repository's
+        // own artwork.
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).expect("the fixture is writable");
+        let project = crate::project::Project::open(&path).expect("the fixture is a project");
+
+        let mut app = App::new(project, "blocks");
+        app.focus = Focus::Prompt;
+        press(&mut app, KeyCode::Enter);
+        app.set_draft("");
+        type_text(&mut app, "saved from the editor");
+
+        control(&mut app, KeyCode::Char('s'));
+
+        assert!(app.is_editing(), "saving does not leave the editor");
+        assert!(!app.is_dirty(), "the file now holds what the buffer does");
+        assert_eq!(app.draft(), "saved from the editor", "no s was inserted");
+        assert!(
+            std::fs::read_to_string(&path)
+                .expect("the project was written")
+                .contains("saved from the editor"),
+            "ctrl-s reached the workspace rather than being typed"
+        );
     }
 
     /// A left-button press at a point.
@@ -474,10 +867,74 @@ mod tests {
     }
 
     #[test]
+    fn double_clicking_the_prompt_opens_it_for_editing() {
+        let mut app = laid_out();
+        let prompt = app.area(Focus::Prompt);
+        let (column, row) = (prompt.x + 2, prompt.y + 2);
+
+        click(&mut app, column, row);
+        assert!(!app.is_editing(), "one click only focuses");
+        assert_eq!(app.focus, Focus::Prompt);
+
+        click(&mut app, column, row);
+        assert!(app.is_editing());
+    }
+
+    #[test]
+    fn double_clicking_a_pane_that_has_nothing_to_open_does_nothing() {
+        let mut app = laid_out();
+        let palette = app.area(Focus::Palette);
+
+        click(&mut app, palette.x + 2, palette.y + 2);
+        click(&mut app, palette.x + 2, palette.y + 2);
+
+        assert!(!app.is_editing());
+        assert!(app.notice.is_none());
+    }
+
+    #[test]
+    fn the_editor_command_prefers_visual_and_keeps_the_arguments_it_came_with() {
+        // `EDITOR="emacsclient -nw"` is entirely ordinary, and treating the
+        // whole string as a program name fails with a "not found" that names
+        // the arguments too.
+        let resolve =
+            |settings: &[&str]| nominated_editor(settings.iter().map(|value| (*value).to_owned()));
+
+        assert_eq!(
+            resolve(&["emacsclient -nw", "vi"]),
+            Some(vec!["emacsclient".to_owned(), "-nw".to_owned()])
+        );
+        assert_eq!(resolve(&["vi"]), Some(vec!["vi".to_owned()]));
+        // An empty or blank setting is not a nomination.
+        assert_eq!(resolve(&["  ", "vi"]), Some(vec!["vi".to_owned()]));
+        assert_eq!(resolve(&[]), None);
+        assert_eq!(resolve(&[""]), None);
+    }
+
+    #[test]
+    fn a_workspace_with_no_editor_configured_says_what_to_set() {
+        // On the status line, which is `Display` and nothing more: the advice
+        // has to be in the message itself, because the `help` is never
+        // rendered on this path.
+        let error = Error::NoEditor;
+        let message = error.to_string();
+
+        assert!(message.contains("$VISUAL"), "{message}");
+        assert!(message.contains("$EDITOR"), "{message}");
+        assert_eq!(
+            miette::Diagnostic::code(&error).map(|code| code.to_string()),
+            Some("shaipe::tui::no_editor".to_owned())
+        );
+    }
+
+    #[test]
     fn a_key_with_no_binding_changes_nothing() {
         let mut app = app();
         let before = (app.focus, app.selected_variant(), app.should_quit);
-        handle(&mut app, KeyCode::Char('z'));
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE),
+        );
         assert_eq!((app.focus, app.selected_variant(), app.should_quit), before);
     }
 }

@@ -255,6 +255,20 @@ pub enum Error {
     )]
     NotAPng,
 
+    /// No external editor could be found to hand the prompt to.
+    ///
+    /// The message carries the advice rather than leaving it all to `help`,
+    /// because the workspace shows this one on its status line — an editor
+    /// that cannot be opened must not close a workspace holding unsaved work —
+    /// and a status line is one line of `Display` with no room for a
+    /// diagnostic.
+    #[error("no editor is configured; set $VISUAL or $EDITOR")]
+    #[diagnostic(
+        code(shaipe::tui::no_editor),
+        help("Set $VISUAL or $EDITOR, or edit the prompt in place with `enter`.")
+    )]
+    NoEditor,
+
     /// A tool was invoked that the registry does not know.
     #[error("unknown tool `{tool}`")]
     #[diagnostic(

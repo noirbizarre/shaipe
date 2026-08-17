@@ -156,7 +156,10 @@ pub fn status(app: &App) -> Paragraph<'static> {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(" {action}   "),
+                // Two spaces rather than three: editing and saving added keys
+                // to a line that already only just fitted eighty columns, and
+                // a hint truncated away is worth nothing.
+                format!(" {action}  "),
                 Style::default().fg(Color::DarkGray),
             ),
         ]
@@ -164,19 +167,48 @@ pub fn status(app: &App) -> Paragraph<'static> {
 
     let mut spans = Vec::new();
 
+    // The question comes before everything else and in a colour that stops the
+    // eye: the next `q` throws work away, and nothing else on this line
+    // matters until it is answered.
+    if app.wants_quit_confirmation() {
+        spans.push(Span::styled(
+            "unsaved changes — q again to discard, ctrl-s to save   ",
+            Style::default()
+                .fg(Color::LightRed)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     // A notice replaces the hints rather than crowding them: it reports what
     // an export just wrote, which is the only thing worth reading afterwards.
-    if let Some(notice) = &app.notice {
+    else if let Some(notice) = &app.notice {
         spans.push(Span::styled(
             notice.clone(),
             Style::default().fg(Color::LightGreen),
         ));
         spans.push(Span::raw("   "));
+    } else if app.is_editing() {
+        // The workspace's own hints are all wrong while the editor has the
+        // keyboard, and listing keys that do something else would be worse
+        // than listing none.
+        spans.extend(hint("esc", "leave"));
+        spans.extend(hint("tab", "pane"));
+        spans.extend(hint("ctrl-s", "save"));
     } else {
         spans.extend(hint("tab", "pane"));
-        spans.extend(hint("↑↓", "select"));
-        spans.extend(hint("r", "re-render"));
-        spans.extend(hint("2×click", "export"));
+        // Which keys are listed follows the focus, for room and for honesty.
+        // The prompt has no rows, so `↑↓` never moved anything there; and its
+        // own two keys are the only way either is discovered. Re-rendering is
+        // dropped from that list because a prompt is metadata — editing it
+        // cannot change what the preview shows.
+        if app.focus == Focus::Prompt {
+            spans.extend(hint("enter", "edit"));
+            spans.extend(hint("e", "$EDITOR"));
+            spans.extend(hint("ctrl-s", "save"));
+        } else {
+            spans.extend(hint("↑↓", "select"));
+            spans.extend(hint("ctrl-s", "save"));
+            spans.extend(hint("r", "render"));
+        }
         spans.extend(hint("q", "quit"));
     }
 
@@ -188,6 +220,17 @@ pub fn status(app: &App) -> Paragraph<'static> {
         spans.push(Span::styled(
             format!("render {}ms   ", elapsed.as_millis()),
             Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    // Outside the branches above, because a notice or a quit warning must not
+    // be able to hide the fact that there is unsaved work.
+    if app.is_dirty() {
+        spans.push(Span::styled(
+            "● unsaved  ",
+            Style::default()
+                .fg(Color::LightYellow)
+                .add_modifier(Modifier::BOLD),
         ));
     }
 
@@ -263,6 +306,89 @@ mod tests {
         let app = App::new(project, "blocks");
 
         assert!(drawn(prompt(&app), 60, 4).contains("No prompt"));
+    }
+
+    #[test]
+    fn the_prompt_pane_draws_the_editor_while_editing() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.engage_editor();
+        app.set_draft("an edited prompt");
+
+        let output = drawn(app.editor(), 60, 4);
+
+        assert!(output.contains("an edited prompt"), "{output}");
+    }
+
+    #[test]
+    fn a_prompt_wider_than_the_pane_wraps_rather_than_running_off_the_edge() {
+        // A prompt is prose in a column barely thirty cells wide, so a text
+        // area that scrolled horizontally instead would show one line of it.
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.engage_editor();
+        app.set_draft("wrapping is what makes this pane readable at all");
+
+        let output = drawn(app.editor(), 20, 5);
+
+        assert!(output.contains("wrapping"), "{output}");
+        assert!(output.contains("readable"), "{output}");
+    }
+
+    #[test]
+    fn the_editing_hints_name_the_way_out() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.engage_editor();
+
+        let output = drawn(status(&app), 120, 1);
+
+        assert!(output.contains("esc"), "{output}");
+        assert!(output.contains("leave"), "{output}");
+    }
+
+    #[test]
+    fn the_prompt_pane_advertises_the_two_keys_only_it_has() {
+        // Nothing else in the workspace would ever reveal them.
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.focus = Focus::Prompt;
+
+        let output = drawn(status(&app), 120, 1);
+
+        assert!(output.contains("edit"), "{output}");
+        assert!(output.contains("$EDITOR"), "{output}");
+    }
+
+    #[test]
+    fn the_hints_fit_eighty_columns_even_with_unsaved_work_to_report() {
+        // The status line is the one place every key is discoverable, and a
+        // hint truncated away is worth nothing.
+        for focus in Focus::ALL {
+            let mut app = App::new(fixtures::project(), "blocks");
+            app.focus = focus;
+            app.set_draft("unsaved");
+
+            let output = drawn(status(&app), 80, 1);
+            assert!(
+                output.contains("preview: blocks"),
+                "{focus:?} overflows:\n{output}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_status_line_says_when_there_is_unsaved_work() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.set_draft("changed");
+
+        assert!(drawn(status(&app), 120, 1).contains("unsaved"));
+    }
+
+    #[test]
+    fn the_status_line_asks_before_unsaved_work_is_discarded() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.set_draft("changed");
+        app.request_quit();
+
+        let output = drawn(status(&app), 120, 1);
+        assert!(output.contains("q again to discard"), "{output}");
     }
 
     #[test]

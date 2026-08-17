@@ -4,14 +4,17 @@
 //! the only derived state, and it is cached because rendering on every frame
 //! would rasterise a 512-pixel SVG four times a second for no reason.
 //!
-//! This is where editing will land. A prompt editor, a colour picker and an
-//! agent conversation all need somewhere to hold a draft and a dirty flag, and
-//! that somewhere is here rather than spread through the drawing code.
+//! This is where editing lives. The prompt editor holds its draft and the
+//! dirty flag here rather than spread through the drawing code, and a colour
+//! picker or an agent conversation would land beside them.
 
 use std::time::{Duration, Instant};
 
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::widgets::ListState;
+use ratatui_textarea::{TextArea, WrapMode};
 
 use crate::preview::{Image, Scale};
 use crate::project::{Format, Project, RenderSpec};
@@ -125,6 +128,29 @@ pub struct App {
     /// it. Used to report what an export actually wrote.
     pub notice: Option<String>,
 
+    /// The prompt editor's buffer and cursor.
+    ///
+    /// Seeded from the project and committed back on every keystroke, so the
+    /// project is always what the pane shows. It survives disengaging, so
+    /// leaving the editor and coming back keeps the cursor where it was.
+    editor: TextArea<'static>,
+    /// Whether keys go to the editor rather than to the workspace.
+    ///
+    /// Explicit rather than implied by [`Focus::Prompt`], because every
+    /// printable key is an edit while the editor has the keyboard, `q` and `r`
+    /// among them. There has to be a state in which the prompt pane is focused
+    /// and the workspace's own shortcuts still work.
+    editing: bool,
+    /// Whether `$EDITOR` has been asked for and not yet opened.
+    ///
+    /// A flag rather than the deed, because opening an editor needs the
+    /// terminal, which the state deliberately does not have.
+    editor_requested: bool,
+    /// Whether the project has changes that are not on disk.
+    dirty: bool,
+    /// Whether a quit was refused because of [`App::dirty`].
+    confirm_quit: bool,
+
     /// Where each pane was drawn last frame.
     ///
     /// Recorded during drawing rather than recomputed when a click arrives:
@@ -173,6 +199,7 @@ impl App {
     #[must_use]
     pub fn new(project: Project, backend: &'static str) -> Self {
         let project_for_worker = project.clone();
+        let editor = Self::editor_for(project.metadata().prompt.as_deref().unwrap_or_default());
         Self {
             project,
             focus: Focus::Variants,
@@ -181,6 +208,11 @@ impl App {
             verbose: 0,
             column_width: DEFAULT_COLUMN,
             notice: None,
+            editor,
+            editing: false,
+            editor_requested: false,
+            dirty: false,
+            confirm_quit: false,
             areas: [Rect::ZERO; Focus::COUNT],
             preview_area: Rect::ZERO,
             preview_pixels: (0, 0),
@@ -235,6 +267,189 @@ impl App {
     /// Move the keyboard to the previous pane.
     pub fn focus_previous(&mut self) {
         self.focus = Focus::ALL[(self.focus_index() + Focus::COUNT - 1) % Focus::COUNT];
+    }
+
+    /// A text area holding `text`, styled the way the prompt pane wants it.
+    ///
+    /// Word wrapping because a prompt is prose, falling back to breaking a
+    /// word that is wider than the column rather than letting it disappear off
+    /// the edge. The cursor line's underline is cleared: the crate draws it to
+    /// mark the current line of source, and in a paragraph it reads as an
+    /// artefact.
+    fn editor_for(text: &str) -> TextArea<'static> {
+        let mut editor = TextArea::from(text.lines());
+        editor.set_wrap_mode(WrapMode::WordOrGlyph);
+        editor.set_cursor_line_style(Style::default());
+        editor
+    }
+
+    /// Hand the keyboard to the prompt editor.
+    pub const fn engage_editor(&mut self) {
+        self.focus = Focus::Prompt;
+        self.editing = true;
+    }
+
+    /// Take the keyboard back from the prompt editor.
+    pub fn disengage_editor(&mut self) {
+        self.editing = false;
+        self.commit_prompt();
+    }
+
+    /// Whether keys are going to the prompt editor.
+    #[must_use]
+    pub const fn is_editing(&self) -> bool {
+        self.editing
+    }
+
+    /// Whether the project holds changes that are not on disk.
+    #[must_use]
+    pub const fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// Whether a quit is waiting on confirmation.
+    #[must_use]
+    pub const fn wants_quit_confirmation(&self) -> bool {
+        self.confirm_quit
+    }
+
+    /// The prompt editor, for drawing.
+    #[must_use]
+    pub const fn editor(&self) -> &TextArea<'static> {
+        &self.editor
+    }
+
+    /// What the prompt editor currently holds.
+    #[must_use]
+    pub fn draft(&self) -> String {
+        self.editor.lines().join("\n")
+    }
+
+    /// Replace what the prompt editor holds, as `$EDITOR` returning does.
+    ///
+    /// A fresh text area rather than an edited one, so the styling stays in
+    /// one place and the cursor cannot be left pointing past the new end.
+    pub fn set_draft(&mut self, text: &str) {
+        self.editor = Self::editor_for(text);
+        self.commit_prompt();
+    }
+
+    /// Apply a keypress to the prompt editor.
+    ///
+    /// Two keys are taken before the editor sees them. `esc` leaves the pane —
+    /// the editor has no modes, so it has no other use for it. And `tab` moves
+    /// to the next pane rather than indenting: tab is how the whole workspace
+    /// is navigated, and a literal tab in a paragraph of prose is worth much
+    /// less than a consistent way out.
+    pub fn edit_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.disengage_editor();
+                return;
+            }
+            KeyCode::Tab => {
+                self.disengage_editor();
+                self.focus_next();
+                return;
+            }
+            KeyCode::BackTab => {
+                self.disengage_editor();
+                self.focus_previous();
+                return;
+            }
+            _ => {}
+        }
+
+        self.editor.input(key);
+        self.commit_prompt();
+    }
+
+    /// Apply a mouse event to the prompt editor.
+    ///
+    /// Only the wheel does anything: the crate has no way to place the cursor
+    /// at a screen cell, so a click inside the pane would have nothing to do.
+    pub fn edit_mouse(&mut self, mouse: MouseEvent) {
+        self.editor.input(mouse);
+        self.commit_prompt();
+    }
+
+    /// Ask for the prompt to be opened in `$EDITOR`.
+    ///
+    /// Raises a flag rather than doing it: opening an editor means giving the
+    /// terminal away and taking it back, and the state has no terminal.
+    pub const fn request_system_editor(&mut self) {
+        self.editor_requested = true;
+    }
+
+    /// Take a pending `$EDITOR` request, if there is one.
+    pub const fn take_system_editor_request(&mut self) -> bool {
+        std::mem::replace(&mut self.editor_requested, false)
+    }
+
+    /// Whether `$EDITOR` has been asked for and not yet opened.
+    #[must_use]
+    pub const fn wants_system_editor(&self) -> bool {
+        self.editor_requested
+    }
+
+    /// Copy the editor's buffer into the project.
+    ///
+    /// Called after every keystroke, which is a string comparison rather than
+    /// a render: the prompt is metadata and has no effect on geometry, so an
+    /// edit never invalidates the preview.
+    ///
+    /// The text is trimmed and an empty prompt becomes `None`, for two
+    /// reasons. The reader trims (`Metadata::from_document`), so an untrimmed
+    /// write would not survive a round trip; and a prompt cleared to nothing
+    /// must drop the element rather than write an empty one, which is the same
+    /// omit-the-default rule that lets an untouched project be saved without
+    /// changing a byte.
+    pub fn commit_prompt(&mut self) {
+        let text = self.draft();
+        let text = text.trim();
+        let prompt = (!text.is_empty()).then(|| text.to_owned());
+
+        if self.project.metadata().prompt != prompt {
+            self.project.metadata_mut().prompt = prompt;
+            self.dirty = true;
+        }
+    }
+
+    /// Write the project back to its file.
+    ///
+    /// The outcome goes to the status line rather than being returned: a
+    /// failed write must not close the workspace, which is the one place the
+    /// unsaved work still exists.
+    pub fn save(&mut self) {
+        self.commit_prompt();
+        self.notice = Some(match self.project.save() {
+            Ok(()) => {
+                self.dirty = false;
+                self.confirm_quit = false;
+                format!("wrote {}", self.project.path().display())
+            }
+            Err(error) => format!("save failed: {error}"),
+        });
+    }
+
+    /// Ask to leave the workspace.
+    ///
+    /// Unsaved work is worth one question and no more: the first request with
+    /// changes pending asks, the second discards them.
+    pub fn request_quit(&mut self) {
+        if self.dirty && !self.confirm_quit {
+            self.confirm_quit = true;
+            return;
+        }
+        self.should_quit = true;
+    }
+
+    /// Withdraw a pending quit confirmation.
+    ///
+    /// Anything other than another quit counts as a change of mind, so the
+    /// warning does not linger over an unrelated keypress.
+    pub const fn cancel_quit_confirmation(&mut self) {
+        self.confirm_quit = false;
     }
 
     /// Move the selection down within the focused pane.
@@ -759,6 +974,104 @@ mod tests {
 
     fn app() -> App {
         App::new(fixtures::project(), "blocks")
+    }
+
+    /// Replace the editor's buffer, as `$EDITOR` returning would.
+    fn set_buffer(app: &mut App, text: &str) {
+        app.set_draft(text);
+    }
+
+    #[test]
+    fn the_prompt_editor_starts_from_what_the_project_says() {
+        let app = app();
+        assert_eq!(
+            app.draft(),
+            app.project.metadata().prompt.clone().unwrap_or_default()
+        );
+    }
+
+    #[test]
+    fn a_prompt_edited_to_nothing_removes_the_element_rather_than_writing_an_empty_one() {
+        // An empty `<shaipe:prompt/>` is not the same document as no prompt at
+        // all, and only one of the two round-trips.
+        let mut app = app();
+        set_buffer(&mut app, "");
+        app.commit_prompt();
+
+        assert_eq!(app.project.metadata().prompt, None);
+        assert!(
+            !app.project
+                .to_svg()
+                .expect("serialisable")
+                .contains("prompt")
+        );
+    }
+
+    #[test]
+    fn a_committed_prompt_is_trimmed_so_it_survives_a_round_trip() {
+        // The reader trims, so anything else would come back different from
+        // what was written.
+        let mut app = app();
+        set_buffer(&mut app, "  spaced out  ");
+        app.commit_prompt();
+
+        assert_eq!(app.project.metadata().prompt.as_deref(), Some("spaced out"));
+    }
+
+    #[test]
+    fn committing_the_prompt_unchanged_leaves_the_project_clean() {
+        let mut app = app();
+        app.commit_prompt();
+
+        assert!(!app.is_dirty());
+    }
+
+    #[test]
+    fn saving_the_workspace_writes_the_project_and_clears_the_dirty_marker() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).expect("the fixture is writable");
+
+        let mut app = App::new(
+            Project::open(&path).expect("the fixture is a project"),
+            "blocks",
+        );
+        set_buffer(&mut app, "a rewritten prompt");
+        app.commit_prompt();
+        assert!(app.is_dirty());
+
+        app.save();
+
+        assert!(!app.is_dirty());
+        assert!(
+            std::fs::read_to_string(&path)
+                .expect("the project was written")
+                .contains("a rewritten prompt")
+        );
+    }
+
+    #[test]
+    fn a_failed_save_reports_itself_without_closing_the_workspace() {
+        // The workspace is the only place the unsaved work still exists.
+        let mut app = App::new(
+            Project::from_source("no/such/directory/logo.svg", fixtures::PROJECT.to_owned())
+                .expect("the fixture is a project"),
+            "blocks",
+        );
+        set_buffer(&mut app, "a prompt that cannot be written");
+        app.commit_prompt();
+
+        app.save();
+
+        assert!(app.is_dirty(), "nothing reached the disk");
+        assert!(!app.should_quit);
+        assert!(
+            app.notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("save failed")),
+            "{:?}",
+            app.notice
+        );
     }
 
     #[test]

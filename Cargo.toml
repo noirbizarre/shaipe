@@ -112,6 +112,13 @@ roxmltree = "0.21.1"
 ratatui = "0.30.2"
 ratatui-image = { version = "11.0.6", default-features = false, features = ["crossterm"] }
 
+# The prompt editor. This is the ratatui-org fork of `tui-textarea`: the
+# original pins `ratatui` back to 0.29, which is why it was ruled out, while
+# this builds on `ratatui-core`, which is what `ratatui` 0.30 already resolves
+# to. It also soft-wraps, which the original never did and which a pane holding
+# prose needs. Default features are the `crossterm` backend and nothing else.
+ratatui-textarea = "0.9.2"
+
 # `ratatui-image` speaks `DynamicImage`, so `preview::Image` needs the type to
 # hand it one. No codec is enabled: pixels come from `tiny-skia`, never a file.
 image = { version = "0.25.10", default-features = false }
@@ -123,10 +130,14 @@ base64 = "0.23.1"
 # font family falling back to a system font, most of all.
 log = "0.4.33"
 
+# The scratch file the prompt is handed to `$EDITOR` in. A real dependency
+# rather than a dev one since the workspace needs it, and still visible to the
+# tests, which is why there is no dev entry for it.
+tempfile = "3"
+
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
-tempfile = "3"
 insta = { version = "1", features = ["filters"] }
 rstest = "0.26"
 pretty_assertions = "1"

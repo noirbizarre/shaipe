@@ -103,10 +103,11 @@ The interactive TUI.
 - [x] `--preview` works without naming a subcommand
 - [x] A frame announcing the image is drawn before the write that blocks on it,
       so the workspace looks busy rather than wedged
-- [ ] Edit the prompt in place — needs a text widget; `tui-textarea` is ruled
-      out (pins ratatui 0.29), `edtui` fits but is Vim-modal, so confirm first
-- [ ] `E` suspends the workspace and opens `$EDITOR` on the prompt
-- [ ] Save the project from the workspace, with a dirty marker and a guard on
+- [x] Edit the prompt in place — `ratatui-textarea`, the ratatui-org fork of
+      `tui-textarea`; the original was ruled out for pinning ratatui 0.29, the
+      fork builds on `ratatui-core` and soft-wraps, which the original never did
+- [x] `e` on the prompt pane suspends the workspace and opens `$EDITOR` on it
+- [x] Save the project from the workspace, with a dirty marker and a guard on
       quitting with unsaved changes
 - [ ] A colour picker for the palette pane
 - [ ] Add, remove and reorder variants and render specifications
