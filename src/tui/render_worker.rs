@@ -64,19 +64,31 @@ impl Worker {
                 // Everything queued behind this one is already stale, so it is
                 // dropped before any of it is rendered. This is what makes
                 // holding an arrow key cost one render rather than thirty.
-                let mut request = request;
+                //
+                // Only *renders* are stale, though. A `Reload` carries the
+                // project every later render will be drawn from, so it is
+                // applied as it goes past rather than overwritten by whatever
+                // followed it. Dropping one left the worker rendering the old
+                // project for the rest of the session — which is what an
+                // agent's edit hit whenever it landed while a rasterise was
+                // already running.
+                let mut latest = None;
+                let mut next = Some(request);
                 loop {
+                    match next.take() {
+                        Some(Request::Reload(updated)) => project = *updated,
+                        // Only the last one survives; that is the coalescing.
+                        Some(render) => latest = Some(render),
+                        None => {}
+                    }
                     match request_rx.try_recv() {
-                        Ok(next) => request = next,
+                        Ok(request) => next = Some(request),
                         Err(TryRecvError::Empty) => break,
                         Err(TryRecvError::Disconnected) => return,
                     }
                 }
 
-                let Request::Render { seq, spec } = request else {
-                    if let Request::Reload(updated) = request {
-                        project = *updated;
-                    }
+                let Some(Request::Render { seq, spec }) = latest else {
                     continue;
                 };
 
@@ -174,6 +186,66 @@ mod tests {
         // And it still works afterwards.
         worker.request(2, RenderSpec::square("p", "icon", 16));
         assert!(worker.wait(PATIENCE).expect("a render").image.is_ok());
+    }
+
+    #[test]
+    fn a_reload_queued_behind_a_render_is_not_discarded() {
+        // Coalescing used to overwrite whatever it was holding, so a `Reload`
+        // sitting behind a `Render` was thrown away and the worker rendered
+        // the *old* project for the rest of the session. That is what an
+        // agent's edit hit whenever it landed while a rasterise was already
+        // running: `write_svg` succeeded, the preview never changed.
+        //
+        // Both are sent before the worker is given a chance to run, so they
+        // are certainly drained in one pass — which is the case that used to
+        // lose one.
+        let worker = Worker::new(&fixtures::project());
+
+        let mut edited = fixtures::project();
+        edited.metadata_mut().palette = crate::project::Palette::default();
+
+        worker.request(1, RenderSpec::square("p", "icon", 16));
+        worker.reload(&edited);
+        worker.request(2, RenderSpec::square("p", "icon", 16));
+
+        // Drain whatever the pass produced. A short wait: this is only
+        // clearing the decks, and PATIENCE here would be paid in full on the
+        // last iteration for nothing.
+        while worker.wait(Duration::from_millis(400)).is_some() {}
+
+        // The proof: ask for a variant that only exists in the *original*
+        // project. If the reload was dropped the worker still has it and the
+        // render succeeds; if the reload landed, it cannot.
+        let mut without = fixtures::project();
+        without.metadata_mut().variants.clear();
+        worker.reload(&without);
+        worker.request(3, RenderSpec::square("p", "icon", 16));
+
+        let answer = worker.wait(PATIENCE).expect("a render");
+        assert!(
+            answer.image.is_err(),
+            "the worker is still rendering a project it was told to replace"
+        );
+    }
+
+    #[test]
+    fn a_reload_is_applied_even_when_a_render_follows_it_immediately() {
+        // The same thing from the other side, and the ordering that matters:
+        // whatever the queue order, the render must be drawn from the newest
+        // project.
+        let worker = Worker::new(&fixtures::project());
+
+        let mut without = fixtures::project();
+        without.metadata_mut().variants.clear();
+
+        worker.reload(&without);
+        worker.request(1, RenderSpec::square("p", "icon", 16));
+
+        let answer = worker.wait(PATIENCE).expect("a render");
+        assert!(
+            answer.image.is_err(),
+            "the render was drawn from the project the reload replaced"
+        );
     }
 
     #[test]
