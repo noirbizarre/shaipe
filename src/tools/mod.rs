@@ -303,6 +303,19 @@ mod tests {
     }
 
     #[test]
+    fn the_tool_names_are_the_ones_the_adr_records() {
+        // A tool name is a public interface: it appears in a model's context,
+        // in a user's config and in whatever conversation history an agent
+        // keeps. Renaming one is a breaking change, so it should take a
+        // deliberate edit here rather than happening as a side effect of a
+        // refactor. See ADR 007.
+        assert_eq!(
+            Registry::new().names(),
+            ["get_palette", "get_project", "get_variants", "render_svg"]
+        );
+    }
+
+    #[test]
     fn calling_a_tool_that_does_not_exist_lists_the_ones_that_do() {
         let mut project = fixtures::project();
         let error = Registry::new()
@@ -321,7 +334,7 @@ mod tests {
         struct Stub;
         impl Tool for Stub {
             fn name(&self) -> &'static str {
-                "inspect_project"
+                "get_project"
             }
             fn description(&self) -> &'static str {
                 "a replacement, for testing that registration overrides"
@@ -341,7 +354,7 @@ mod tests {
         assert_eq!(registry.names().len(), before);
         assert_eq!(
             registry
-                .call("inspect_project", &mut fixtures::project(), &Value::Null)
+                .call("get_project", &mut fixtures::project(), &Value::Null)
                 .unwrap()
                 .value,
             Value::String("stub".to_owned())

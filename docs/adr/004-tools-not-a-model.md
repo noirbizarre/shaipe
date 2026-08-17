@@ -42,6 +42,14 @@ Everything currently registered is read-only: `inspect_project`,
 `list_variants`, `inspect_palette`, `render`. `Tool::call` takes the project by
 `&mut` anyway, so the mutating tools that come next need no new trait.
 
+> **Since written:** those four tools were renamed by
+> [ADR-007](007-tool-names.md), their parameter lists became JSON Schema in
+> [ADR-008](008-json-schema-for-tool-inputs.md), and the transport this section
+> declines to build now exists — see
+> [ADR-011](011-driving-an-agent-is-still-not-a-model.md), which argues that
+> building it does not contradict this ADR. The decision recorded here is
+> unchanged: Shaipe still provides tools and still does not provide a model.
+
 ### Alternatives rejected
 
 - **A provider integration.** Rejected above.

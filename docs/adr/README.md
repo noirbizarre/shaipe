@@ -27,3 +27,5 @@ by editing the old one. The history is the value.
 - [ADR-004](004-tools-not-a-model.md) — Shaipe provides tools; it does not provide a model
 - [ADR-005](005-declared-fonts.md) — Fonts are declared by the project, not resolved from the system
 - [ADR-006](006-ratatui-image.md) — Use `ratatui-image` for terminal previews
+- [ADR-007](007-tool-names.md) — Tool names are `verb_noun`
+- [ADR-008](008-json-schema-for-tool-inputs.md) — Tool inputs are described by JSON Schema

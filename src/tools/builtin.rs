@@ -23,19 +23,19 @@ use crate::tools::{
 /// Every tool Shaipe implements.
 pub fn all() -> Vec<Box<dyn Tool>> {
     vec![
-        Box::new(InspectProject),
-        Box::new(ListVariants),
-        Box::new(InspectPalette),
-        Box::new(Render),
+        Box::new(GetProject),
+        Box::new(GetVariants),
+        Box::new(GetPalette),
+        Box::new(RenderSvg),
     ]
 }
 
 /// Describe the whole project.
-struct InspectProject;
+struct GetProject;
 
-impl Tool for InspectProject {
+impl Tool for GetProject {
     fn name(&self) -> &'static str {
-        "inspect_project"
+        "get_project"
     }
 
     fn description(&self) -> &'static str {
@@ -56,11 +56,11 @@ impl Tool for InspectProject {
 }
 
 /// List the renderable parts of the document.
-struct ListVariants;
+struct GetVariants;
 
-impl Tool for ListVariants {
+impl Tool for GetVariants {
     fn name(&self) -> &'static str {
-        "list_variants"
+        "get_variants"
     }
 
     fn description(&self) -> &'static str {
@@ -92,11 +92,11 @@ impl Tool for ListVariants {
 }
 
 /// Read the palette.
-struct InspectPalette;
+struct GetPalette;
 
-impl Tool for InspectPalette {
+impl Tool for GetPalette {
     fn name(&self) -> &'static str {
-        "inspect_palette"
+        "get_palette"
     }
 
     fn description(&self) -> &'static str {
@@ -129,11 +129,11 @@ impl Tool for InspectPalette {
 }
 
 /// Rasterise a variant.
-struct Render;
+struct RenderSvg;
 
-impl Tool for Render {
+impl Tool for RenderSvg {
     fn name(&self) -> &'static str {
-        "render"
+        "render_svg"
     }
 
     fn description(&self) -> &'static str {
@@ -148,7 +148,7 @@ impl Tool for Render {
             &[
                 (
                     "variant",
-                    string("Which variant to draw. One of the names from `list_variants`."),
+                    string("Which variant to draw. One of the names from `get_variants`."),
                 ),
                 ("width", integer("Canvas width in pixels. Defaults to 512.")),
                 (
@@ -217,32 +217,32 @@ mod tests {
     }
 
     #[test]
-    fn inspect_project_returns_the_same_report_the_cli_prints() {
+    fn get_project_returns_the_same_report_the_cli_prints() {
         // One description of a project, not two that can disagree.
-        let value = value("inspect_project", Value::Null);
+        let value = value("get_project", Value::Null);
         assert_eq!(value["schema_version"], 1);
         assert_eq!(value["variants"][1]["element"], "mark-wide");
     }
 
     #[test]
-    fn list_variants_says_which_variant_the_document_root_draws() {
-        let value = value("list_variants", Value::Null);
+    fn get_variants_says_which_variant_the_document_root_draws() {
+        let value = value("get_variants", Value::Null);
         assert_eq!(value[0]["name"], "icon");
         assert_eq!(value[0]["primary"], true);
         assert_eq!(value[1]["primary"], false);
     }
 
     #[test]
-    fn inspect_palette_returns_every_colour_with_its_role() {
-        let value = value("inspect_palette", Value::Null);
+    fn get_palette_returns_every_colour_with_its_role() {
+        let value = value("get_palette", Value::Null);
         assert_eq!(value[0]["value"], "#f05032");
         assert_eq!(value[0]["role"], "accent");
         assert_eq!(value[1]["role"], Value::Null);
     }
 
     #[test]
-    fn render_returns_a_decodable_png_of_the_requested_size() {
-        let output = call("render", json!({ "variant": "icon", "width": 64 })).unwrap();
+    fn render_svg_returns_a_decodable_png_of_the_requested_size() {
+        let output = call("render_svg", json!({ "variant": "icon", "width": 64 })).unwrap();
 
         assert_eq!(output.value["width"], 64);
         assert_eq!(output.value["height"], 64);
@@ -260,24 +260,24 @@ mod tests {
     }
 
     #[test]
-    fn render_defaults_to_a_square_so_a_model_need_not_invent_a_size() {
-        let value = value("render", json!({ "variant": "icon" }));
+    fn render_svg_defaults_to_a_square_so_a_model_need_not_invent_a_size() {
+        let value = value("render_svg", json!({ "variant": "icon" }));
         assert_eq!(value["width"], 512);
         assert_eq!(value["height"], 512);
     }
 
     #[test]
-    fn render_without_a_variant_says_which_argument_is_missing() {
-        let error = call("render", json!({ "width": 64 })).unwrap_err();
+    fn render_svg_without_a_variant_says_which_argument_is_missing() {
+        let error = call("render_svg", json!({ "width": 64 })).unwrap_err();
         let rendered = error.to_string();
         assert!(rendered.contains("variant"), "{rendered}");
     }
 
     #[test]
-    fn render_of_an_undeclared_variant_lists_the_ones_that_exist() {
+    fn render_svg_of_an_undeclared_variant_lists_the_ones_that_exist() {
         // The recovery path for a model that guessed a name: the error tells
         // it what it should have called instead.
-        let error = call("render", json!({ "variant": "watermark" })).unwrap_err();
+        let error = call("render_svg", json!({ "variant": "watermark" })).unwrap_err();
         let rendered = format!("{:?}", miette::Report::new(error));
         assert!(rendered.contains("icon"), "{rendered}");
         assert!(rendered.contains("wordmark"), "{rendered}");

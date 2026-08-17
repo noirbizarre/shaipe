@@ -119,7 +119,7 @@ Shaipe provides tools. It does not provide a model, a key or a conversation —
 see `docs/adr/004-tools-not-a-model.md`.
 
 - [x] `Tool` trait and `Registry`, transport-agnostic
-- [x] `inspect_project`, `list_variants`, `inspect_palette`, `render`
+- [x] `get_project`, `get_variants`, `get_palette`, `render_svg`
 - [x] Stable tool names and ordering, descriptions written as prompt text
 - [ ] Prove the loop that already works: an agent runs `shaipe render` and
       opens the PNG. Until this is done and written up, the premise is
@@ -128,6 +128,8 @@ see `docs/adr/004-tools-not-a-model.md`.
 - [ ] Mutating tools: set a palette colour, write a variant, record generation
 - [ ] Tools for attaching and inspecting references
 - [ ] Raster to vector: hand a PNG to an agent and get an SVG back
+- [x] Tool inputs described by JSON Schema rather than a parameter list — ADR-008
+- [x] Tools renamed to `verb_noun`, pinned by a test — ADR-007
 
 ## Artwork
 

@@ -220,10 +220,10 @@ Early, but real. Nothing described above is a mock.
 - `shaipe render`, `shaipe inspect`, and a CI workflow that regenerates this
   repository's own artwork from `logo.svg` and fails if it drifted.
 - The terminal workspace, with Kitty, Sixel, iTerm2 and half-block previews.
-- A read-only tool registry: `inspect_project`, `list_variants`,
-  `inspect_palette`, `render` — **as a library API only. It has no transport,
-  so nothing outside this crate can call it yet.** What works today is an
-  agent running `shaipe render` and opening the PNG.
+- A read-only tool registry: `get_project`, `get_variants`, `get_palette`,
+  `render_svg` — **as a library API only. It has no transport, so nothing
+  outside this crate can call it yet.** What works today is an agent running
+  `shaipe render` and opening the PNG.
 
 **Not yet**
 
