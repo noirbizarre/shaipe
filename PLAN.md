@@ -138,6 +138,8 @@ see `docs/adr/004-tools-not-a-model.md`.
       lock anywhere in the library — ADR-009
 - [x] An MCP server over stdio: `shaipe mcp <project>`, verified against a real
       OpenCode client
+- [x] The live workspace serves MCP on a socket, reached by a bridge
+      subprocess — ADR-010
 
 ## Artwork
 

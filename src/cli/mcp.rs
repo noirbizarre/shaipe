@@ -24,6 +24,12 @@ pub async fn run(args: &McpArgs) -> shaipe::Result<()> {
     // is the stdio twin of the alternate-screen rule in the workspace.
     let _quiet = shaipe::logging::suppress();
 
+    // The bridge opens no project and serves no protocol: it is a pipe to a
+    // workspace that already has both.
+    if let Some(address) = &args.bridge {
+        return shaipe::mcp::bridge::run(&address.parse()?).await;
+    }
+
     let project = Project::open(&args.input)?;
     let session = SessionHandle::detached(project, Registry::new(), args.write);
 

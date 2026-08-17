@@ -348,6 +348,36 @@ pub enum Error {
         /// What the transport reported.
         reason: String,
     },
+
+    /// A bridge could not reach the workspace it was started for.
+    #[error("cannot reach the workspace at `{address}`")]
+    #[diagnostic(
+        code(shaipe::mcp::bridge),
+        help(
+            "`shaipe mcp --bridge` is started by an agent and connects back to \
+             a workspace that is already running; it is not meant to be run by \
+             hand. If you typed it yourself, you want `shaipe mcp <project>`. \
+             If an agent did, its workspace has closed."
+        )
+    )]
+    Bridge {
+        /// Where it tried to connect.
+        address: String,
+        /// Why it could not.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// A bridge address could not be parsed.
+    #[error("`{value}` is not a workspace address")]
+    #[diagnostic(
+        code(shaipe::mcp::invalid_address),
+        help("Expected `unix:<path>` or `tcp:<host>:<port>`.")
+    )]
+    InvalidAddress {
+        /// What was given.
+        value: String,
+    },
 }
 
 impl Error {

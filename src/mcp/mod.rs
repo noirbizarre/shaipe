@@ -25,6 +25,9 @@
 //! all: one opens a file and owns it, the other reaches a project someone else
 //! is looking at. See ADR 010.
 
+pub mod bridge;
+pub mod listener;
 mod server;
 
+pub use listener::{Address, Listener};
 pub use server::Server;
