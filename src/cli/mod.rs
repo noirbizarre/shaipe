@@ -179,6 +179,7 @@ pub struct InspectArgs {
 ///
 /// No `--preview` here: it is global, so `shaipe tui --preview blocks` and
 /// `shaipe --preview blocks` are the same flag and cannot disagree.
+///
 #[derive(Debug, Args)]
 pub struct TuiArgs {
     /// The project SVG to open.
@@ -187,6 +188,48 @@ pub struct TuiArgs {
     /// `shaipe render` ambiguous between a subcommand and a file name.
     #[arg(default_value = DEFAULT_PROJECT)]
     pub input: PathBuf,
+
+    /// The ACP agent to drive, as a command line.
+    ///
+    /// Shaipe starts an agent you already have; it never hosts one, and it
+    /// never sees your API key. Whatever model the agent is configured with is
+    /// the model that answers.
+    #[arg(long, env = "SHAIPE_AGENT", default_value = shaipe::acp::DEFAULT_AGENT)]
+    pub agent: String,
+
+    /// Open the workspace without an agent.
+    #[arg(long, conflicts_with = "agent")]
+    pub no_agent: bool,
+
+    /// Approve everything the agent asks permission for.
+    ///
+    /// Only affects the agent's *own* tools — reading files, running commands.
+    /// Shaipe's tools never ask: a call from the session is the user's own
+    /// workspace acting on the user's own project.
+    #[arg(long)]
+    pub yes: bool,
+}
+
+impl TuiArgs {
+    /// What bare `shaipe` runs with.
+    ///
+    /// Produced by clap rather than written as a struct literal, so the
+    /// defaults — the project name, the agent command, `SHAIPE_AGENT` — live
+    /// only in the attributes above. A literal would restate them, and the
+    /// copy that drifted would be the one nobody noticed.
+    ///
+    /// # Panics
+    ///
+    /// Never: every field has a default or is a flag, so there is nothing for
+    /// the parse to reject.
+    #[must_use]
+    pub fn defaults() -> Self {
+        use clap::FromArgMatches as _;
+
+        let command = Self::augment_args(clap::Command::new("shaipe"));
+        Self::from_arg_matches(&command.get_matches_from(["shaipe"]))
+            .expect("every field of TuiArgs has a default")
+    }
 }
 
 #[cfg(test)]

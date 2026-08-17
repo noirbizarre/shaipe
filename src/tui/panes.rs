@@ -11,22 +11,35 @@ use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wr
 
 use crate::project::{Palette, RenderSpec, Rgba, Variant};
 
-use super::app::{App, Focus};
+use super::app::{AgentStatus, App, EditorMode, Focus};
+use super::transcript::Entry;
+use crate::acp::ToolStatus;
 
 /// The border for a pane, highlighted when it has the keyboard.
 pub fn frame(title: Focus, focused: bool) -> Block<'static> {
+    frame_titled(title, focused, title.title(), "")
+}
+
+/// The border for a pane, with a title of its own and a note after it.
+///
+/// The prompt pane's title is not fixed: it says whether the editor is writing
+/// the project's prompt or a message to an agent, because the two look
+/// identical and do very different things.
+pub fn frame_titled(title: Focus, focused: bool, name: &str, note: &str) -> Block<'static> {
     let style = if focused {
         Style::default().fg(Color::LightMagenta)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
+    let _ = title;
+
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(style)
         .title(Span::styled(
-            format!(" {} ", title.title()),
+            format!(" {name}{note} "),
             style.add_modifier(Modifier::BOLD),
         ))
 }
@@ -51,14 +64,106 @@ fn selected(focused: bool) -> Style {
 }
 
 /// The prompt pane.
-pub fn prompt(app: &App) -> Paragraph<'static> {
-    let text = app.project.metadata().prompt.clone().unwrap_or_else(|| {
-        "No prompt recorded.\n\nAdd a <shaipe:prompt> to the project metadata.".to_owned()
-    });
+pub fn prompt(app: &App, height: u16) -> Paragraph<'static> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
 
-    Paragraph::new(text)
+    // The project's own prompt first, then the conversation about it. The
+    // editor is drawn separately, on the pane's last rows, so it cannot be
+    // pushed off the bottom by a transcript that keeps growing.
+    match &app.project.metadata().prompt {
+        Some(prompt) => lines.push(Line::styled(
+            prompt.clone(),
+            Style::default().fg(Color::Gray),
+        )),
+        None => lines.push(Line::styled(
+            "No prompt recorded.",
+            Style::default().fg(Color::DarkGray),
+        )),
+    }
+
+    // Why the agent cannot be asked, said before it is reached for rather than
+    // after a message has been typed and swallowed.
+    if let AgentStatus::Absent { reason } = &app.agent {
+        lines.push(Line::raw(""));
+        for line in reason.lines() {
+            lines.push(Line::styled(
+                line.to_owned(),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+    }
+
+    if !app.transcript.is_empty() {
+        lines.push(Line::raw(""));
+        lines.extend(transcript(app));
+    }
+
+    // Anchored to the bottom, so a conversation scrolls the way every other
+    // conversation does: the newest thing is the thing you can see.
+    //
+    // Counted in lines rather than in wrapped rows, so a long entry can still
+    // push a little too far. Exact scrolling needs the wrap width and the
+    // widget's own line breaking, and being approximately right at the bottom
+    // beats being exactly right at the top.
+    let overflow = u16::try_from(lines.len())
+        .unwrap_or(u16::MAX)
+        .saturating_sub(height);
+
+    Paragraph::new(lines)
         .wrap(Wrap { trim: false })
-        .style(Style::default().fg(Color::Gray))
+        .scroll((overflow, 0))
+}
+
+/// A one-line summary of the agent, for the pane's title.
+#[must_use]
+pub fn agent_title(app: &App) -> &'static str {
+    match app.agent {
+        AgentStatus::Absent { .. } => "",
+        AgentStatus::Connecting => "  starting the agent…",
+        AgentStatus::Ready if app.transcript.is_empty() => "  a to ask the agent",
+        AgentStatus::Ready => "  ready",
+        AgentStatus::Busy => "  working…",
+    }
+}
+
+/// The conversation, one entry at a time.
+fn transcript(app: &App) -> Vec<Line<'static>> {
+    app.transcript
+        .entries()
+        .iter()
+        .map(|entry| match entry {
+            Entry::You(text) => Line::from(vec![
+                Span::styled("you  ", Style::default().fg(Color::LightMagenta)),
+                Span::raw(text.clone()),
+            ]),
+            Entry::Agent(text) => Line::from(vec![
+                Span::styled("     ", Style::default()),
+                Span::raw(text.clone()),
+            ]),
+            // Dimmed and marked, because reasoning read as a statement is how
+            // a person ends up believing the agent said something it did not.
+            Entry::Thought(text) => Line::styled(
+                format!("     {text}"),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+            Entry::Tool { title, status, .. } => Line::from(vec![
+                Span::styled(
+                    format!("  {} ", status.glyph()),
+                    Style::default().fg(match status {
+                        ToolStatus::Running => Color::Yellow,
+                        ToolStatus::Completed => Color::Green,
+                        ToolStatus::Failed => Color::Red,
+                    }),
+                ),
+                Span::styled(title.clone(), Style::default().fg(Color::Cyan)),
+            ]),
+            Entry::Notice(text) => {
+                Line::styled(format!("     {text}"), Style::default().fg(Color::Yellow))
+            }
+        })
+        .collect()
 }
 
 /// A colour swatch, drawn as two solid cells.
@@ -190,8 +295,23 @@ pub fn status(app: &App) -> Paragraph<'static> {
         // The workspace's own hints are all wrong while the editor has the
         // keyboard, and listing keys that do something else would be worse
         // than listing none.
+        let waiting = app.transcript.is_busy();
+
         spans.extend(hint("esc", "leave"));
-        spans.extend(hint("tab", "pane"));
+        // `tab` still works while a turn is in flight; it just stops being
+        // worth a hint. Mid-turn the two things anyone wants are already
+        // named, and the line is exactly full without this one.
+        if !waiting {
+            spans.extend(hint("tab", "pane"));
+        }
+        if app.mode() == EditorMode::Ask {
+            // `enter` means different things in the two modes, and a hint that
+            // said the wrong one would be worse than none.
+            spans.extend(hint("enter", "send"));
+            if waiting {
+                spans.extend(hint("ctrl-c", "stop"));
+            }
+        }
         spans.extend(hint("ctrl-s", "save"));
     } else {
         spans.extend(hint("tab", "pane"));
@@ -202,6 +322,13 @@ pub fn status(app: &App) -> Paragraph<'static> {
         // cannot change what the preview shows.
         if app.focus == Focus::Prompt {
             spans.extend(hint("enter", "edit"));
+            // No hint for `a`. The status line is exactly full at eighty
+            // columns, and a hint dropped off the end is worth nothing —
+            // which is what `the_hints_fit_eighty_columns_even_with_unsaved_work_to_report`
+            // is for. `a` is discovered from the pane's title instead, where
+            // it appears only while there is an agent to ask, which is more
+            // honest than a permanent hint for a key that would answer "no
+            // agent is connected".
             spans.extend(hint("e", "$EDITOR"));
             spans.extend(hint("ctrl-s", "save"));
         } else {
@@ -305,7 +432,7 @@ mod tests {
         project.metadata_mut().prompt = None;
         let app = App::new(project, "blocks");
 
-        assert!(drawn(prompt(&app), 60, 4).contains("No prompt"));
+        assert!(drawn(prompt(&app, 4), 60, 4).contains("No prompt"));
     }
 
     #[test]
@@ -371,6 +498,43 @@ mod tests {
                 "{focus:?} overflows:\n{output}"
             );
         }
+    }
+
+    #[test]
+    fn the_hints_fit_eighty_columns_while_asking_an_agent_mid_turn() {
+        // The other branch of the status line, and the widest it ever gets:
+        // editing, with a turn in flight and unsaved work to report.
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.set_draft("unsaved");
+        app.engage_ask();
+        app.transcript.push_user("make it blue".to_owned());
+
+        let output = drawn(status(&app), 80, 1);
+        assert!(output.contains("preview: blocks"), "overflows:\n{output}");
+        assert!(output.contains("send"), "{output}");
+        assert!(output.contains("stop"), "{output}");
+    }
+
+    #[test]
+    fn the_pane_title_says_how_to_reach_the_agent() {
+        // Where `a` is discovered, since the status line has no room. Only
+        // while there is an agent: advertising a key that answers "no agent is
+        // connected" is worse than saying nothing.
+        let mut app = App::new(fixtures::project(), "blocks");
+        assert_eq!(agent_title(&app), "");
+
+        app.agent = AgentStatus::Ready;
+        assert!(agent_title(&app).contains('a'), "{}", agent_title(&app));
+    }
+
+    #[test]
+    fn the_pane_title_says_which_mode_the_editor_is_in() {
+        // The two modes look identical and do very different things.
+        let mut app = App::new(fixtures::project(), "blocks");
+        assert_eq!(app.mode().title(), "prompt");
+
+        app.engage_ask();
+        assert_eq!(app.mode().title(), "ask the agent");
     }
 
     #[test]

@@ -142,6 +142,13 @@ see `docs/adr/004-tools-not-a-model.md`.
       OpenCode client
 - [x] The live workspace serves MCP on a socket, reached by a bridge
       subprocess — ADR-010
+- [x] An ACP client: the workspace drives an agent the user already installed,
+      with OpenCode as the first target — ADR-011
+- [ ] A permission dialogue, so the agent's own tools can be allowed one at a
+      time rather than all or nothing
+- [ ] Show the agent's plan in the transcript
+- [ ] Prove the vision loop against a vision-capable model, and say in the
+      README which models can and cannot see a render
 
 ## Artwork
 

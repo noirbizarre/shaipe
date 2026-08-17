@@ -11,7 +11,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::preview::Preview as Backend;
 
-use super::app::{App, Focus, Preview};
+use super::app::{App, EditorMode, Focus, Preview};
 use super::panes;
 
 /// Draw a frame.
@@ -86,17 +86,43 @@ fn draw_left(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let focus = app.focus;
     let focused = move |candidate: Focus| candidate == focus;
 
-    let prompt_block = panes::frame(Focus::Prompt, focused(Focus::Prompt));
-    if app.is_editing() {
-        // The frame is drawn separately and the editor fills its interior,
-        // rather than the editor carrying a block of its own: a block would
-        // have to be set on the text area, and that mutable borrow cannot
-        // coexist with the immutable one the list panes take below.
-        let interior = prompt_block.inner(prompt);
-        frame.render_widget(&prompt_block, prompt);
-        frame.render_widget(app.editor(), interior);
-    } else {
-        frame.render_widget(panes::prompt(app).block(prompt_block), prompt);
+    // The frame is drawn separately and its interior filled in, rather than
+    // the editor carrying a block of its own: a block would have to be set on
+    // the text area, and that mutable borrow cannot coexist with the immutable
+    // one the list panes take below.
+    let prompt_block = panes::frame_titled(
+        Focus::Prompt,
+        focused(Focus::Prompt),
+        app.mode().title(),
+        panes::agent_title(app),
+    );
+    let interior = prompt_block.inner(prompt);
+    frame.render_widget(&prompt_block, prompt);
+
+    if app.is_editing() && interior.height > 0 {
+        // The editor gets the bottom of the pane and the conversation the
+        // rest. The other way round, a transcript that keeps growing would
+        // push the line being typed off the bottom, and a field nobody can see
+        // is one nobody can type into.
+        //
+        // Editing the project's prompt is prose and wants room; composing a
+        // message is one thing said once and wants a line or two. Neither is
+        // allowed to take the whole pane while there is a conversation to read.
+        let wanted = match app.mode() {
+            EditorMode::Prompt => interior.height.saturating_sub(1).max(1),
+            EditorMode::Ask => 3.min(interior.height),
+        };
+        let [above, editing] = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(wanted)])
+            .areas(interior);
+
+        if above.height > 0 {
+            frame.render_widget(panes::prompt(app, above.height), above);
+        }
+        frame.render_widget(app.editor(), editing);
+    } else if interior.height > 0 {
+        frame.render_widget(panes::prompt(app, interior.height), interior);
     }
 
     // Built before the mutable borrow of `app` that the list state needs.

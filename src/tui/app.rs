@@ -20,6 +20,7 @@ use crate::preview::{Image, Scale};
 use crate::project::{Format, Project, RenderSpec};
 use crate::render::{RenderOptions, Renderer};
 use crate::tui::render_worker::{Rendered, Worker};
+use crate::tui::transcript::Transcript;
 
 /// The narrowest the description column may be dragged.
 ///
@@ -108,6 +109,77 @@ pub enum Preview {
     Failed(String),
 }
 
+/// Whether the workspace has an agent, and what it is doing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentStatus {
+    /// There is none. The workspace still works, and the prompt pane says why
+    /// it cannot be used. An agent that will not start must not stop someone
+    /// from reading their own project.
+    Absent {
+        /// What to tell them.
+        reason: String,
+    },
+    /// Started, and still shaking hands.
+    ///
+    /// The workspace does not wait for this to finish — the agent asks
+    /// Shaipe's own MCP server for a tool list before it answers `session/new`,
+    /// and only the event loop can answer that. So the workspace opens, this
+    /// is what it opens with, and a prompt typed now waits for `Ready`.
+    Connecting,
+    /// Started, and waiting for a prompt.
+    Ready,
+    /// Working on a turn.
+    Busy,
+}
+
+impl AgentStatus {
+    /// Whether a prompt can be sent right now.
+    #[must_use]
+    pub const fn accepts_a_prompt(&self) -> bool {
+        matches!(self, Self::Ready)
+    }
+}
+
+/// What the prompt editor's buffer is for.
+///
+/// One widget, two jobs, and they must not be confused. Writing the project's
+/// prompt is editing *metadata* — it is committed to the document on every
+/// keystroke. Asking an agent for a change is sending a *message*, and
+/// committing that would rewrite the artwork's description every time somebody
+/// said "make it bluer".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EditorMode {
+    /// Editing the project's `<shaipe:prompt>`. Committed as it is typed.
+    #[default]
+    Prompt,
+    /// Composing a message to the agent. Committed nowhere.
+    Ask,
+}
+
+impl EditorMode {
+    /// What to call it, in a pane title.
+    #[must_use]
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Prompt => "prompt",
+            Self::Ask => "ask the agent",
+        }
+    }
+}
+
+/// Something a keypress asked the agent to do.
+///
+/// Recorded by the key handler and carried out by the event loop, so that key
+/// handling stays synchronous: making it `async` would mean every test that
+/// asserts `Esc` moves the focus needed a runtime to do it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentRequest {
+    /// Send a turn.
+    Prompt(String),
+    /// Stop the turn in progress.
+    Cancel,
+}
+
 /// The workspace.
 pub struct App {
     /// The project being worked on.
@@ -141,6 +213,14 @@ pub struct App {
     /// among them. There has to be a state in which the prompt pane is focused
     /// and the workspace's own shortcuts still work.
     editing: bool,
+    /// What the editor is being used for.
+    ///
+    /// The same buffer serves two purposes that must not be confused: writing
+    /// the project's own prompt, which is metadata, and asking an agent for a
+    /// change, which is a message. Committing an agent request into the
+    /// project's `<shaipe:prompt>` would rewrite the artwork's description
+    /// every time somebody said "make it bluer".
+    mode: EditorMode,
     /// Whether `$EDITOR` has been asked for and not yet opened.
     ///
     /// A flag rather than the deed, because opening an editor needs the
@@ -150,6 +230,12 @@ pub struct App {
     dirty: bool,
     /// Whether a quit was refused because of [`App::dirty`].
     confirm_quit: bool,
+    /// What the agent has said and done.
+    pub transcript: Transcript,
+    /// Whether there is an agent at all, and if not, why not.
+    pub agent: AgentStatus,
+    /// What the last keypress asked the agent for, if anything.
+    pub pending_agent_request: Option<AgentRequest>,
 
     /// Where each pane was drawn last frame.
     ///
@@ -213,6 +299,12 @@ impl App {
             editor_requested: false,
             dirty: false,
             confirm_quit: false,
+            mode: EditorMode::Prompt,
+            transcript: Transcript::default(),
+            agent: AgentStatus::Absent {
+                reason: "no agent was started".to_owned(),
+            },
+            pending_agent_request: None,
             areas: [Rect::ZERO; Focus::COUNT],
             preview_area: Rect::ZERO,
             preview_pixels: (0, 0),
@@ -284,15 +376,58 @@ impl App {
     }
 
     /// Hand the keyboard to the prompt editor.
-    pub const fn engage_editor(&mut self) {
+    pub fn engage_editor(&mut self) {
         self.focus = Focus::Prompt;
         self.editing = true;
+        self.set_mode(EditorMode::Prompt);
+    }
+
+    /// Hand the keyboard to the editor to compose a message for the agent.
+    ///
+    /// The buffer is swapped rather than shared: a half-written question must
+    /// not appear in the project's prompt, and a half-written prompt must not
+    /// be sent to an agent.
+    pub fn engage_ask(&mut self) {
+        self.focus = Focus::Prompt;
+        self.editing = true;
+        self.set_mode(EditorMode::Ask);
     }
 
     /// Take the keyboard back from the prompt editor.
     pub fn disengage_editor(&mut self) {
         self.editing = false;
-        self.commit_prompt();
+        // Only the prompt is metadata. Leaving `Ask` throws the draft away,
+        // which is the right default for a message nobody sent.
+        if self.mode == EditorMode::Prompt {
+            self.commit_prompt();
+        } else {
+            self.set_mode(EditorMode::Prompt);
+        }
+    }
+
+    /// Switch what the buffer is for, keeping the project's prompt intact.
+    fn set_mode(&mut self, mode: EditorMode) {
+        if self.mode == mode {
+            return;
+        }
+
+        // Leaving the prompt: commit it, then start the message empty.
+        // Returning to it: reload it from the project, so whatever the message
+        // was is gone and the prompt is exactly what is on disk.
+        if self.mode == EditorMode::Prompt {
+            self.commit_prompt();
+            self.editor = Self::editor_for("");
+        } else {
+            self.editor = Self::editor_for(self.project.metadata().prompt.as_deref().unwrap_or(""));
+        }
+
+        self.mode = mode;
+    }
+
+    /// What the editor's buffer is currently for.
+    #[must_use]
+    pub const fn mode(&self) -> EditorMode {
+        self.mode
     }
 
     /// Whether keys are going to the prompt editor.
@@ -305,6 +440,37 @@ impl App {
     #[must_use]
     pub const fn is_dirty(&self) -> bool {
         self.dirty
+    }
+
+    /// Note that the project has changed and is no longer what is on disk.
+    ///
+    /// For changes that did not come from the editor — an agent writing an SVG
+    /// through a tool, most of all. Separate from
+    /// [`Self::invalidate_preview`], which is about pixels: a change can want
+    /// a re-render, a save, or both, and conflating them would mean pressing
+    /// `r` marked the project dirty.
+    pub const fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    /// Re-read the prompt from the project into the editor.
+    ///
+    /// After something other than the editor changed it — an agent calling
+    /// `write_svg` with a new `<shaipe:prompt>`. The buffer is a copy, so
+    /// without this the next keystroke would write the stale one back.
+    ///
+    /// Does nothing while a message to the agent is being composed: that
+    /// buffer is not the prompt, and replacing it would destroy what someone
+    /// is in the middle of typing.
+    pub fn reload_prompt(&mut self) {
+        if self.mode != EditorMode::Prompt {
+            return;
+        }
+
+        let prompt = self.project.metadata().prompt.clone().unwrap_or_default();
+        if prompt != self.draft() {
+            self.editor = Self::editor_for(&prompt);
+        }
     }
 
     /// Whether a quit is waiting on confirmation.
@@ -357,11 +523,51 @@ impl App {
                 self.focus_previous();
                 return;
             }
+            // Only in `Ask`: a paragraph of prose needs its newlines, and the
+            // project's prompt is a paragraph. A message is one thing said
+            // once, so `enter` sends it.
+            KeyCode::Enter if self.mode == EditorMode::Ask => {
+                self.submit_to_agent();
+                return;
+            }
             _ => {}
         }
 
         self.editor.input(key);
-        self.commit_prompt();
+        if self.mode == EditorMode::Prompt {
+            self.commit_prompt();
+        }
+    }
+
+    /// Send what has been typed to the agent.
+    ///
+    /// Records the request rather than sending it: sending needs an `await`,
+    /// and making key handling asynchronous would mean every test asserting
+    /// that `esc` moves the focus needed a runtime to do it.
+    fn submit_to_agent(&mut self) {
+        let text = self.draft().trim().to_owned();
+        if text.is_empty() {
+            // An empty message is not a turn, and a turn costs a model call.
+            return;
+        }
+
+        self.editor = Self::editor_for("");
+        self.transcript.push_user(text.clone());
+
+        if let AgentStatus::Absent { reason } = &self.agent {
+            let reason = reason.clone();
+            self.transcript
+                .push_notice(format!("no agent is connected: {reason}"));
+            return;
+        }
+
+        self.agent = AgentStatus::Busy;
+        self.pending_agent_request = Some(AgentRequest::Prompt(text));
+    }
+
+    /// Ask the agent to stop the turn it is on.
+    pub fn cancel_turn(&mut self) {
+        self.pending_agent_request = Some(AgentRequest::Cancel);
     }
 
     /// Apply a mouse event to the prompt editor.
@@ -370,7 +576,9 @@ impl App {
     /// at a screen cell, so a click inside the pane would have nothing to do.
     pub fn edit_mouse(&mut self, mouse: MouseEvent) {
         self.editor.input(mouse);
-        self.commit_prompt();
+        if self.mode == EditorMode::Prompt {
+            self.commit_prompt();
+        }
     }
 
     /// Ask for the prompt to be opened in `$EDITOR`.

@@ -31,3 +31,4 @@ by editing the old one. The history is the value.
 - [ADR-008](008-json-schema-for-tool-inputs.md) — Tool inputs are described by JSON Schema
 - [ADR-009](009-session-reached-by-message.md) — The session is reached by message, not by lock
 - [ADR-010](010-mcp-over-a-socket-with-a-bridge.md) — A live workspace serves MCP on a socket, reached by a bridge
+- [ADR-011](011-driving-an-agent-is-still-not-a-model.md) — Driving an agent is still not providing a model

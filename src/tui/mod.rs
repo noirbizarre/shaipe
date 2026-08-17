@@ -24,6 +24,7 @@
 pub mod app;
 pub mod panes;
 pub mod render_worker;
+pub mod transcript;
 mod ui;
 
 use std::io::{self, Stdout};
@@ -42,11 +43,17 @@ use ratatui::crossterm::terminal::{
 use ratatui::crossterm::{cursor, execute};
 use tokio::time::MissedTickBehavior;
 
+use tokio::sync::mpsc;
+
+use crate::acp::{Agent, AgentChoice, AgentConfig, AgentUpdate, McpServerSpec};
 use crate::error::{Error, Result};
+use crate::mcp::Listener;
 use crate::preview::{Backend, Preview, Scale};
 use crate::project::Project;
 
-use app::{App, Focus};
+use crate::tools::{self, Registry, SessionCommand, SessionHandle};
+
+use app::{AgentRequest, AgentStatus, App, Focus};
 
 /// How long to wait for a key when nothing is happening.
 ///
@@ -76,6 +83,7 @@ pub async fn run(
     backend: Backend,
     scale: Option<Scale>,
     verbose: u8,
+    agent: AgentChoice,
 ) -> Result<()> {
     // Held for the whole session: a warning printed over the alternate screen
     // corrupts it and cannot be scrolled back to.
@@ -93,7 +101,54 @@ pub async fn run(
     let mut app = App::new(project, preview.name());
     app.verbose = verbose;
 
-    let outcome = event_loop(&mut terminal, &mut app, &mut preview).await;
+    // A session the agent can reach, and the agent itself. Neither is fatal:
+    // an agent that will not start must not stop someone from reading their
+    // own project, so the reason goes in the prompt pane and the workspace
+    // opens anyway. Same rule as a preview backend that will not start.
+    let (session, commands) = SessionHandle::channel();
+    let mut listener = None;
+    let mut updates = None;
+    let mut connected = None;
+
+    match agent {
+        AgentChoice::None => {
+            app.agent = AgentStatus::Absent {
+                reason: "started without one (--no-agent)".to_owned(),
+            };
+        }
+        // The whole diagnostic, where it will actually be read.
+        AgentChoice::Unavailable(reason) => app.agent = AgentStatus::Absent { reason },
+        AgentChoice::Start(config) => match start_agent(*config, session).await {
+            Ok((agent, socket, stream)) => {
+                // Not `Ready`: the handshake is still going. The prompt says
+                // so, and `AgentUpdate::Ready` is what changes it.
+                app.agent = AgentStatus::Connecting;
+                connected = Some(agent);
+                listener = Some(socket);
+                updates = Some(stream);
+            }
+            Err(error) => {
+                app.agent = AgentStatus::Absent {
+                    reason: error.to_string(),
+                }
+            }
+        },
+    }
+
+    let outcome = event_loop(
+        &mut terminal,
+        &mut app,
+        &mut preview,
+        commands,
+        updates,
+        connected.as_ref(),
+    )
+    .await;
+
+    // Dropped before the terminal is restored, so the socket goes away and any
+    // bridge still connected to it stops rather than lingering.
+    drop(listener);
+    drop(connected);
 
     // Restored first, and its own failure reported only if nothing worse
     // happened, so the original error is never masked by the cleanup.
@@ -157,8 +212,20 @@ async fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
     preview: &mut Preview,
+    mut commands: mpsc::Receiver<SessionCommand>,
+    updates: Option<mpsc::Receiver<AgentUpdate>>,
+    agent: Option<&Agent>,
 ) -> Result<()> {
     let io_error = |source| Error::io("the terminal", source);
+
+    // The tools the agent may call. Built once: the set does not change for
+    // the life of the workspace.
+    let registry = Registry::new();
+
+    // A receiver that never yields, when there is no agent. Cleaner than an
+    // `Option` in the `select!`, which would need a branch that is disabled
+    // rather than merely empty.
+    let mut updates = updates.unwrap_or_else(|| mpsc::channel(1).1);
 
     // Constructed here rather than in `run`, and the placement is
     // load-bearing: `EventStream` spawns a reader on standard input, and one
@@ -241,7 +308,49 @@ async fn event_loop(
                 }
             }
 
+            command = commands.recv() => {
+                let Some(command) = command else { continue };
+
+                // The agent reaching back into the workspace. Serviced here,
+                // between frames, which is the only moment mutating the
+                // project is safe — and the reason there is no lock anywhere
+                // in the library. See ADR 009.
+                let applied = tools::session::serve(command, &registry, &mut app.project);
+
+                if applied.mutated {
+                    // How the preview follows the agent's edit: the same path
+                    // `r` takes, so there is one way to do it and not two.
+                    app.invalidate_preview();
+                    app.mark_dirty();
+                    // The prompt may have changed with it, and the editor's
+                    // buffer is a copy.
+                    app.reload_prompt();
+                }
+            }
+
+            update = updates.recv() => {
+                let Some(update) = update else { continue };
+
+                app.agent = match &update {
+                    AgentUpdate::Ready => AgentStatus::Ready,
+                    AgentUpdate::Failed(reason) => AgentStatus::Absent {
+                        reason: reason.clone(),
+                    },
+                    _ if app.transcript.is_busy() => AgentStatus::Busy,
+                    _ => AgentStatus::Ready,
+                };
+
+                app.transcript.apply(update);
+            }
+
             _ = ticks.tick() => {}
+        }
+
+        // Anything a keypress asked the agent for. Done out here rather than
+        // in the key handler so that key handling stays synchronous, and
+        // testable without a runtime.
+        if let Some(request) = app.pending_agent_request.take() {
+            dispatch(app, agent, request).await;
         }
 
         // After the drain rather than inside it: the terminal is torn down and
@@ -263,6 +372,45 @@ async fn event_loop(
     }
 
     Ok(())
+}
+
+/// Start an agent and the session it will reach back into.
+///
+/// Returns before the agent has finished its handshake, and that is
+/// load-bearing rather than incidental: the agent starts Shaipe's own MCP
+/// server during `session/new` and asks it for a tool list before answering,
+/// and only this workspace's event loop can answer. Waiting here would
+/// deadlock the two and cost the session every one of Shaipe's tools. See
+/// [`Agent::start`].
+async fn start_agent(
+    config: AgentConfig,
+    session: SessionHandle,
+) -> Result<(Agent, Listener, mpsc::Receiver<AgentUpdate>)> {
+    let listener = Listener::bind(session).await?;
+    let config = config.with_mcp_server(McpServerSpec::shaipe_bridge(listener.address())?);
+    let (agent, updates) = Agent::start(config);
+    Ok((agent, listener, updates))
+}
+
+/// Carry out what a keypress asked the agent for.
+async fn dispatch(app: &mut App, agent: Option<&Agent>, request: AgentRequest) {
+    let Some(agent) = agent else {
+        // The editor already said so in the transcript; there is nothing to
+        // send and nothing further to report.
+        return;
+    };
+
+    let outcome = match request {
+        AgentRequest::Prompt(text) => agent.prompt(text).await,
+        AgentRequest::Cancel => agent.cancel().await,
+    };
+
+    if let Err(error) = outcome {
+        app.transcript.push_notice(error.to_string());
+        app.agent = AgentStatus::Absent {
+            reason: error.to_string(),
+        };
+    }
 }
 
 /// Apply one terminal event.
@@ -421,6 +569,16 @@ fn handle(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // While the agent is working, `ctrl-c` stops the turn rather than the
+    // workspace. Pressing it again quits, because by then it is not working.
+    if key.code == KeyCode::Char('c')
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && app.transcript.is_busy()
+    {
+        app.cancel_turn();
+        return;
+    }
+
     // Any key other than another quit withdraws a pending confirmation, so the
     // warning does not sit over an unrelated action.
     if !matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
@@ -431,6 +589,10 @@ fn handle(app: &mut App, key: KeyEvent) {
         _ if save => app.save(),
         KeyCode::Char('q') | KeyCode::Esc => app.request_quit(),
         KeyCode::Enter if app.focus == Focus::Prompt => app.engage_editor(),
+        // `a` for ask, on the prompt pane, alongside `e` for edit. The same
+        // editor, a different buffer and a different destination: `enter`
+        // writes the project's prompt, `a` writes a message to the agent.
+        KeyCode::Char('a') if app.focus == Focus::Prompt => app.engage_ask(),
         // Only on the focused prompt pane, and only while the editor is not
         // engaged — once it is, `e` is a letter someone is writing. The
         // editor's own key map has `ctrl-e` for the end of the line, so there
@@ -561,6 +723,136 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(!app.is_dirty(), "engaging the editor is not an edit");
         app
+    }
+
+    #[test]
+    fn a_on_the_prompt_pane_asks_the_agent_rather_than_editing_the_prompt() {
+        // One editor, two jobs. The project's prompt is metadata and is
+        // committed as it is typed; a message is neither.
+        let mut app = app();
+        app.focus = Focus::Prompt;
+
+        press(&mut app, KeyCode::Char('a'));
+
+        assert!(app.is_editing());
+        assert_eq!(app.mode(), app::EditorMode::Ask);
+    }
+
+    #[test]
+    fn a_on_another_pane_is_not_a_request_to_ask_the_agent() {
+        // Same rule as `e`: it is a pane-local binding, not a global one.
+        for focus in [Focus::Palette, Focus::Variants, Focus::Renders] {
+            let mut app = app();
+            app.focus = focus;
+            press(&mut app, KeyCode::Char('a'));
+            assert!(!app.is_editing(), "`a` engaged the editor from {focus:?}");
+        }
+    }
+
+    #[test]
+    fn a_message_to_the_agent_never_reaches_the_projects_prompt() {
+        // The reason the modes exist. Committing "make it bluer" into
+        // `<shaipe:prompt>` would rewrite the artwork's description every time
+        // somebody asked for a change.
+        let mut app = app();
+        let before = app.project.metadata().prompt.clone();
+
+        app.focus = Focus::Prompt;
+        press(&mut app, KeyCode::Char('a'));
+        for character in "make it bluer".chars() {
+            press(&mut app, KeyCode::Char(character));
+        }
+
+        assert_eq!(app.project.metadata().prompt, before);
+        assert_eq!(app.draft(), "make it bluer");
+    }
+
+    #[test]
+    fn leaving_the_ask_editor_restores_the_projects_prompt_in_the_buffer() {
+        // The buffer is shared, so switching back has to reload — otherwise
+        // the next keystroke writes an abandoned message into the metadata.
+        let mut app = app();
+        let prompt = app.project.metadata().prompt.clone().unwrap_or_default();
+
+        app.focus = Focus::Prompt;
+        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::Char('x'));
+        press(&mut app, KeyCode::Esc);
+
+        assert_eq!(app.mode(), app::EditorMode::Prompt);
+        assert_eq!(app.draft(), prompt);
+        assert_eq!(app.project.metadata().prompt, Some(prompt));
+    }
+
+    #[test]
+    fn enter_sends_a_message_but_only_newlines_a_prompt() {
+        // A prompt is a paragraph and needs its line breaks. A message is one
+        // thing said once.
+        let mut app = app();
+        app.agent = AgentStatus::Ready;
+
+        app.focus = Focus::Prompt;
+        press(&mut app, KeyCode::Char('a'));
+        for character in "make it blue".chars() {
+            press(&mut app, KeyCode::Char(character));
+        }
+        press(&mut app, KeyCode::Enter);
+
+        assert_eq!(
+            app.pending_agent_request,
+            Some(AgentRequest::Prompt("make it blue".to_owned()))
+        );
+        assert_eq!(app.draft(), "", "the buffer was not cleared");
+    }
+
+    #[test]
+    fn enter_in_the_prompt_is_a_newline_rather_than_a_send() {
+        // The other half of the mode split. A prompt is a paragraph and needs
+        // its line breaks.
+        let mut writing = app();
+        writing.focus = Focus::Prompt;
+
+        press(&mut writing, KeyCode::Enter);
+        let before = writing.draft();
+        press(&mut writing, KeyCode::Enter);
+
+        // A line was added, wherever the cursor happened to be, and nothing
+        // was sent anywhere.
+        assert_eq!(writing.draft().lines().count(), before.lines().count() + 1);
+        assert_eq!(writing.pending_agent_request, None);
+        // And it went into the project, because a prompt is metadata.
+        assert_eq!(
+            writing.project.metadata().prompt.as_deref(),
+            Some(writing.draft().trim())
+        );
+    }
+
+    #[test]
+    fn sending_an_empty_message_is_not_a_turn() {
+        let mut app = app();
+        app.agent = AgentStatus::Ready;
+        app.focus = Focus::Prompt;
+
+        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.pending_agent_request, None);
+        assert!(app.transcript.is_empty());
+    }
+
+    #[test]
+    fn sending_without_an_agent_says_so_rather_than_looking_ignored() {
+        let mut app = app();
+        app.focus = Focus::Prompt;
+        press(&mut app, KeyCode::Char('a'));
+        for character in "hello".chars() {
+            press(&mut app, KeyCode::Char(character));
+        }
+        press(&mut app, KeyCode::Enter);
+
+        let said = format!("{:?}", app.transcript.entries());
+        assert!(said.contains("no agent"), "{said}");
+        assert_eq!(app.pending_agent_request, None);
     }
 
     #[test]

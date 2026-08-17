@@ -378,6 +378,89 @@ pub enum Error {
         /// What was given.
         value: String,
     },
+
+    /// The agent command is not on `PATH`.
+    #[error("cannot find `{command}`")]
+    #[diagnostic(
+        code(shaipe::acp::agent_not_found),
+        help(
+            "Shaipe drives an agent you already have; it does not host one \
+             (see ADR 004). Install OpenCode from https://opencode.ai, point \
+             Shaipe at another ACP agent with `--agent \"<command> acp\"`, or \
+             open the workspace without one using `--no-agent`."
+        )
+    )]
+    AgentNotFound {
+        /// What was looked for.
+        command: String,
+    },
+
+    /// The agent process would not start.
+    #[error("could not start `{command}`")]
+    #[diagnostic(
+        code(shaipe::acp::spawn),
+        help(
+            "The command was found but would not run. Try it yourself: it \
+             should wait for JSON-RPC on standard input rather than printing \
+             help and exiting."
+        )
+    )]
+    AgentSpawn {
+        /// What was run.
+        command: String,
+        /// Why it would not start.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The agent stopped, or was never running.
+    #[error("`{command}` is no longer running")]
+    #[diagnostic(
+        code(shaipe::acp::agent_exited),
+        help(
+            "The agent exited during the session. Run it yourself with \
+             `--print-logs --log-level debug` to see why; an unauthenticated \
+             agent usually exits at once, and `opencode auth login` fixes that \
+             one."
+        )
+    )]
+    AgentExited {
+        /// What was run.
+        command: String,
+    },
+
+    /// The handshake did not complete.
+    #[error("`{command}` did not complete the ACP handshake: {reason}")]
+    #[diagnostic(
+        code(shaipe::acp::initialize),
+        help(
+            "Shaipe speaks ACP protocol version 1, which is what every agent \
+             shipping today negotiates. Check the agent is recent enough — \
+             `opencode --version` should be 1.18 or newer."
+        )
+    )]
+    AgentInitialize {
+        /// What was run.
+        command: String,
+        /// What went wrong.
+        reason: String,
+    },
+
+    /// The agent said something Shaipe could not act on.
+    #[error("`{command}` sent something unexpected: {reason}")]
+    #[diagnostic(
+        code(shaipe::acp::protocol),
+        help(
+            "This is a bug in Shaipe or in the agent, not in the project. The \
+             project is untouched. Rerun with `-vv` to log the exchange."
+        )
+    )]
+    AgentProtocol {
+        /// What was run.
+        command: String,
+        /// What went wrong.
+        reason: String,
+    },
 }
 
 impl Error {
