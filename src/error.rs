@@ -333,6 +333,21 @@ pub enum Error {
         )
     )]
     SessionClosed,
+
+    /// The MCP server would not start, or stopped badly.
+    #[error("the MCP server failed: {reason}")]
+    #[diagnostic(
+        code(shaipe::mcp::serve),
+        help(
+            "`shaipe mcp` speaks JSON-RPC on standard output and nothing else. \
+             A stray print or log line there corrupts the stream, so check \
+             nothing else in the pipeline is writing to it."
+        )
+    )]
+    McpServe {
+        /// What the transport reported.
+        reason: String,
+    },
 }
 
 impl Error {

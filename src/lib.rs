@@ -14,6 +14,7 @@
 pub mod error;
 pub mod inspect;
 pub mod logging;
+pub mod mcp;
 pub mod preview;
 pub mod project;
 pub mod render;

@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 pub mod doctor;
 pub mod inspect;
+pub mod mcp;
 pub mod render;
 pub mod tui;
 
@@ -64,6 +65,34 @@ pub enum Command {
     Tui(TuiArgs),
     /// Report what Shaipe can work out about this terminal.
     Doctor(DoctorArgs),
+    /// Serve the project's tools over MCP, for an agent to call.
+    Mcp(McpArgs),
+}
+
+/// Arguments to `shaipe mcp`.
+#[derive(Debug, Args)]
+pub struct McpArgs {
+    /// The project SVG to serve.
+    #[arg(default_value = DEFAULT_PROJECT)]
+    pub input: PathBuf,
+
+    /// Pipe standard input and output to a running workspace.
+    ///
+    /// Not for people, which is why it is hidden. An ACP agent starts its MCP
+    /// servers as subprocesses and speaks to them over stdio; a live workspace
+    /// cannot be one, because its own stdio is the terminal. So it listens on
+    /// a socket and has the agent start this, which is a byte pipe and nothing
+    /// else. See ADR 010.
+    #[arg(long, value_name = "ADDRESS", hide = true, conflicts_with = "input")]
+    pub bridge: Option<String>,
+
+    /// Save the project to disk after a tool changes it.
+    ///
+    /// Off by default. An agent silently rewriting a file in a working tree is
+    /// how a tool stops being trusted, and `write_svg` says `saved: false` for
+    /// the same reason.
+    #[arg(long)]
+    pub write: bool,
 }
 
 /// Arguments to `shaipe doctor`.

@@ -124,7 +124,7 @@ see `docs/adr/004-tools-not-a-model.md`.
 - [ ] Prove the loop that already works: an agent runs `shaipe render` and
       opens the PNG. Until this is done and written up, the premise is
       unproven
-- [ ] A transport for the registry — MCP over stdio is the obvious one
+- [x] A transport for the registry — MCP over stdio is the obvious one
 - [ ] Mutating tools: set a palette colour, write a variant, record generation
 - [ ] Tools for attaching and inspecting references
 - [ ] Raster to vector: hand a PNG to an agent and get an SVG back
@@ -136,6 +136,8 @@ see `docs/adr/004-tools-not-a-model.md`.
 - [ ] A `save_project` tool, and a dirty marker an agent can see
 - [x] The project is owned by one task and reached by message, so there is no
       lock anywhere in the library — ADR-009
+- [x] An MCP server over stdio: `shaipe mcp <project>`, verified against a real
+      OpenCode client
 
 ## Artwork
 

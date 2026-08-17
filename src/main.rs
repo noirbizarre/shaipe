@@ -11,7 +11,8 @@ mod cli;
 
 use cli::{Cli, Command, TuiArgs};
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> ExitCode {
     let args = Cli::parse();
     shaipe::logging::init(args.verbose);
 
@@ -33,6 +34,7 @@ fn main() -> ExitCode {
             })
         }
         Some(Command::Tui(args)) => cli::tui::run(args, preview, scale, args_verbose),
+        Some(Command::Mcp(args)) => cli::mcp::run(args).await,
         // Bare `shaipe` opens the workspace on the conventional project, which
         // is the thing a person in a project directory almost always wants.
         None => cli::tui::run(
@@ -61,6 +63,11 @@ fn main() -> ExitCode {
 ///
 /// The lock is taken here and released before this returns, which is the whole
 /// point of the function.
+///
+/// Deliberately **not** `async`, and the closure it takes deliberately cannot
+/// `await`. Holding a `StdoutLock` across an await point would let the runtime
+/// schedule another task onto the same thread while the lock is held, which is
+/// the same failure as holding it across the workspace and is harder to see.
 ///
 /// It must **never** be held across [`cli::tui::run`]. `Stdout` is guarded by a
 /// re-entrant lock: re-entrant for the thread that holds it, blocking for every
