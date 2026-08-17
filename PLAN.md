@@ -103,6 +103,8 @@ The interactive TUI.
 - [x] `--preview` works without naming a subcommand
 - [x] A frame announcing the image is drawn before the write that blocks on it,
       so the workspace looks busy rather than wedged
+- [x] The event loop is asynchronous, waiting on the terminal and the
+      renderer at once, with a pty guard that the preview still detects Kitty
 - [x] Edit the prompt in place — `ratatui-textarea`, the ratatui-org fork of
       `tui-textarea`; the original was ruled out for pinning ratatui 0.29, the
       fork builds on `ratatui-core` and soft-wraps, which the original never did

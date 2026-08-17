@@ -29,16 +29,18 @@ mod ui;
 use std::io::{self, Stdout};
 use std::time::Duration;
 
+use futures::{FutureExt as _, StreamExt as _};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
+    KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::crossterm::{cursor, execute};
+use tokio::time::MissedTickBehavior;
 
 use crate::error::{Error, Result};
 use crate::preview::{Backend, Preview, Scale};
@@ -69,7 +71,12 @@ const BUSY_TICK: Duration = Duration::from_millis(80);
 /// The terminal is restored before any error is returned. A command that
 /// leaves a terminal in raw mode with the alternate screen active is worse
 /// than one that simply fails.
-pub fn run(project: Project, backend: Backend, scale: Option<Scale>, verbose: u8) -> Result<()> {
+pub async fn run(
+    project: Project,
+    backend: Backend,
+    scale: Option<Scale>,
+    verbose: u8,
+) -> Result<()> {
     // Held for the whole session: a warning printed over the alternate screen
     // corrupts it and cannot be scrolled back to.
     let _quiet = crate::logging::suppress();
@@ -86,7 +93,7 @@ pub fn run(project: Project, backend: Backend, scale: Option<Scale>, verbose: u8
     let mut app = App::new(project, preview.name());
     app.verbose = verbose;
 
-    let outcome = event_loop(&mut terminal, &mut app, &mut preview);
+    let outcome = event_loop(&mut terminal, &mut app, &mut preview).await;
 
     // Restored first, and its own failure reported only if nothing worse
     // happened, so the original error is never masked by the cleanup.
@@ -140,13 +147,38 @@ fn leave(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
     terminal.show_cursor().map_err(io_error)
 }
 
-/// Draw, wait for input, repeat.
-fn event_loop(
+/// Draw, wait for something to happen, repeat.
+///
+/// Asynchronous because the workspace waits on more than one thing: the
+/// terminal, and — once an agent is wired in — a stream of updates from it and
+/// a channel of tool calls coming back the other way. A poll loop over several
+/// sources is always either burning a CPU or late.
+async fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
     preview: &mut Preview,
 ) -> Result<()> {
     let io_error = |source| Error::io("the terminal", source);
+
+    // Constructed here rather than in `run`, and the placement is
+    // load-bearing: `EventStream` spawns a reader on standard input, and one
+    // running during `Preview::detect` would consume the terminal's reply to
+    // the capability query. Nothing would fail; every preview would silently
+    // become half-blocks on a terminal that supports Kitty. That is the
+    // stdout-lock bug from the other direction, and
+    // `scripts/check-workspace-detection.py` is what keeps this honest.
+    //
+    // Rebound rather than borrowed because it has to be *dropped* around
+    // `$EDITOR` — see below.
+    let mut events = EventStream::new();
+
+    // The render worker is a plain thread with a plain channel, drained on
+    // this tick. Rasterising is CPU-bound and belongs on a thread rather than
+    // on a runtime worker, and the tick is already the latency budget the
+    // spinner animates at.
+    let mut ticks = tokio::time::interval(IDLE_TICK);
+    ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut ticking = IDLE_TICK;
 
     while !app.should_quit {
         let arrived = app.collect_preview();
@@ -171,39 +203,77 @@ fn event_loop(
             .draw(|frame| ui::draw(frame, app, preview))
             .map_err(io_error)?;
 
-        let tick = if app.is_rendering() {
+        // The tick only needs to be quick while something is animating, and
+        // rebuilding the interval every iteration would reset its phase.
+        let wanted = if app.is_rendering() {
             BUSY_TICK
         } else {
             IDLE_TICK
         };
-        if !event::poll(tick).map_err(io_error)? {
-            continue;
+        if wanted != ticking {
+            ticks = tokio::time::interval(wanted);
+            ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            ticking = wanted;
         }
 
-        // Every event that has already arrived is applied before the next
-        // frame. Without this, a burst of keys draws — and under Kitty
-        // transmits — one image per key, and nobody sees the intermediate
-        // ones.
-        loop {
-            match event::read().map_err(io_error)? {
-                // Windows reports press *and* release; acting on both would
-                // move every selection two steps at a time.
-                Event::Key(key) if key.kind == KeyEventKind::Press => handle(app, key),
-                Event::Mouse(mouse) => handle_mouse(app, mouse),
-                _ => {}
+        tokio::select! {
+            // Biased, so terminal input is never starved by anything else in
+            // this loop. A workspace that will not answer `q` is broken
+            // however good the rest of it is.
+            biased;
+
+            event = events.next() => {
+                let Some(event) = event else {
+                    // Standard input closed. Nothing more can arrive, and
+                    // spinning on a finished stream would peg a core.
+                    return Ok(());
+                };
+                apply(app, event.map_err(io_error)?);
+
+                // Every event that has already arrived is applied before the
+                // next frame. Without this, a burst of keys draws — and under
+                // Kitty transmits — one image per key, and nobody sees the
+                // intermediate ones.
+                while !app.should_quit
+                    && let Some(Some(Ok(event))) = events.next().now_or_never()
+                {
+                    apply(app, event);
+                }
             }
-            if app.should_quit || !event::poll(Duration::ZERO).map_err(io_error)? {
-                break;
-            }
+
+            _ = ticks.tick() => {}
         }
 
         // After the drain rather than inside it: the terminal is torn down and
         // rebuilt here, and doing that with events still queued would feed
         // them to whatever `$EDITOR` turns out to be.
-        open_editor(terminal, app, preview)?;
+        //
+        // The stream is dropped first and rebuilt after. `EventStream` reads
+        // standard input from a thread of its own, and leaving that thread
+        // alive while an editor has the terminal means the two compete for
+        // every keystroke the user types into `vim`. Dropping it also hands
+        // `drain_events` back the blocking API it needs, which cannot see
+        // anything the stream has already buffered.
+        if app.wants_system_editor() {
+            drop(events);
+            let outcome = open_editor(terminal, app, preview);
+            events = EventStream::new();
+            outcome?;
+        }
     }
 
     Ok(())
+}
+
+/// Apply one terminal event.
+fn apply(app: &mut App, event: Event) {
+    match event {
+        // Windows reports press *and* release; acting on both would move
+        // every selection two steps at a time.
+        Event::Key(key) if key.kind == KeyEventKind::Press => handle(app, key),
+        Event::Mouse(mouse) => handle_mouse(app, mouse),
+        _ => {}
+    }
 }
 
 /// The editor the user has nominated, and the arguments it came with.
@@ -250,6 +320,8 @@ fn open_editor(
     app: &mut App,
     preview: &mut Preview,
 ) -> Result<()> {
+    // Cleared here rather than by the caller, so the flag cannot survive a
+    // failed edit and open the editor again on the next frame.
     if !app.take_system_editor_request() {
         return Ok(());
     }
@@ -489,6 +561,28 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(!app.is_dirty(), "engaging the editor is not an edit");
         app
+    }
+
+    #[test]
+    fn a_key_release_is_ignored_so_a_selection_moves_one_step_not_two() {
+        // Windows reports press *and* release. `apply` is where that is
+        // filtered now that the loop no longer reads events itself.
+        let mut app = app();
+        app.focus = Focus::Variants;
+
+        for kind in [KeyEventKind::Press, KeyEventKind::Release] {
+            apply(
+                &mut app,
+                Event::Key(KeyEvent {
+                    code: KeyCode::Down,
+                    modifiers: KeyModifiers::NONE,
+                    kind,
+                    state: ratatui::crossterm::event::KeyEventState::NONE,
+                }),
+            );
+        }
+
+        assert_eq!(app.selected_variant(), 1);
     }
 
     #[test]

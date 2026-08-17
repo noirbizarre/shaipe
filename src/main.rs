@@ -33,18 +33,21 @@ async fn main() -> ExitCode {
                     .map_err(|source| shaipe::Error::io("stdout", source))
             })
         }
-        Some(Command::Tui(args)) => cli::tui::run(args, preview, scale, args_verbose),
+        Some(Command::Tui(args)) => cli::tui::run(args, preview, scale, args_verbose).await,
         Some(Command::Mcp(args)) => cli::mcp::run(args).await,
         // Bare `shaipe` opens the workspace on the conventional project, which
         // is the thing a person in a project directory almost always wants.
-        None => cli::tui::run(
-            &TuiArgs {
-                input: cli::DEFAULT_PROJECT.into(),
-            },
-            preview,
-            scale,
-            args_verbose,
-        ),
+        None => {
+            cli::tui::run(
+                &TuiArgs {
+                    input: cli::DEFAULT_PROJECT.into(),
+                },
+                preview,
+                scale,
+                args_verbose,
+            )
+            .await
+        }
     };
 
     match result {

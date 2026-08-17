@@ -14,7 +14,12 @@ use crate::cli::TuiArgs;
 /// # Errors
 ///
 /// Returns whatever opening the project or running the workspace returns.
-pub fn run(args: &TuiArgs, preview: Backend, scale: Option<Scale>, verbose: u8) -> Result<()> {
+pub async fn run(
+    args: &TuiArgs,
+    preview: Backend,
+    scale: Option<Scale>,
+    verbose: u8,
+) -> Result<()> {
     let project = Project::open(&args.input)?;
-    shaipe::tui::run(project, preview, scale, verbose)
+    shaipe::tui::run(project, preview, scale, verbose).await
 }
