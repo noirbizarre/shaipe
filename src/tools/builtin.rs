@@ -259,13 +259,29 @@ impl Tool for GetSvg {
     }
 
     fn call(&self, project: &mut Project, _input: &Value) -> Result<ToolOutput> {
+        // The document as it now stands, not as it was read. `Project` keeps
+        // the bytes and the parsed metadata side by side, and only saving
+        // reconciles them — so `source()` still carries the old
+        // `<shaipe:prompt>` while someone is editing it in the workspace.
+        //
+        // Serving that was a data-loss bug, not merely a stale read: the model
+        // edits the document it was given and sends it back, `write_svg`
+        // replaces the whole project from those bytes, and the prompt the user
+        // had just written is silently reverted. It also disagreed with
+        // `get_project`, which reports from metadata, in the same turn.
+        //
+        // Identical to `source()` for a project nobody has touched, because
+        // writing omits defaults — the same rule that lets an untouched
+        // project be saved without changing a byte.
+        let source = project.to_svg()?;
+
         // Whole, never truncated. A model handed half a document writes back
         // half a document, and `write_svg` would then be right to reject it —
         // having spent a turn on a failure this tool caused.
         Ok(ToolOutput::json(json!({
             "path": project.path().display().to_string(),
-            "bytes": project.source().len(),
-            "source": project.source(),
+            "bytes": source.len(),
+            "source": source,
         })))
     }
 }
@@ -558,13 +574,85 @@ mod tests {
     }
 
     #[test]
-    fn get_svg_returns_the_document_byte_for_byte() {
-        // Not summarised, not truncated, not re-serialised. A model that gets
-        // anything other than the exact bytes cannot edit them and send them
-        // back.
+    fn get_svg_includes_a_prompt_edit_that_has_not_been_saved() {
+        // `Project` keeps the bytes and the parsed metadata side by side, and
+        // only saving reconciles them. Serving the bytes showed the agent a
+        // document that disagreed with `get_project` in the same turn.
+        let mut project = fixtures::project();
+        project.metadata_mut().prompt = Some("a wordless circular mark".to_owned());
+
+        let value = Registry::new()
+            .call("get_svg", &mut project, &Value::Null)
+            .unwrap()
+            .value;
+
+        let source = value["source"].as_str().unwrap();
+        assert!(source.contains("a wordless circular mark"), "{source}");
+        assert_eq!(value["bytes"], source.len());
+    }
+
+    #[test]
+    fn get_svg_and_get_project_agree_about_the_prompt() {
+        let mut project = fixtures::project();
+        project.metadata_mut().prompt = Some("a wordless circular mark".to_owned());
+
+        let registry = Registry::new();
+        let described = registry
+            .call("get_project", &mut project, &Value::Null)
+            .unwrap()
+            .value;
+        let document = registry
+            .call("get_svg", &mut project, &Value::Null)
+            .unwrap()
+            .value;
+
+        let prompt = described["prompt"].as_str().unwrap();
+        assert!(document["source"].as_str().unwrap().contains(prompt));
+    }
+
+    #[test]
+    fn a_write_that_round_trips_get_svg_preserves_an_unsaved_prompt_edit() {
+        // The whole failure, end to end: someone edits the prompt, the agent
+        // reads the document, changes a colour and writes it back. Before this
+        // the write reverted the prompt without a word, and the workspace then
+        // pulled the reverted text back into the pane.
+        let mut project = fixtures::project();
+        project.metadata_mut().prompt = Some("a wordless circular mark".to_owned());
+
+        let registry = Registry::new();
+        let document = registry
+            .call("get_svg", &mut project, &Value::Null)
+            .unwrap()
+            .value;
+
+        // What a model does: edit the document it was handed.
+        let edited = document["source"]
+            .as_str()
+            .unwrap()
+            .replace("#f05032", "#0066ff");
+
+        registry
+            .call("write_svg", &mut project, &json!({ "source": edited }))
+            .unwrap();
+
+        assert_eq!(
+            project.metadata().prompt.as_deref(),
+            Some("a wordless circular mark"),
+            "the agent's write reverted the prompt"
+        );
+        assert_eq!(
+            project.metadata().palette.colours()[0].value.to_string(),
+            "#0066ff",
+            "the agent's own edit was lost"
+        );
+    }
+
+    #[test]
+    fn get_svg_is_byte_identical_to_the_file_for_an_untouched_project() {
+        // The other side of serving `to_svg()`: it must not reformat a project
+        // nobody has edited, or every agent read would look like a diff.
         let value = value("get_svg", Value::Null);
         assert_eq!(value["source"].as_str().unwrap(), fixtures::PROJECT);
-        assert_eq!(value["bytes"], fixtures::PROJECT.len());
     }
 
     #[test]
