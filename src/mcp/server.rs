@@ -26,9 +26,14 @@ variants and render specifications that describe it.
 
 Call `get_project` first, to learn what the project's variants and colours are \
 named. You cannot see the artwork by reading the SVG: call `render_svg` to \
-look at it, and `render_grid` to check that it still reads when small. Edit by \
-calling `get_svg`, changing the whole document, and sending it back through \
-`write_svg`.";
+look at it, and `render_grid` to check that it still reads when small.
+
+Edit by calling `get_svg`, changing the whole document, and sending it back \
+through `write_svg`. Do not edit the project file with a text editor or a \
+shell, even though you are able to: a workspace is holding this same document \
+open, `write_svg` is what validates your SVG before it replaces anything, and \
+writing around it means your change is neither checked nor visible to the \
+person watching it.";
 
 /// An MCP server over one Shaipe session.
 ///

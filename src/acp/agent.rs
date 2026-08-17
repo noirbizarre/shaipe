@@ -6,10 +6,11 @@ use std::str::FromStr as _;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     CancelNotification, ContentBlock, InitializeRequest, McpServer, McpServerStdio,
-    NewSessionRequest, PermissionOption, PromptRequest, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionConfigKind, SessionConfigOption, SessionConfigSelectOption, SessionConfigSelectOptions,
-    SessionId, SessionNotification, SetSessionConfigOptionRequest, TextContent,
+    NewSessionRequest, PermissionOption, PermissionOptionKind, PromptRequest,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigSelectOption,
+    SessionConfigSelectOptions, SessionId, SessionNotification, SetSessionConfigOptionRequest,
+    TextContent, ToolKind,
 };
 use agent_client_protocol::{AcpAgent, ConnectionTo};
 use tokio::sync::mpsc;
@@ -42,23 +43,45 @@ const DEPTH: usize = 256;
 /// requirement.
 const WORKING_MODES: [&str; 2] = ["build", "code"];
 
-/// What to do when the agent asks permission to use one of *its* tools.
+/// What to answer when the agent asks permission to use one of *its* tools.
 ///
-/// Shaipe's own tools never ask: an MCP call from the session is the user's
-/// own workspace acting on the user's own project. This is about everything
-/// else the agent can do — reading files, running commands.
+/// **This is only reachable when the agent asks**, and an agent asks only about
+/// what its own configuration marks as needing to. OpenCode's permissions
+/// default to `allow`, so against a default install none of this runs and the
+/// agent edits whatever it likes. Shaipe cannot prevent that; it notices
+/// instead — see ADR 012 and `crate::tui::watch`.
+///
+/// Shaipe's own tools are a separate matter and are never refused: an MCP call
+/// from the session is the user's own workspace acting on the user's own
+/// project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Policy {
-    /// Refuse anything the user has not been asked about.
+    /// Refuse the tools that would change something, allow the rest.
     ///
-    /// The workspace has no dialogue to ask with yet, and inventing consent is
-    /// worse than declining. The refusal is surfaced in the transcript, so it
-    /// reads as a decision rather than as a hang.
+    /// A deny-list rather than an allow-list, because [`ToolKind::Other`] is
+    /// the catch-all every unclassified tool lands in — refusing by default
+    /// would block tools nobody meant to block, and a workspace that quietly
+    /// breaks an agent's search is worse than one that lets it search.
     #[default]
-    Deny,
-    /// Allow everything. `--yes`, and the integration test.
+    Guarded,
+    /// Allow everything the agent asks for. `--yes`.
     AllowAll,
+    /// Refuse everything, including reads.
+    DenyAll,
 }
+
+/// The tool kinds [`Policy::Guarded`] refuses.
+///
+/// Everything that writes. The project is changed through `write_svg`, which
+/// validates the document and leaves the file alone until someone saves; a
+/// direct write goes around all of it, against a workspace that is holding the
+/// same document in memory.
+const REFUSED: [ToolKind; 4] = [
+    ToolKind::Edit,
+    ToolKind::Delete,
+    ToolKind::Move,
+    ToolKind::Execute,
+];
 
 /// One MCP server to hand the agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -369,7 +392,12 @@ async fn connect(
         )
         .on_receive_request(
             async move |request: RequestPermissionRequest, responder, _cx| {
-                responder.respond(decide(policy, &request.options))
+                responder.respond(decide(
+                    policy,
+                    request.tool_call.fields.kind,
+                    request.tool_call.fields.title.as_deref(),
+                    &request.options,
+                ))
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -567,24 +595,71 @@ async fn fail(updates: &mpsc::Sender<AgentUpdate>, error: Error) {
 
 /// Answer a permission request.
 ///
-/// Takes the options rather than the whole request: they are all the decision
-/// uses, and it means a policy can be tested without building a protocol
-/// message out of types whose fields are private.
-fn decide(policy: Policy, options: &[PermissionOption]) -> RequestPermissionResponse {
-    let outcome = match policy {
-        Policy::AllowAll => options
-            .first()
-            .map_or(RequestPermissionOutcome::Cancelled, |option| {
-                RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
-                    option.option_id.clone(),
-                ))
-            }),
-        // Cancelled rather than rejected: the agent is told the request was
-        // not answered, which is the truth — there was nobody to ask.
-        Policy::Deny => RequestPermissionOutcome::Cancelled,
+/// Takes the kind, the title and the options rather than the whole request:
+/// they are all the decision uses, and it means a policy can be tested without
+/// building a protocol message out of types whose fields are private.
+///
+/// The title is matched against Shaipe's own tool names, not against a
+/// `shaipe_` prefix — the prefix is one agent's namespacing convention, the
+/// names are ours.
+fn decide(
+    policy: Policy,
+    kind: Option<ToolKind>,
+    title: Option<&str>,
+    options: &[PermissionOption],
+) -> RequestPermissionResponse {
+    let ours = title.is_some_and(is_shaipe_tool);
+
+    let permit = match policy {
+        Policy::AllowAll => true,
+        // Shaipe's own tools are the *sanctioned* way to change the project.
+        // Refusing `write_svg` for being an edit would leave the agent no way
+        // to do the one thing the workspace exists to have it do.
+        Policy::Guarded => ours || !kind.is_some_and(|kind| REFUSED.contains(&kind)),
+        Policy::DenyAll => false,
+    };
+
+    // Least-committal first: one call rather than a standing rule, so a
+    // decision Shaipe made on the user's behalf does not outlive the turn.
+    let wanted: [PermissionOptionKind; 2] = if permit {
+        [
+            PermissionOptionKind::AllowOnce,
+            PermissionOptionKind::AllowAlways,
+        ]
+    } else {
+        [
+            PermissionOptionKind::RejectOnce,
+            PermissionOptionKind::RejectAlways,
+        ]
+    };
+
+    let chosen = wanted
+        .iter()
+        .find_map(|kind| options.iter().find(|option| option.kind == *kind));
+
+    let outcome = match chosen {
+        Some(option) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+            option.option_id.clone(),
+        )),
+        // Nothing on offer says what Shaipe means. Cancelling is the honest
+        // answer, and better than picking an option whose meaning is a guess.
+        //
+        // Note this is *not* the same as refusing: an agent reads `Cancelled`
+        // as "the user went away" and a rejection as "no, try something else",
+        // which is the difference between it giving up and it reaching for
+        // `write_svg` instead.
+        None => RequestPermissionOutcome::Cancelled,
     };
 
     RequestPermissionResponse::new(outcome)
+}
+
+/// Whether a permission request is about one of Shaipe's own tools.
+fn is_shaipe_tool(title: &str) -> bool {
+    crate::tools::Registry::new()
+        .names()
+        .iter()
+        .any(|name| title.contains(name.as_str()))
 }
 
 /// Turn a Shaipe MCP server description into the protocol's.
@@ -697,7 +772,7 @@ mod tests {
             command: vec!["sleep".to_owned(), "60".to_owned()],
             cwd: std::env::temp_dir(),
             mcp_servers: Vec::new(),
-            policy: Policy::Deny,
+            policy: Policy::Guarded,
         };
 
         let started = tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -721,7 +796,7 @@ mod tests {
             command: vec!["/definitely/not/an/agent".to_owned()],
             cwd: std::env::temp_dir(),
             mcp_servers: Vec::new(),
-            policy: Policy::Deny,
+            policy: Policy::Guarded,
         };
 
         let (_agent, mut updates) = Agent::start(config);
@@ -761,35 +836,114 @@ mod tests {
 
     /// The options an agent offers when it asks to run something.
     fn options() -> Vec<PermissionOption> {
+        use agent_client_protocol::schema::v1::PermissionOptionId;
+
         vec![
             PermissionOption::new(
-                agent_client_protocol::schema::v1::PermissionOptionId::new("allow"),
-                "Allow",
-                agent_client_protocol::schema::v1::PermissionOptionKind::AllowOnce,
+                PermissionOptionId::new("allow-once"),
+                "Allow once",
+                PermissionOptionKind::AllowOnce,
             ),
             PermissionOption::new(
-                agent_client_protocol::schema::v1::PermissionOptionId::new("reject"),
+                PermissionOptionId::new("allow-always"),
+                "Always allow",
+                PermissionOptionKind::AllowAlways,
+            ),
+            PermissionOption::new(
+                PermissionOptionId::new("reject-once"),
                 "Reject",
-                agent_client_protocol::schema::v1::PermissionOptionKind::RejectOnce,
+                PermissionOptionKind::RejectOnce,
             ),
         ]
     }
 
-    #[test]
-    fn refusing_a_permission_cancels_rather_than_inventing_an_answer() {
-        // There is nobody to ask yet. Picking an option on the user's behalf
-        // would be inventing consent — and the first option offered is
-        // usually "allow".
-        let response = decide(Policy::Deny, &options());
-        assert!(matches!(
-            response.outcome,
-            RequestPermissionOutcome::Cancelled
-        ));
+    /// Which option a policy picked, by identifier.
+    fn chose(policy: Policy, kind: Option<ToolKind>, title: Option<&str>) -> Option<String> {
+        match decide(policy, kind, title, &options()).outcome {
+            RequestPermissionOutcome::Selected(selected) => Some(selected.option_id.0.to_string()),
+            _ => None,
+        }
     }
 
     #[test]
-    fn allowing_everything_takes_the_first_option_offered() {
-        let response = decide(Policy::AllowAll, &options());
+    fn the_agents_own_edit_is_refused() {
+        // The project is changed through `write_svg`, which validates the
+        // document and leaves the file alone until somebody saves. A direct
+        // write goes around all of it.
+        for kind in [
+            ToolKind::Edit,
+            ToolKind::Delete,
+            ToolKind::Move,
+            ToolKind::Execute,
+        ] {
+            assert_eq!(
+                chose(Policy::Guarded, Some(kind), Some("write")).as_deref(),
+                Some("reject-once"),
+                "{kind:?} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn the_agents_own_reads_are_allowed() {
+        // An agent that can read `AGENTS.md` and search the tree does better
+        // work, and neither can hurt the project.
+        for kind in [
+            ToolKind::Read,
+            ToolKind::Search,
+            ToolKind::Fetch,
+            ToolKind::Think,
+        ] {
+            assert_eq!(
+                chose(Policy::Guarded, Some(kind), Some("read")).as_deref(),
+                Some("allow-once"),
+                "{kind:?} should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn shaipes_own_write_svg_is_never_refused() {
+        // It is classified as an edit, because it is one. Refusing it would
+        // leave the agent no way to do the one thing the workspace exists to
+        // have it do.
+        assert_eq!(
+            chose(
+                Policy::Guarded,
+                Some(ToolKind::Edit),
+                Some("shaipe_write_svg")
+            )
+            .as_deref(),
+            Some("allow-once")
+        );
+    }
+
+    #[test]
+    fn an_unclassified_tool_is_not_refused_by_accident() {
+        // `Other` is the catch-all every tool without a kind lands in. A
+        // deny-list keeps those working; an allow-list would have blocked
+        // tools nobody meant to block.
+        assert_eq!(
+            chose(Policy::Guarded, Some(ToolKind::Other), Some("something")).as_deref(),
+            Some("allow-once")
+        );
+        assert_eq!(
+            chose(Policy::Guarded, None, None).as_deref(),
+            Some("allow-once")
+        );
+    }
+
+    #[test]
+    fn a_refusal_says_no_rather_than_pretending_the_user_left() {
+        // An agent reads `Cancelled` as "the user went away" and a rejection
+        // as "no, try something else". Only the second makes it reach for
+        // `write_svg`.
+        let response = decide(
+            Policy::Guarded,
+            Some(ToolKind::Edit),
+            Some("write"),
+            &options(),
+        );
         assert!(matches!(
             response.outcome,
             RequestPermissionOutcome::Selected(_)
@@ -797,11 +951,57 @@ mod tests {
     }
 
     #[test]
-    fn a_permission_request_with_no_options_is_cancelled_rather_than_panicking() {
-        // An agent is entitled to ask a question with no answers. Indexing
-        // into an empty list here would take the workspace down over it.
-        for policy in [Policy::Deny, Policy::AllowAll] {
-            let response = decide(policy, &[]);
+    fn allowing_everything_allows_an_edit() {
+        assert_eq!(
+            chose(Policy::AllowAll, Some(ToolKind::Edit), Some("write")).as_deref(),
+            Some("allow-once")
+        );
+    }
+
+    #[test]
+    fn refusing_everything_refuses_a_read() {
+        assert_eq!(
+            chose(Policy::DenyAll, Some(ToolKind::Read), Some("read")).as_deref(),
+            Some("reject-once")
+        );
+    }
+
+    #[test]
+    fn a_one_off_answer_is_preferred_to_a_standing_rule() {
+        // A decision Shaipe made on the user's behalf should not outlive the
+        // turn it was made for.
+        assert_eq!(
+            chose(Policy::AllowAll, Some(ToolKind::Read), None).as_deref(),
+            Some("allow-once")
+        );
+    }
+
+    #[test]
+    fn a_request_with_no_option_that_fits_is_cancelled_rather_than_guessed() {
+        // An agent is entitled to offer options none of which mean what Shaipe
+        // means. Picking one anyway would be inventing an answer.
+        let only_always = vec![PermissionOption::new(
+            agent_client_protocol::schema::v1::PermissionOptionId::new("x"),
+            "Always allow",
+            PermissionOptionKind::AllowAlways,
+        )];
+
+        let response = decide(
+            Policy::Guarded,
+            Some(ToolKind::Edit),
+            Some("write"),
+            &only_always,
+        );
+        assert!(matches!(
+            response.outcome,
+            RequestPermissionOutcome::Cancelled
+        ));
+    }
+
+    #[test]
+    fn a_request_with_no_options_at_all_does_not_panic() {
+        for policy in [Policy::Guarded, Policy::AllowAll, Policy::DenyAll] {
+            let response = decide(policy, Some(ToolKind::Read), None, &[]);
             assert!(matches!(
                 response.outcome,
                 RequestPermissionOutcome::Cancelled
