@@ -47,7 +47,29 @@ command that calls one, read `docs/adr/004-tools-not-a-model.md` first.
    and by `scripts/check-terminal-detection.py`, which runs `shaipe doctor`
    under a pty that impersonates a Kitty terminal.
 
-7. **The project file stays a valid, ordinary SVG.** Its root draws the primary
+7. **Nothing but JSON-RPC reaches standard output while `shaipe mcp` serves.**
+   A single `log::warn!` about a missing font in the middle of the stream is a
+   frame the client cannot parse, and it looks like Shaipe speaking a broken
+   protocol rather than like a warning. `logging::suppress()` is held for the
+   whole session — the stdio twin of invariant 6 — and
+   `nothing_but_json_rpc_is_written_to_standard_output` in
+   `tests/mcp_stdio.rs` runs the binary under `-vv` and parses every line.
+
+8. **The workspace never waits for an agent's handshake.** An agent starts the
+   MCP servers it is given in `session/new` and calls `tools/list` on them
+   *before answering it*. Shaipe's server is the live workspace, which can only
+   answer from its event loop, so waiting deadlocks the two: the agent times
+   out, and the session comes up with none of Shaipe's tools and no error
+   anywhere. `Agent::start` returns immediately and reports through the update
+   stream — enforced by `starting_an_agent_does_not_wait_for_it_to_answer` in
+   `src/acp/agent.rs`, and explained in ADR 011.
+
+9. **There is no lock anywhere in the library.** The project has one owner and
+   is reached by message; see ADR 009. This is what invariant 6's hook is
+   really protecting now, and the ADR records why spelling a lock
+   `RwLock::write()` to evade that hook was rejected.
+
+10. **The project file stays a valid, ordinary SVG.** Its root draws the primary
    variant, so it renders in a browser and on GitHub rather than appearing
    blank. Metadata never affects geometry — by construction, since `usvg` never
    sees it.
@@ -66,7 +88,9 @@ src/
 ├── render/       project + spec -> bytes. Headless, deterministic
 ├── preview/      pixels -> terminal, via ratatui-image. See ADR 006
 ├── tui/          the interactive workspace
-└── tools/        the operations an agent can perform
+├── tools/        the operations an agent can perform. The application layer
+├── mcp/          those tools, spoken as MCP. A thin adapter
+└── acp/          an ACP client, for driving an agent. A thin adapter
 ```
 
 Dependencies point inward, and the direction is enforced, not described:
@@ -74,12 +98,22 @@ Dependencies point inward, and the direction is enforced, not described:
 ```
 cli ──> tui ──> preview ──┐
   │       │               ├──> (pixels only)
-  └───────┴──> render ────┴──> project ──> error
-                tools ────────────┘
+  │       ├──> render ────┴──> project ──> error
+  │       │                       ▲
+  │       └──> acp ──┐            │
+  └──────────> mcp ──┴──> tools ──┘
 ```
 
 `project` knows nothing. `render` knows `project`. `preview` knows neither.
-Nothing in the library knows a command exists.
+Nothing in the library knows a command exists. `mcp` and `acp` are adapters
+around `tools`, and neither knows the workspace exists — enforced by the
+`adapter-isolation` hook, because `shaipe mcp` has to work headlessly.
+
+Two moving protocols are confined to the modules that adapt them, by the
+`acp-types-are-confined` and `mcp-types-are-confined` hooks. That is what makes
+`AgentUpdate` and `ToolOutput` load-bearing rather than decorative: ACP's
+`SessionUpdate` is `#[non_exhaustive]`, and a pane that matched on it would
+stop compiling every time the protocol grew.
 
 ## Style
 
@@ -104,6 +138,14 @@ decisions exist because the obvious API does not do what its name suggests:
 were found by probing, not by reading. Do the same before building on an
 assumption about `resvg`.
 
+**Probe the protocols too.** The same rule cost more here than anywhere else.
+`agent-client-protocol`'s major version is not the protocol's — 2.x speaks wire
+version 1. `tempfile::tempdir` does not create a private directory; its mode is
+whatever the umask leaves. And an agent calls `tools/list` on a server it was
+given *before* answering the request that gave it. Each of those was a
+plausible assumption, each was wrong, and each was found by running the thing.
+`opencode acp` will answer a hand-written JSON-RPC frame on stdin; use it.
+
 ## Plan
 
 `PLAN.md` is the single checklist of what is done and what is not. Its format
@@ -111,6 +153,29 @@ is load-bearing and documented in the file: **checkboxes, never numbering**,
 items are never reordered or deleted, and finishing something is a
 one-character change in place. That is what lets several people edit it at once
 without conflicts. Read the rules at the top before changing it.
+
+## Agents, and the two MCP modes
+
+`shaipe mcp <project>` opens a file and serves it on stdio. The workspace
+serves a *session-scoped* server for the project on screen: it listens on a
+unix socket and hands the agent `shaipe mcp --bridge <address>`, a subprocess
+that copies bytes and parses nothing. They share every tool and no lifecycle;
+do not merge them. See ADR 010.
+
+The tools live in `src/tools/` and only there. `src/mcp/` is a transport, and a
+tool implemented in it is one the workspace and the CLI cannot reach.
+
+Testing anything in this area against a real agent costs money and needs
+someone's credentials, so it is `#[ignore]`d (`tests/acp_opencode.rs`) or a
+script (`scripts/smoke-acp.sh`). Everything up to the model is covered by tests
+that always run: `src/mcp/server.rs` drives a real MCP client over a duplex,
+`src/mcp/bridge.rs` carries a call over a real socket, and `tests/mcp_stdio.rs`
+runs the binary. Never add a test that needs a network to `mise run ci`.
+
+When a test asserts something about a model's behaviour, make sure it can fail.
+`an_agent_can_see_the_artwork_rather_than_only_read_it` originally passed
+against a model that said "I cannot see images" and then looked the answer up
+with another tool. A green test that proves nothing is worse than no test.
 
 ## Artwork
 

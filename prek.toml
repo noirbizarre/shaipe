@@ -143,3 +143,34 @@ language = "system"
 entry = "bash -c '! grep -rnE \"^ *use clap\" src --include=*.rs | grep -vE \"^src/(cli/|main\\.rs)\"'"
 files = "\\.rs$"
 pass_filenames = false
+
+# `AgentUpdate` and `ToolOutput` exist to keep two moving protocols out of the
+# rest of the tree. They are only doing that job while the protocol crates are
+# confined to the modules that adapt them: the moment `SessionUpdate` appears
+# in a pane, ACP adding a variant stops compiling the workspace.
+[[repos.hooks]]
+id = "acp-types-are-confined"
+name = "the ACP protocol types do not escape src/acp/"
+language = "system"
+entry = "bash -c '! grep -rnE \"^ *use agent_client_protocol\" src --include=*.rs | grep -v \"^src/acp/\"'"
+files = "\\.rs$"
+pass_filenames = false
+
+[[repos.hooks]]
+id = "mcp-types-are-confined"
+name = "the MCP protocol types do not escape src/mcp/"
+language = "system"
+entry = "bash -c '! grep -rnE \"^ *use rmcp\" src --include=*.rs | grep -v \"^src/mcp/\"'"
+files = "\\.rs$"
+pass_filenames = false
+
+# `src/acp/` and `src/mcp/` are adapters around the application layer. A server
+# that could reach the workspace would be one that cannot be served headlessly
+# by `shaipe mcp`, which is the whole of mode A.
+[[repos.hooks]]
+id = "adapter-isolation"
+name = "the agent and server layers know nothing about the workspace"
+language = "system"
+entry = "bash -c '! grep -rnE \"^ *use crate::(tui|preview)\" src/acp/ src/mcp/'"
+files = "\\.rs$"
+pass_filenames = false

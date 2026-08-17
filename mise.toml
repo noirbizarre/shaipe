@@ -249,6 +249,13 @@ run = "python3 scripts/check-workspace-detection.py"
 description = "Check the workspace does not flood the terminal with images"
 run = "python3 scripts/check-preview-traffic.py"
 
+# Deliberately not in `check`: it needs an installed and authenticated agent
+# and makes real model calls, which is not something CI may do and not
+# something a routine local run should cost anyone.
+[tasks."smoke:acp"]
+description = "End-to-end check against a real agent (needs OpenCode, costs money)"
+run = "bash scripts/smoke-acp.sh"
+
 [tasks.assets]
 description = "Regenerate the repository's artwork from logo.svg"
 run = "cargo run --quiet -- render logo.svg --output docs/images --strict-fonts"

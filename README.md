@@ -186,13 +186,119 @@ transmitted at half resolution when tmux is detected and the terminal scales
 them back up. `--preview-scale N` overrides it: `1` for full sharpness, `4` for
 speed.
 
+## Working with an agent
+
+Shaipe does not host a model. It drives an agent you already installed, and
+gives that agent the one thing it does not have: the ability to *see* an SVG.
+
+```text
+              Shaipe
+                 │
+                ACP          Shaipe is the client.
+                 │           The agent is a program you installed.
+             opencode acp
+                 │
+        your model, your key, your bill
+                 │
+                MCP          Shaipe is the server.
+                 │
+         Shaipe's asset tools
+```
+
+Shaipe never sees an API key, never names a provider, and cannot tell you which
+model answered. Your agent is configured and authenticated in your agent. See
+[ADR-011](docs/adr/011-driving-an-agent-is-still-not-a-model.md).
+
+### The tools
+
+| Tool | What it does |
+|---|---|
+| `get_project` | Everything the project says about itself |
+| `get_variants` | The named parts of the document that can be drawn alone |
+| `get_palette` | The colours, with their names and roles |
+| `get_svg` | The document, exactly as it is |
+| `render_svg` | Draw one variant and **look at it** |
+| `render_grid` | Draw one variant at several sizes, to check it still reads small |
+| `write_svg` | Replace the document, validated first |
+
+The names are a public interface; renaming one is a breaking change
+([ADR-007](docs/adr/007-tool-names.md)). `render_svg` and `render_grid` return
+real images as MCP image content, which is the entire point — a model that can
+only read the SVG cannot tell you the mark is illegible at 16 pixels.
+
+`write_svg` changes the project **in memory**. It never writes to your working
+tree; that takes a `Ctrl-S`, or `shaipe mcp --write` if the agent is the only
+one using the project.
+
+### Two ways to reach them
+
+**Standalone.** A plain MCP server over stdio, for any MCP client:
+
+```bash
+shaipe mcp logo.svg
+```
+
+```jsonc
+// opencode.json — or the equivalent for Claude Code, an IDE, anything else
+{
+  "mcp": {
+    "shaipe": {
+      "type": "local",
+      "command": ["shaipe", "mcp", "logo.svg"],
+      "enabled": true
+    }
+  }
+}
+```
+
+This needs no ACP and no agent. It opens the file itself, and works headlessly.
+
+**In the workspace.** Open a project and talk to it:
+
+```bash
+shaipe logo.svg
+```
+
+Tab to the prompt pane, type what you want, and press Enter. Shaipe starts
+`opencode acp`, gives it a session-scoped MCP server pointing at *the project
+you are looking at*, and shows you what the agent does with it. When the agent
+edits the SVG, the preview follows on its own.
+
+The two modes share every tool and no lifecycle. The standalone server owns a
+file; the session server reaches the project someone is watching — which is why
+the agent's edits and your preview cannot drift apart
+([ADR-010](docs/adr/010-mcp-over-a-socket-with-a-bridge.md)).
+
+```bash
+shaipe --agent "some-other-agent acp"   # any ACP agent, not just OpenCode
+shaipe --no-agent                       # open the workspace without one
+```
+
+If OpenCode is not installed, the workspace still opens and says so in the
+prompt pane. Reading your own project has never depended on an agent, and it
+does not start now.
+
+### Prerequisites
+
+[OpenCode](https://opencode.ai), installed and authenticated:
+
+```bash
+opencode auth login
+```
+
+Any ACP agent works; OpenCode is the one this was built and tested against. A
+model that can accept images is needed for `render_svg` to be worth anything —
+without one the image is still delivered, and the model still cannot see it.
+
 ## Architecture
 
 ```text
 cli ──> tui ──> preview ──┐
   │       │               ├──> (pixels only)
-  └───────┴──> render ────┴──> project ──> error
-                tools ────────────┘
+  │       ├──> render ────┴──> project ──> error
+  │       │                       ▲
+  │       └──> acp ──┐            │
+  └──────────> mcp ──┴──> tools ──┘
 ```
 
 - **`project`** — the format. Reads and writes the SVG and its metadata, and
@@ -201,7 +307,10 @@ cli ──> tui ──> preview ──┐
   contains no reference to a terminal or a model.
 - **`preview`** — pixels → terminal. Knows nothing about SVG.
 - **`tui`** — the workspace.
-- **`tools`** — the operations an agent can perform, with no transport.
+- **`tools`** — the operations an agent can perform. The application layer:
+  no transport, and the only place any of them is implemented.
+- **`mcp`** — those tools, spoken as the Model Context Protocol.
+- **`acp`** — an Agent Client Protocol client, for driving an agent.
 
 Those directions are enforced by hooks in `prek.toml`, not merely documented.
 The reasoning behind each significant choice — including two where the obvious
@@ -220,19 +329,28 @@ Early, but real. Nothing described above is a mock.
 - `shaipe render`, `shaipe inspect`, and a CI workflow that regenerates this
   repository's own artwork from `logo.svg` and fails if it drifted.
 - The terminal workspace, with Kitty, Sixel, iTerm2 and half-block previews.
-- A read-only tool registry: `get_project`, `get_variants`, `get_palette`,
-  `render_svg` — **as a library API only. It has no transport, so nothing
-  outside this crate can call it yet.** What works today is an agent running
-  `shaipe render` and opening the PNG.
+- Seven tools, over MCP: `shaipe mcp` serves any MCP client, and the workspace
+  serves a session-scoped server to an agent it drives over ACP. Verified
+  against OpenCode 1.18.18 — it calls `get_variants` and answers with the
+  project's real names, and `render_svg` puts a genuine PNG on the wire.
+- Talking to an agent from the workspace: type a prompt, watch the tool calls,
+  and see the preview follow the agent's edit.
 
 **Not yet**
 
-- Any generation. There is no `shaipe generate`, no provider and no API key,
-  and adding one is [explicitly not the plan](docs/adr/004-tools-not-a-model.md).
-- A transport for the tool registry. MCP is the obvious next step. Until then
-  the registry is a library API with no external consumer.
-- Editing from the workspace: the prompt pane displays, the palette pane has no
-  colour picker yet.
+- Any generation *by Shaipe*. There is no `shaipe generate`, no provider and no
+  API key, and adding one is
+  [explicitly not the plan](docs/adr/004-tools-not-a-model.md). Shaipe drives
+  an agent you own; it does not become one.
+- A proven vision loop. The image is delivered as MCP image content and a real
+  agent receives it, but whether the *model* can see it depends on the model
+  you configured. The end-to-end test skips loudly rather than pretending
+  otherwise when it cannot.
+- A permission dialogue. The agent's own tools — reading files, running
+  commands — are refused unless `--yes` is passed, because there is nothing to
+  ask with yet. Shaipe's own tools never ask.
+- Editing from the workspace beyond the prompt: the palette pane has no colour
+  picker yet.
 - Palette *binding*. The palette is recorded and reported, but the artwork does
   not yet reference it, so editing a colour does not restyle the mark.
 - Raster → vector. PNG and JPEG references can be attached to a project; asking
