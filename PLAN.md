@@ -130,6 +130,10 @@ see `docs/adr/004-tools-not-a-model.md`.
 - [ ] Raster to vector: hand a PNG to an agent and get an SVG back
 - [x] Tool inputs described by JSON Schema rather than a parameter list — ADR-008
 - [x] Tools renamed to `verb_noun`, pinned by a test — ADR-007
+- [x] `get_svg` and `write_svg`, the written document validated before it is
+      accepted and never saved without being asked
+- [x] `render_grid` — one variant at several sizes, to check a mark still reads
+- [ ] A `save_project` tool, and a dirty marker an agent can see
 
 ## Artwork
 

@@ -206,6 +206,19 @@ pub(crate) fn integer(description: &str) -> Value {
     json!({ "type": "integer", "minimum": 1, "description": description })
 }
 
+/// A bounded array of positive integers.
+///
+/// The bound is in the schema as well as in the tool's own check, so a model
+/// that reads it never sends a list that will be refused.
+pub(crate) fn integers(description: &str, max_items: usize) -> Value {
+    json!({
+        "type": "array",
+        "items": { "type": "integer", "minimum": 1 },
+        "maxItems": max_items,
+        "description": description,
+    })
+}
+
 /// Read a required string argument.
 ///
 /// # Errors
@@ -311,7 +324,15 @@ mod tests {
         // refactor. See ADR 007.
         assert_eq!(
             Registry::new().names(),
-            ["get_palette", "get_project", "get_variants", "render_svg"]
+            [
+                "get_palette",
+                "get_project",
+                "get_svg",
+                "get_variants",
+                "render_grid",
+                "render_svg",
+                "write_svg",
+            ]
         );
     }
 

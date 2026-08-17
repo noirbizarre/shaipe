@@ -291,6 +291,36 @@ pub enum Error {
         /// What specifically is wrong.
         reason: String,
     },
+
+    /// A tool was handed a document that is not a usable Shaipe project.
+    ///
+    /// Its own variant rather than passing the inner error through, because
+    /// the model needs to be told two things the inner error cannot say: that
+    /// nothing was changed, and how to produce a document that would be
+    /// accepted.
+    #[error("`{tool}` was given an SVG that is not a valid Shaipe project")]
+    #[diagnostic(
+        code(shaipe::tools::invalid_svg),
+        help(
+            "Nothing was changed; the project is exactly as it was. Call \
+             `get_svg` for the current document, apply the edit to the whole \
+             of it — `<metadata>` included — and send all of it back."
+        )
+    )]
+    InvalidSvgFromTool {
+        /// The tool that refused.
+        tool: String,
+        /// Why the document was rejected.
+        ///
+        /// Boxed to keep `Error` a sensible size: without it, every `Result`
+        /// in the crate grows to hold a nested copy of the whole enum.
+        ///
+        /// `#[source]` and not `#[diagnostic_source]`: miette wants the latter
+        /// to borrow as `dyn Diagnostic`, which a `Box<Error>` does not, and
+        /// the cause chain renders either way.
+        #[source]
+        source: Box<Error>,
+    },
 }
 
 impl Error {
