@@ -130,9 +130,53 @@ base64 = "0.23.1"
 # font family falling back to a system font, most of all.
 log = "0.4.33"
 
-# The scratch file the prompt is handed to `$EDITOR` in. A real dependency
-# rather than a dev one since the workspace needs it, and still visible to the
-# tests, which is why there is no dev entry for it.
+# The async runtime. The workspace has to wait on three things at once now —
+# the terminal, the renderer and an agent's update stream — and a poll loop
+# over three sources is a loop that is always either burning a CPU or late.
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+  "sync",
+  "time",
+  "io-util",
+  "io-std",
+  "net",
+  "process",
+] }
+
+# Named directly only for `event-stream`: `ratatui`'s `crossterm` feature does
+# not enable it, and the version must stay pinned to whatever `ratatui`
+# resolves or two crossterms fight over the same terminal. Everything else
+# still goes through `ratatui::crossterm`.
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+
+# The ACP client. Shaipe drives an agent the user already installed; it never
+# hosts one — see ADR 011.
+#
+# The crate version and the wire version are independent lines: 2.x speaks
+# protocol *v1*, which is what every agent shipping today negotiates. Do not
+# enable `unstable_protocol_v2` — it is an unreleased draft, and turning it on
+# would make Shaipe speak a dialect nothing answers.
+agent-client-protocol = "2.0.0"
+
+# The MCP server, over stdio for a standalone session and over a socket for a
+# live workspace. `server` plus the two transports; no `macros` or `schemars`,
+# because the tool list is built from `tools::Registry` at runtime rather than
+# from types — see ADR 008.
+rmcp = { version = "3.1.2", default-features = false, features = [
+  "server",
+  "transport-io",
+  "transport-async-rw",
+] }
+
+# Combinators for the event loop's `select!` arms and for the bridge.
+futures = "0.3"
+
+# Two unrelated needs, one crate: the scratch file the prompt is handed to
+# `$EDITOR` in, and the private directory a live workspace puts its MCP socket
+# in so that quitting removes it. A real dependency rather than a dev one since
+# the workspace needs it, and still visible to the tests, which is why there is
+# no dev entry for it.
 tempfile = "3"
 
 [dev-dependencies]
@@ -141,3 +185,11 @@ predicates = "3"
 insta = { version = "1", features = ["filters"] }
 rstest = "0.26"
 pretty_assertions = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+# The MCP tests drive a real client against a real server over an in-process
+# duplex stream. Testing the transport with anything less would be testing the
+# handler, which is not where protocol bugs live.
+rmcp = { version = "3.1.2", default-features = false, features = [
+  "client",
+  "transport-async-rw",
+] }
