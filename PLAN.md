@@ -134,6 +134,8 @@ see `docs/adr/004-tools-not-a-model.md`.
       accepted and never saved without being asked
 - [x] `render_grid` — one variant at several sizes, to check a mark still reads
 - [ ] A `save_project` tool, and a dirty marker an agent can see
+- [x] The project is owned by one task and reached by message, so there is no
+      lock anywhere in the library — ADR-009
 
 ## Artwork
 

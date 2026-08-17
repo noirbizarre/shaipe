@@ -321,6 +321,18 @@ pub enum Error {
         #[source]
         source: Box<Error>,
     },
+
+    /// A session was addressed after whoever owned its project had gone.
+    #[error("the workspace this session belongs to has closed")]
+    #[diagnostic(
+        code(shaipe::tools::session_closed),
+        help(
+            "The project's tools are served by a running `shaipe` workspace. \
+             Reopen it, or run `shaipe mcp <project>` for a session that \
+             stands on its own."
+        )
+    )]
+    SessionClosed,
 }
 
 impl Error {

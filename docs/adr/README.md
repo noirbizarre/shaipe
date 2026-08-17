@@ -29,3 +29,4 @@ by editing the old one. The history is the value.
 - [ADR-006](006-ratatui-image.md) — Use `ratatui-image` for terminal previews
 - [ADR-007](007-tool-names.md) — Tool names are `verb_noun`
 - [ADR-008](008-json-schema-for-tool-inputs.md) — Tool inputs are described by JSON Schema
+- [ADR-009](009-session-reached-by-message.md) — The session is reached by message, not by lock

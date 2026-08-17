@@ -30,6 +30,7 @@
 
 mod builtin;
 mod output;
+pub mod session;
 
 use std::collections::BTreeMap;
 
@@ -39,6 +40,7 @@ use crate::error::{Error, Result};
 use crate::project::Project;
 
 pub use output::{ToolImage, ToolOutput};
+pub use session::{Applied, SessionCommand, SessionHandle};
 
 /// An operation an agent can perform on a project.
 pub trait Tool: Send + Sync {
