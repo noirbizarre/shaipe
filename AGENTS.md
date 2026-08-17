@@ -181,6 +181,13 @@ with two states. `EditorMode` is what keeps them apart, and
 `a_message_to_the_agent_never_reaches_the_projects_prompt` is what stops them
 merging back.
 
+Shaipe **cannot** stop an agent editing files with its own tools. Permission is
+resolved inside the agent, and OpenCode's defaults never ask — so `src/acp/`'s
+`Policy` is correct code that a default install never reaches. The lever that
+works is `src/tui/watch.rs`: notice the write, reload, and refuse to overwrite
+it. Do not write anything that implies otherwise; ADR 012 exists because the
+first draft did.
+
 `--yes` grants the *agent's* own tools — its editor, its shell — and an agent
 asked to change a colour may use them instead of `write_svg`, writing to the
 working tree past every guarantee above. Shaipe's own tools never ask and never

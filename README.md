@@ -286,17 +286,45 @@ Inside the prompt pane:
 |---|---|
 | `enter` | edit the project's prompt — committed as you type |
 | `a` | ask the agent — sent on `enter`, committed nowhere |
+| `alt+a` | switch between the two **without leaving the editor** |
 | `e` | open the project's prompt in `$EDITOR` |
 | `ctrl-c` | stop the turn the agent is on; again to quit |
 | `ctrl-s` | save the project |
+| `R` | re-read the project from disk, discarding what is in memory |
 
-`--yes` is worth understanding before you use it. Shaipe's tools never ask for
-permission and never write to disk. Your agent's tools are a different matter:
-it has its own editor and its own shell, and an agent asked to change a colour
-may reach for those rather than for `write_svg`. `--yes` approves them, which
-means it can write to your working tree directly, past everything above.
-Without it they are declined — there is no dialogue to ask you with yet, and a
-[permission prompt](PLAN.md) is the obvious next thing.
+`a` only works from the pane; once the editor has the keyboard it owns every
+key, so `alt+a` is the one that works from inside it.
+
+### What Shaipe cannot do about your agent
+
+Your agent has its own editor and its own shell, and one asked to change a
+colour may reach for those rather than for `write_svg` — writing to your
+working tree directly, past every guarantee above.
+
+**Shaipe cannot stop it.** Permission is resolved inside the agent, against the
+agent's configuration, and a client is consulted only about what that
+configuration marks as needing consent. OpenCode's permissions
+[default to `allow`](https://opencode.ai/docs/permissions/), so it never asks,
+and a client that is never asked cannot refuse. `--yes` therefore changes very
+little with a default install. See
+[ADR-012](docs/adr/012-cannot-restrict-an-agents-own-tools.md).
+
+What Shaipe does instead is **notice**. The project file is watched, so an
+agent that writes it directly still updates the preview; and if you have
+unsaved work the workspace says the file changed rather than choosing between
+the two versions, and refuses to overwrite theirs with yours.
+
+If you want the restriction enforced, put it where it is enforced:
+
+```jsonc
+// opencode.json
+{
+  "permission": { "edit": "deny", "bash": "deny" }
+}
+```
+
+Then the agent can only change the project through Shaipe's tools, because
+those are the only ones left that can.
 
 If OpenCode is not installed, the workspace still opens and says so in the
 prompt pane. Reading your own project has never depended on an agent, and it

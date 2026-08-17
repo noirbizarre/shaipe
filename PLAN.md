@@ -151,6 +151,14 @@ see `docs/adr/004-tools-not-a-model.md`.
       README which models can and cannot see a render
 - [x] `a` on the prompt pane asks the agent, using the prompt editor with a
       buffer that is never committed to the project
+- [x] `alt+a` reaches the agent from inside the editor, which swallows every
+      other key
+- [x] The project file is watched, so an agent writing it directly still
+      reaches the preview, and a save cannot overwrite somebody else's work
+- [x] ~~Refuse the agent's own editing tools~~ — cannot be done from a client;
+      permission is resolved inside the agent. See ADR-012
+- [ ] `Policy::Guarded` is unproven against a real agent that asks: OpenCode
+      never does, so only its unit tests cover it
 
 ## Artwork
 
