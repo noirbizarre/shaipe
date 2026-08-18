@@ -5,7 +5,7 @@
 
 The name plays on &quot;shape&quot; and &quot;AI&quot;.
 A shape that is partly drawn and partly inferred: an outlined square whose lower-right quadrant has been resolved into solid colour, suggesting a form being completed rather than one already finished. 
-Geometric, flat, monoline, no gradients. The icon carries no text, so it reads at 16 pixels. The wordmark sets &quot;shAIpe&quot; as geometry rather than as type.</shaipe:prompt>
+Geometric, flat, monoline, no gradients. The icon carries no text, so it reads at 16 pixels. The wordmark sets &quot;Shaipe&quot; (with ai in bold) as text using the Fira Sans font.</shaipe:prompt>
       <shaipe:palette>
         <shaipe:color name="accent" value="#f05032" role="accent"/>
         <shaipe:color name="ink" value="#18181b" role="foreground"/>
@@ -49,21 +49,10 @@ Geometric, flat, monoline, no gradients. The icon carries no text, so it reads a
       <path d="M128 128 H216 V216 H128 Z" fill="#f05032"/>
     </g>
 
-    <g id="letters-geometry">
-      <g fill="none" stroke="currentColor" stroke-width="22" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M376 116 C376 96 304 96 304 128 C304 158 376 152 376 180 C376 210 304 208 304 188"/>
-        <path d="M406 60 V180"/>
-        <path d="M406 128 C406 104 470 104 470 132 V180"/>
-        <circle cx="528" cy="146" r="34"/>
-        <path d="M562 112 V180"/>
-        <path d="M596 112 V180"/>
-        <path d="M626 112 V228"/>
-        <circle cx="660" cy="146" r="34"/>
-        <path d="M712 146 H780 A34 34 0 1 0 772 172"/>
-      </g>
-      <circle cx="596" cy="76" r="12" fill="currentColor"/>
-      <!-- The one accent in the word, echoing the icon's resolved quadrant. -->
-      <circle cx="660" cy="146" r="12" fill="#f05032"/>
+    <g id="wordmark-text" font-family="'Fira Sans', sans-serif" font-size="140" font-weight="400" letter-spacing="-2">
+      <text x="310" y="190" fill="currentColor">
+        <tspan font-weight="400">Sh</tspan><tspan font-weight="700">ai</tspan><tspan font-weight="400">pe</tspan>
+      </text>
     </g>
   </defs>
 
@@ -78,14 +67,14 @@ Geometric, flat, monoline, no gradients. The icon carries no text, so it reads a
   <symbol id="wordmark" viewBox="0 0 800 256">
     <g color="#18181b">
       <use href="#mark-geometry"/>
-      <use href="#letters-geometry"/>
+      <use href="#wordmark-text"/>
     </g>
   </symbol>
 
   <symbol id="wordmark-inverse" viewBox="0 0 800 256">
     <g color="#ffffff">
       <use href="#mark-geometry"/>
-      <use href="#letters-geometry"/>
+      <use href="#wordmark-text"/>
     </g>
   </symbol>
 
