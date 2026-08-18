@@ -1,7 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:shaipe="https://shaipe.dev/ns/2026" viewBox="0 0 256 256" width="256" height="256">
   <metadata>
     <shaipe:project version="1" primary="icon">
-      <shaipe:prompt>A mark for Shaipe, an LLM-native SVG asset workspace. The name plays on "shape" and "AI". A shape that is partly drawn and partly inferred: an outlined square whose lower-right quadrant has been resolved into solid colour, suggesting a form being completed rather than one already finished. Geometric, flat, monoline, no gradients. The icon carries no text, so it reads at 16 pixels. The wordmark sets "shaipe" as geometry rather than as type.</shaipe:prompt>
+      <shaipe:prompt>A mark for Shaipe, an LLM-native SVG asset workspace. 
+
+The name plays on &quot;shape&quot; and &quot;AI&quot;.
+A shape that is partly drawn and partly inferred: an outlined square whose lower-right quadrant has been resolved into solid colour, suggesting a form being completed rather than one already finished. 
+Geometric, flat, monoline, no gradients. The icon carries no text, so it reads at 16 pixels. The wordmark sets &quot;shAIpe&quot; as geometry rather than as type.</shaipe:prompt>
       <shaipe:palette>
         <shaipe:color name="accent" value="#f05032" role="accent"/>
         <shaipe:color name="ink" value="#18181b" role="foreground"/>
