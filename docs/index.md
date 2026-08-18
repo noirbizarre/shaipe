@@ -98,10 +98,11 @@ The variants and the render specifications are the preview's tabs: `←` and `�
 move between them and `m` swaps which of the two they list. `s` swaps the
 picture for the SVG that produced it, `t` swaps the prompt for the transcript,
 and `x` opens the render specifications editor. Each of the four is a toolbar
-button too.
+button too, labelled with what pressing it will do rather than with the state
+it is in.
 
-`tab` moves between the prompt and the palette, `enter` hands the keyboard to
-whichever has it and `esc` gives it back; both are edited in place and
+`tab` and `↑` `↓` move between the prompt and the palette, `enter` hands the
+keyboard to whichever has it and `esc` gives it back; both are edited in place and
 committed as you type. `e` opens the prompt in `$VISUAL` or `$EDITOR`, and
 `ctrl-s` saves; the status line marks unsaved work and quitting with any asks
 first. The mouse works: click a button, a tab or a pane, double-click to edit,

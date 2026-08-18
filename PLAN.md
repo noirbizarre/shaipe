@@ -131,6 +131,18 @@ The interactive TUI.
 - [x] Mouse: double-click a render specification's tab to export it
 - [x] One spinner implementation for rasterising and for the agent, so
       "generating a preview" and "working" animate identically
+- [x] The workspace's name is text rather than a button, every button is
+      labelled with what pressing it will do, and the arrows move between the
+      panes until one of them is being edited
+- [ ] Scroll back through the transcript: it is anchored to its newest entry,
+      and nothing but `PageUp` reaches the rest of it
+- [ ] Render the transcript's Markdown — bold, italics and real bullets —
+      rather than showing the characters a model wrote
+- [ ] A variant's preview takes the whole pane, rendered to fit the space it
+      has, where a render specification keeps being drawn at the size it
+      declares
+- [ ] Review the toolbar, the footer and the pane titles together: they say
+      overlapping things, and which one to read for what is not obvious
 
 ## Agent integration
 
@@ -189,6 +201,10 @@ see `docs/adr/004-tools-not-a-model.md`.
       started in, so `write_svg` is the only way the project changes — ADR-013
 - [ ] `Policy::Guarded` is unproven against a real agent that asks: OpenCode
       never does, so only its unit tests cover it
+- [ ] Interrupt a turn with a double `esc`, as well as with `ctrl-c`
+- [ ] Choose a model with vision and prove the agent sees the rendered SVG
+      rather than reading its source — the test that claims this passed once
+      against a model that said "I cannot see images" and looked the answer up
 
 ## Artwork
 

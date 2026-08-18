@@ -232,22 +232,31 @@ git tpl diff --exit-code --stat
 # Not a `cargo test`, because it needs a real pty and a terminal that answers
 # a capability query — neither of which exists inside the test harness. Unix
 # only; `pty` is not available on Windows.
+# All three pty checks depend on `build`, and that is not a convenience: each
+# one shells out to `cargo build` if it is handed no binary, and inside `check`
+# that lands on a build lock already held by `lint` and `test`. What comes out
+# is a machine compiling three crates while a six-second window measures how
+# quickly a workspace draws — which is a measurement of the build, not of the
+# program, and it fails.
 [tasks."test:terminal"]
 description = "Check that the terminal capability query is actually sent"
-run = "python3 scripts/check-terminal-detection.py"
+depends = ["build"]
+run = "python3 scripts/check-terminal-detection.py target/debug/shaipe"
 
 # The same guard, one layer up. `test:terminal` covers `shaipe doctor`; this
 # covers the workspace, where an `EventStream` constructed too early eats the
 # terminal's reply and every preview silently degrades to half-blocks.
 [tasks."test:workspace"]
 description = "Check the workspace still detects the terminal's graphics protocol"
-run = "python3 scripts/check-workspace-detection.py"
+depends = ["build"]
+run = "python3 scripts/check-workspace-detection.py target/debug/shaipe"
 
 # Also a pty test, for the same reason: how many megabytes the workspace asks
 # the terminal to swallow is not something `cargo test` can see.
 [tasks."test:traffic"]
 description = "Check the workspace does not flood the terminal with images"
-run = "python3 scripts/check-preview-traffic.py"
+depends = ["build"]
+run = "python3 scripts/check-preview-traffic.py target/debug/shaipe"
 
 # Deliberately not in `check`: it needs an installed and authenticated agent
 # and makes real model calls, which is not something CI may do and not

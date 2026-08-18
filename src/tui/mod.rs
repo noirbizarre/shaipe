@@ -1,7 +1,7 @@
 //! The interactive workspace.
 //!
 //! ```text
-//! ┌ shaipe  [preview] [variants] [edit renders] [transcript] ──────────────┐
+//! ┌ Shaipe  [Transcript] [Source] [Renders] [Edit renders] ────────────────┐
 //! ├───────────────────────┬────────────────────────────────────────────────┤
 //! │ prompt or transcript  │ ‹ icon │ wordmark ›                            │
 //! │                       │                                                │
@@ -17,10 +17,11 @@
 //! `shaipe render` would write — not an approximation of it.
 //!
 //! Both panes are editable, in one shared edit mode: `enter` hands the
-//! keyboard to the focused pane, `esc` gives it back, `tab` moves between them
-//! and keeps editing, and while editing the arrows belong to the pane. The
-//! variants and the render specifications are the preview's tabs rather than
-//! panes, and `m` swaps which of the two the tabs list.
+//! keyboard to the focused pane, `esc` gives it back, `tab` and the arrows
+//! move around the workspace — up and down between the panes, left and right
+//! between the tabs — and once a pane is being edited the arrows belong to it
+//! instead. The variants and the render specifications are the preview's tabs
+//! rather than panes, and `m` swaps which of the two the tabs list.
 
 pub mod app;
 pub mod modal;
@@ -675,16 +676,14 @@ fn handle(app: &mut App, key: KeyEvent) {
         // has `ctrl-e` for the end of the line, so there is no chord left
         // inside it that would not be taking something else away.
         KeyCode::Char('e') if app.can_send() => app.request_system_editor(),
-        KeyCode::Tab => app.focus_next(),
-        KeyCode::BackTab => app.focus_previous(),
+        KeyCode::Tab | KeyCode::Down => app.focus_next(),
+        KeyCode::BackTab | KeyCode::Up => app.focus_previous(),
         // The tabs, wrapping at both ends. Left and right because the tabs are
-        // a row: up and down would be an arbitrary mapping onto a horizontal
-        // thing, and they belong to the panes.
+        // a row, and up and down because the panes are a column: the arrows
+        // move around the workspace, and nothing inside a pane moves until
+        // `enter` has said which pane the keyboard is in.
         KeyCode::Left | KeyCode::Char('[') => app.previous_tab(),
         KeyCode::Right | KeyCode::Char(']') => app.next_tab(),
-        // Which of the prompt and the palette the arrows are moving in.
-        KeyCode::Down => app.select_next(),
-        KeyCode::Up => app.select_previous(),
         KeyCode::Char('r') => app.invalidate_preview(),
         // Lowercase re-renders what is in memory; uppercase re-reads the file.
         // Not `ctrl-r`, which is redo inside the prompt editor and worth more
@@ -1150,6 +1149,7 @@ mod tests {
         // filtered now that the loop no longer reads events itself.
         let mut app = app();
         app.focus = Focus::Palette;
+        app.engage_editor();
 
         for kind in [KeyEventKind::Press, KeyEventKind::Release] {
             apply(
@@ -1186,14 +1186,27 @@ mod tests {
     }
 
     #[test]
-    fn the_arrow_keys_move_the_selection_within_the_focused_pane() {
+    fn the_arrows_move_between_the_panes_until_one_is_being_edited() {
+        // They used to move the palette's cursor and do nothing at all on the
+        // prompt, which is a key that looks broken from wherever you start.
+        // Moving *around* the workspace is what they do; moving *within* a
+        // pane is what `enter` is for.
         let mut app = app();
-        app.focus = Focus::Palette;
+        assert_eq!(app.focus, Focus::Prompt);
 
         press(&mut app, KeyCode::Down);
-        assert_eq!(app.selection(Focus::Palette), 1);
+        assert_eq!(app.focus, Focus::Palette);
+        assert_eq!(app.selection(Focus::Palette), 0, "and selected nothing");
+
         press(&mut app, KeyCode::Up);
-        assert_eq!(app.selection(Focus::Palette), 0);
+        assert_eq!(app.focus, Focus::Prompt);
+
+        // Once the palette is engaged they belong to it.
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.focus, Focus::Palette, "it left the pane it was editing");
+        assert_eq!(app.selection(Focus::Palette), 1);
     }
 
     #[test]

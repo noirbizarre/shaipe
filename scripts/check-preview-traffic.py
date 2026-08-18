@@ -41,17 +41,36 @@ import time
 # placeholder redraws.
 ONE_IMAGE = 1_500_000
 
+# Enough bytes to be an image rather than a frame of borders and text.
+AN_IMAGE = 100_000
+
+# How long the workspace is given to produce its first preview.
+#
+# Generous, and it has to be: this runs beside a compiler and a test suite, and
+# a fixed window that has to contain a rasterise is a measurement of how busy
+# the machine is. The window that *matters* is the one after the first image —
+# see `QUIET`.
+PATIENCE = 30.0
+
+# How long to keep watching after an image has gone out.
+#
+# This is the actual measurement. The regression being guarded is a *second*
+# transmission, so what matters is how long the workspace is watched once it
+# has drawn something, not how long it took to get there.
+QUIET = 2.0
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def run(
-    binary: str,
-    keys: bytes = b"",
-    settle: float = 6.0,
-    at: float = 4.0,
-    tmux: bool = False,
-) -> int:
-    """Run the workspace under a pty and return the bytes it wrote."""
+def run(binary: str, tmux: bool = False) -> int:
+    """Run the workspace under a pty and return the bytes it wrote.
+
+    Waits for an image and then for [`QUIET`] seconds more, rather than for a
+    fixed span: under load the first render can take longer than any window
+    worth calling short, and a run that timed out before the image went out
+    reported "no traffic at all" — which reads as a pass for the tmux half of
+    the comparison and as a failure for the other.
+    """
     pid, fd = pty.fork()
     if pid == 0:
         for name in ("TMUX", "TERM_PROGRAM", "KITTY_WINDOW_ID"):
@@ -69,8 +88,7 @@ def run(
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 960, 800))
 
     written = 0
-    deadline = time.time() + settle
-    sent = False
+    deadline = time.time() + PATIENCE
     while time.time() < deadline:
         readable, _, _ = select.select([fd], [], [], 0.05)
         if readable:
@@ -81,9 +99,9 @@ def run(
             if not chunk:
                 break
             written += len(chunk)
-        if keys and not sent and time.time() - (deadline - settle) > at:
-            os.write(fd, keys)
-            sent = True
+            # The clock starts when the first image does, and only then.
+            if written > AN_IMAGE:
+                deadline = min(deadline, time.time() + QUIET)
 
     try:
         os.kill(pid, 9)
@@ -101,6 +119,12 @@ def main() -> int:
     binary = os.path.abspath(binary)
 
     opening = run(binary)
+    if opening < AN_IMAGE:
+        raise AssertionError(
+            f"opening the workspace transmitted {opening / 1e6:.2f} MB, which is "
+            f"not an image at all. Either nothing was rendered, or the preview "
+            f"backend fell back to half-blocks despite `--preview kitty`."
+        )
     if opening > ONE_IMAGE:
         raise AssertionError(
             f"opening the workspace transmitted {opening / 1e6:.2f} MB, which is "
@@ -113,6 +137,11 @@ def main() -> int:
     # image is transmitted at half resolution when tmux is detected, and the
     # terminal scales it back up.
     through_tmux = run(binary, tmux=True)
+    if through_tmux < AN_IMAGE:
+        raise AssertionError(
+            f"under tmux the workspace transmitted {through_tmux / 1e6:.2f} MB, "
+            f"which is not an image at all."
+        )
     if through_tmux > opening / 2:
         raise AssertionError(
             f"under tmux the workspace transmitted {through_tmux / 1e6:.2f} MB "

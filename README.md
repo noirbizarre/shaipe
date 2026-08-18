@@ -147,7 +147,7 @@ shaipe tui logo.svg
 ```
 
 ```text
-┌ shaipe  [preview] [variants] [edit renders] [transcript] ─────────────────┐
+┌ Shaipe  [Transcript] [Source] [Renders] [Edit renders] ───────────────────┐
 ├───────────────────────────────┬───────────────────────────────────────────┤
 │ prompt, or the transcript     │ ‹ icon │ wordmark ›                       │
 │                               │                                           │
@@ -167,10 +167,12 @@ tabs list. `s` swaps the picture for the SVG that produced it. `t` swaps the
 prompt for the transcript. Each of those has a button on the toolbar as well,
 because a mode with no visible affordance is one people find by accident.
 
-`tab` moves between the prompt and the palette, `enter` hands the keyboard to
-whichever has it and `esc` gives it back. Both panes are edited in place: the
-prompt is prose, and a palette colour is its name and its value, committed as
-you type. `r` re-renders, `x` opens the render specifications editor, `q` quits.
+`tab` and `↑` `↓` move between the prompt and the palette, `enter` hands the
+keyboard to whichever has it and `esc` gives it back. Both panes are edited in
+place: the prompt is prose, and a palette colour is its name and its value,
+committed as you type. Every button says what pressing it will do, so the
+toolbar reads `Source` while the preview is up and `Preview` while it is not.
+`r` re-renders, `x` opens the render specifications editor, `q` quits.
 The mouse works: click a toolbar button or a tab, click a pane to focus it,
 double-click to edit it, wheel to scroll, drag the divider to resize, and
 double-click a specification's tab to write it to `dist/`.
@@ -291,7 +293,7 @@ The keys:
 |---|---|
 | `enter` | edit the focused pane — the prompt, or a palette colour — committed as you type |
 | `esc` | stop editing |
-| `tab` / `shift-tab` | move between the prompt and the palette, still editing |
+| `tab` / `shift-tab`, `↑` / `↓` | move between the prompt and the palette, still editing |
 | `a` | **send the prompt to the agent**, so it makes the artwork match |
 | `alt+a` | the same, without leaving the editor |
 | `e` | open the prompt in `$EDITOR` |

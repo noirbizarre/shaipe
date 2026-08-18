@@ -1,7 +1,7 @@
 //! Where the panes go.
 //!
 //! ```text
-//! ┌ shaipe  [preview] [variants] [edit renders] [transcript] ───────────────┐
+//! ┌ Shaipe  [Transcript] [Source] [Renders] [Edit renders] ─────────────────┐
 //! ├──────────── left, half ─────────┬──────────────── right ────────────────┤
 //! │ prompt, or the transcript  2/3  │ ‹ icon │ wordmark ›                   │
 //! │                                 │                                       │
@@ -354,14 +354,15 @@ mod tests {
         let text = render(&mut app, 100, 30);
 
         for expected in [
-            // The toolbar, and every state it names.
-            "shaipe",
-            "preview",
-            "variants",
-            "transcript",
+            // The toolbar: the workspace's name, and what each button does.
+            "Shaipe",
+            "Transcript",
+            "Source",
+            "Renders",
             // The panes that are left.
             "prompt",
-            "palette", // A tab per variant, and a way out.
+            "palette",
+            // A tab per variant, and a way out.
             "icon",
             "quit",
         ] {
