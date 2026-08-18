@@ -181,12 +181,17 @@ with two states. `EditorMode` is what keeps them apart, and
 `a_message_to_the_agent_never_reaches_the_projects_prompt` is what stops them
 merging back.
 
-Shaipe **cannot** stop an agent editing files with its own tools. Permission is
-resolved inside the agent, and OpenCode's defaults never ask — so `src/acp/`'s
-`Policy` is correct code that a default install never reaches. The lever that
-works is `src/tui/watch.rs`: notice the write, reload, and refuse to overwrite
-it. Do not write anything that implies otherwise; ADR 012 exists because the
-first draft did.
+An ACP client cannot restrict an agent — permission is resolved inside the
+agent, and OpenCode's defaults never ask, so `src/acp/`'s `Policy` is correct
+code a default install never reaches. But Shaipe *spawns* the agent, and a
+parent chooses its child's environment: `src/acp/opencode.rs` starts OpenCode
+with `edit` and `bash` denied, merged into whatever config the user already
+has. That is the only product-specific module in the crate, and it earns it.
+
+ADR 012 concluded the opposite and is superseded by ADR 013. The mistake is
+worth remembering: it reasoned about the protocol and concluded about the
+system. `src/tui/watch.rs` is still the backstop, for agents Shaipe cannot
+restrict and for a text editor in another window.
 
 `--yes` grants the *agent's* own tools — its editor, its shell — and an agent
 asked to change a colour may use them instead of `write_svg`, writing to the

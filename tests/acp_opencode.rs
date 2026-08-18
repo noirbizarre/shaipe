@@ -275,3 +275,67 @@ async fn an_agent_can_edit_the_project_and_the_edit_is_kept_in_memory() {
 
     drop(directory);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs an installed, authenticated agent and makes real model calls"]
+async fn the_agent_cannot_edit_files_with_its_own_tools() {
+    // Shaipe starts the agent with `edit` and `bash` denied, so the project
+    // can only be changed through `write_svg` — which validates the document,
+    // keeps the preview in step and leaves the file alone until somebody
+    // saves. See ADR 013.
+    //
+    // OpenCode does not merely refuse a denied tool: it removes it, so the
+    // model reports having no such capability at all.
+    let (directory, project) = project();
+    let scratch = directory.path().join("scratch.txt");
+
+    let Some((agent, _listener, mut updates)) = workspace(project).await else {
+        return;
+    };
+
+    let (said, tools) = turn(
+        &agent,
+        &mut updates,
+        "Create a file called scratch.txt containing HELLO, using your own file \
+         writing tool or a shell command. Then say DONE.",
+    )
+    .await;
+
+    println!("tools: {tools:?}\nsaid: {said}");
+
+    assert!(
+        !scratch.exists(),
+        "the agent wrote to the working tree; the restriction is not applied"
+    );
+    drop(directory);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs an installed, authenticated agent and makes real model calls"]
+async fn the_restriction_does_not_take_away_write_svg() {
+    // The other half, and the one that matters more: OpenCode's permission
+    // keys are its own tool names, so an MCP tool called `shaipe_write_svg` is
+    // untouched by denying `edit`. If that ever stopped being true, the
+    // restriction would silently remove the agent's only sanctioned way to
+    // change the project, and it would look like the model being unhelpful.
+    let (directory, project) = project();
+    let Some((agent, _listener, mut updates)) = workspace(project).await else {
+        return;
+    };
+
+    let (said, tools) = turn(
+        &agent,
+        &mut updates,
+        "Call shaipe get_svg, change every #f05032 to #0066ff, and send the \
+         whole document back with shaipe write_svg. Then say DONE.",
+    )
+    .await;
+
+    println!("tools: {tools:?}\nsaid: {said}");
+
+    assert!(
+        tools.iter().any(|tool| tool.contains("write_svg")),
+        "write_svg was unreachable; the restriction took away the wrong tool: {tools:?}"
+    );
+    drop(directory);
+}

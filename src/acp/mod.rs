@@ -16,6 +16,7 @@
 //! [`AgentUpdate`], so that the protocol growing cannot reach the panes.
 
 mod agent;
+pub mod opencode;
 mod update;
 
 pub use agent::{Agent, AgentChoice, AgentConfig, DEFAULT_AGENT, McpServerSpec, Policy};

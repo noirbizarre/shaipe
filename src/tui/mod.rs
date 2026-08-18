@@ -119,21 +119,34 @@ pub async fn run(
         }
         // The whole diagnostic, where it will actually be read.
         AgentChoice::Unavailable(reason) => app.agent = AgentStatus::Absent { reason },
-        AgentChoice::Start(config) => match start_agent(*config, session).await {
-            Ok((agent, socket, stream)) => {
-                // Not `Ready`: the handshake is still going. The prompt says
-                // so, and `AgentUpdate::Ready` is what changes it.
-                app.agent = AgentStatus::Connecting;
-                connected = Some(agent);
-                listener = Some(socket);
-                updates = Some(stream);
+        AgentChoice::Start(config) => {
+            // Said once, at the start. Shaipe reaches into the agent's own
+            // configuration to keep it out of the project file, and doing that
+            // without saying so would be worse than not doing it.
+            match &config.note {
+                Some(note) => app.transcript.push_notice(note.clone()),
+                None => app.transcript.push_notice(
+                    "the agent may change this project through Shaipe's tools, \
+                     and may not edit files or run commands",
+                ),
             }
-            Err(error) => {
-                app.agent = AgentStatus::Absent {
-                    reason: error.to_string(),
+
+            match start_agent(*config, session).await {
+                Ok((agent, socket, stream)) => {
+                    // Not `Ready`: the handshake is still going. The prompt says
+                    // so, and `AgentUpdate::Ready` is what changes it.
+                    app.agent = AgentStatus::Connecting;
+                    connected = Some(agent);
+                    listener = Some(socket);
+                    updates = Some(stream);
+                }
+                Err(error) => {
+                    app.agent = AgentStatus::Absent {
+                        reason: error.to_string(),
+                    }
                 }
             }
-        },
+        }
     }
 
     let outcome = event_loop(

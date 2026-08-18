@@ -155,8 +155,9 @@ see `docs/adr/004-tools-not-a-model.md`.
       other key
 - [x] The project file is watched, so an agent writing it directly still
       reaches the preview, and a save cannot overwrite somebody else's work
-- [x] ~~Refuse the agent's own editing tools~~ — cannot be done from a client;
-      permission is resolved inside the agent. See ADR-012
+- [x] ~~Refuse the agent's own editing tools~~ — not from a client; see ADR-012
+- [x] Deny the agent's editing and shell tools through the environment it is
+      started in, so `write_svg` is the only way the project changes — ADR-013
 - [ ] `Policy::Guarded` is unproven against a real agent that asks: OpenCode
       never does, so only its unit tests cover it
 

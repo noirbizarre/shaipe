@@ -15,6 +15,9 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::{AcpAgent, ConnectionTo};
 use tokio::sync::mpsc;
 
+use std::collections::BTreeMap;
+
+use crate::acp::opencode;
 use crate::error::{Error, Result};
 use crate::mcp::Address;
 use crate::project::Project;
@@ -136,6 +139,14 @@ pub struct AgentConfig {
     pub mcp_servers: Vec<McpServerSpec>,
     /// What to do when it asks permission.
     pub policy: Policy,
+    /// Environment the agent is started with, on top of this process's own.
+    ///
+    /// The lever ADR 012 missed: an ACP client cannot restrict an agent
+    /// through the protocol, but Shaipe spawns the process and so chooses the
+    /// environment it starts in. See [`crate::acp::opencode`] and ADR 013.
+    pub env: BTreeMap<String, String>,
+    /// Anything about the restriction the user should be told.
+    pub note: Option<String>,
 }
 
 impl AgentConfig {
@@ -172,11 +183,19 @@ impl AgentConfig {
             std::env::current_dir().map_or(base, |current| current.join(project.base_directory()))
         });
 
+        // Read from this process's environment rather than replaced, so a
+        // configuration somebody already set is added to, not discarded.
+        let inherited = std::env::var(opencode::CONFIG).ok();
+        let (env, note) = opencode::restrictions(program, inherited.as_deref());
+        let note = note.or_else(|| opencode::unrestricted_note(program));
+
         Ok(Self {
             command: argv,
             cwd,
             mcp_servers: Vec::new(),
             policy: Policy::default(),
+            env,
+            note,
         })
     }
 
@@ -358,7 +377,7 @@ async fn connect(
 ) {
     let command = config.command_line();
 
-    let transport = match AcpAgent::from_str(&command) {
+    let transport = match spawnable(&command, &config.env) {
         Ok(agent) => agent,
         Err(error) => {
             let failure = Error::AgentSpawn {
@@ -577,6 +596,18 @@ fn working_mode(
     ))
 }
 
+/// Build the transport, with Shaipe's environment on top of the inherited one.
+///
+/// `from_str` is what parses a command line; the environment has to be applied
+/// to the config it produces, because there is no builder that does both.
+fn spawnable(
+    command: &str,
+    env: &BTreeMap<String, String>,
+) -> std::result::Result<AcpAgent, agent_client_protocol::Error> {
+    let config = AcpAgent::from_str(command)?.into_config().envs(env);
+    Ok(AcpAgent::new(config))
+}
+
 /// Tell the workspace the agent is unusable, and why.
 ///
 /// The whole diagnostic, help text included: this is the only place the user
@@ -773,6 +804,8 @@ mod tests {
             cwd: std::env::temp_dir(),
             mcp_servers: Vec::new(),
             policy: Policy::Guarded,
+            env: BTreeMap::new(),
+            note: None,
         };
 
         let started = tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -797,6 +830,8 @@ mod tests {
             cwd: std::env::temp_dir(),
             mcp_servers: Vec::new(),
             policy: Policy::Guarded,
+            env: BTreeMap::new(),
+            note: None,
         };
 
         let (_agent, mut updates) = Agent::start(config);

@@ -203,15 +203,14 @@ pub struct TuiArgs {
 
     /// Approve the agent's own tools when it asks about them.
     ///
-    /// Note *when it asks*. Permission is resolved inside the agent, against
-    /// the agent's own configuration, and it consults a client only about what
-    /// that configuration marks as needing consent. OpenCode's permissions
-    /// default to `allow`, so with a default install it never asks, this flag
-    /// changes nothing, and the agent can edit your files either way. Shaipe
-    /// cannot prevent that — it notices instead, and reloads. See ADR 012.
+    /// Note *when it asks*: permission is resolved inside the agent, and it
+    /// consults a client only about what its configuration marks as needing
+    /// consent. OpenCode's defaults never ask, so with one this flag does very
+    /// little.
     ///
-    /// To actually restrict an agent, restrict it where it is configured:
-    /// `{"permission": {"edit": "deny"}}` in `opencode.json`.
+    /// It does **not** re-enable the agent's file editing and shell, which
+    /// Shaipe denies through the environment it starts the agent in, and which
+    /// an explicit denial keeps denied whatever is auto-approved. See ADR 013.
     ///
     /// Shaipe's own tools are never refused, and never write to disk on their
     /// own: `write_svg` changes the project in memory until you press ctrl-s.

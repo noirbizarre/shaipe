@@ -2,7 +2,14 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-013](013-restrict-the-agent-through-its-environment.md).
+
+Its analysis of the protocol holds: an ACP client has no lever, and permission
+is resolved inside the agent. Its conclusion does not. Shaipe spawns the agent,
+and a parent chooses the environment its child starts in — a different layer,
+with a different answer. Kept for the analysis, and because the shape of the
+mistake (reasoning about one layer and concluding about the system) is worth
+remembering.
 
 ## Context
 
