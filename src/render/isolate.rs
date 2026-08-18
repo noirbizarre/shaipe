@@ -82,7 +82,53 @@ fn describes_the_project(node: &Node<'_, '_>) -> bool {
 /// [`crate::Error::UnknownElement`] if that variant references an element the
 /// document does not contain.
 pub fn isolate(project: &Project, document: &Document<'_>, spec: &RenderSpec) -> Result<String> {
+    build(project, document, spec, false)
+}
+
+/// The same document, minus the elements only *other* variants draw.
+///
+/// Not a render: the output is never rasterised, and dropping a definition
+/// that mattered would show up as a preview that did not refresh rather than
+/// as a broken asset. It exists to answer one question — has the variant on
+/// screen changed? — and [`isolate`] cannot answer it, because it carries
+/// every definition the document has, the other variants' symbols among them.
+/// Compared against itself either side of an edit, that made every edit look
+/// like a change to whatever happened to be on screen.
+///
+/// # Errors
+///
+/// As [`isolate`].
+pub fn fingerprint(
+    project: &Project,
+    document: &Document<'_>,
+    spec: &RenderSpec,
+) -> Result<String> {
+    build(project, document, spec, true)
+}
+
+/// Build the isolated document, optionally leaving out the other variants.
+fn build(
+    project: &Project,
+    document: &Document<'_>,
+    spec: &RenderSpec,
+    without_other_variants: bool,
+) -> Result<String> {
     let variant = project.metadata().resolve_variant(&spec.variant)?;
+
+    // The elements no part of this variant is drawn from. Only consulted for a
+    // fingerprint: a render keeps everything, because a variant is allowed to
+    // `<use>` another one and nothing here resolves references.
+    let others: Vec<&str> = if without_other_variants {
+        project
+            .metadata()
+            .variants
+            .iter()
+            .filter(|candidate| candidate.element != variant.element)
+            .map(|candidate| candidate.element.as_str())
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let target = document
         .descendants()
@@ -135,6 +181,9 @@ pub fn isolate(project: &Project, document: &Document<'_>, spec: &RenderSpec) ->
         if draws(&child) || describes_the_project(&child) {
             continue;
         }
+        if child.attribute("id").is_some_and(|id| others.contains(&id)) {
+            continue;
+        }
         if let Some(range) = child.is_element().then(|| child.range()) {
             out.push_str(&project.source()[range]);
         }
@@ -161,6 +210,31 @@ mod tests {
         let mut spec = RenderSpec::square("probe", variant, width);
         spec.height = height;
         isolate(&project, &document, &spec).unwrap()
+    }
+
+    #[test]
+    fn a_fingerprint_leaves_out_what_only_the_other_variants_draw() {
+        // The whole point of it. An isolated document carries every definition
+        // the project has, so comparing two of those either side of an edit
+        // said "yes, it changed" whichever variant had actually moved — and
+        // the preview re-rendered on every keystroke the agent made anywhere.
+        let project = fixture();
+        let source = project.source().to_owned();
+        let document = Document::parse(&source).unwrap();
+        let spec = RenderSpec::square("probe", "icon", 64);
+
+        let rendered = isolate(&project, &document, &spec).unwrap();
+        let compared = fingerprint(&project, &document, &spec).unwrap();
+
+        assert!(
+            rendered.contains("mark-wide"),
+            "a render keeps everything, because a variant may `<use>` another"
+        );
+        assert!(
+            !compared.contains("mark-wide"),
+            "the wordmark is still in the fingerprint:\n{compared}"
+        );
+        assert!(compared.contains(r##"<use href="#icon"/>"##), "{compared}");
     }
 
     #[test]

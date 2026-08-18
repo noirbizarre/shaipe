@@ -89,19 +89,24 @@ The JSON form is the stable surface for an agent.
 shaipe            # opens ./logo.svg
 ```
 
-A four-pane description of the project on the left, a live preview on the
-right, drawn with whichever graphics protocol the terminal reports — Kitty,
-Sixel or iTerm2 — and Unicode half-blocks everywhere else.
+The project's prompt and palette on the left, a live preview on the right,
+drawn with whichever graphics protocol the terminal reports — Kitty, Sixel or
+iTerm2 — and Unicode half-blocks everywhere else. A toolbar along the top names
+every state the workspace is in and lets you click it.
 
-The focused pane takes the column, so the prompt is readable when you are
-reading it. The mouse works: click to focus and select, wheel to scroll, drag
-the divider to resize, double-click the prompt to edit it and a render
-specification to export it.
+The variants and the render specifications are the preview's tabs: `←` and `→`
+move between them and `m` swaps which of the two they list. `s` swaps the
+picture for the SVG that produced it, `t` swaps the prompt for the transcript,
+and `x` opens the render specifications editor. Each of the four is a toolbar
+button too.
 
-`enter` on the prompt pane — or a double-click on it — hands the keyboard to an
-editor, `esc` or `tab` gives it back, and `e` opens the prompt in `$VISUAL` or
-`$EDITOR`. `ctrl-s` saves; the status line marks unsaved work and
-quitting with any asks first.
+`tab` moves between the prompt and the palette, `enter` hands the keyboard to
+whichever has it and `esc` gives it back; both are edited in place and
+committed as you type. `e` opens the prompt in `$VISUAL` or `$EDITOR`, and
+`ctrl-s` saves; the status line marks unsaved work and quitting with any asks
+first. The mouse works: click a button, a tab or a pane, double-click to edit,
+wheel to scroll, drag the divider to resize, and double-click a specification's
+tab to export it.
 
 ```bash
 shaipe doctor

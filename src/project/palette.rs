@@ -217,6 +217,15 @@ impl Palette {
         self.colours.iter_mut().find(|colour| colour.name == name)
     }
 
+    /// The colour at a position, mutably.
+    ///
+    /// By position rather than by name, because the workspace's palette editor
+    /// can change the name — and looking one up by the name being retyped
+    /// would stop finding it halfway through the first keystroke.
+    pub fn colour_mut(&mut self, index: usize) -> Option<&mut Colour> {
+        self.colours.get_mut(index)
+    }
+
     /// The first colour filling a given role, if any.
     #[must_use]
     pub fn by_role(&self, role: &Role) -> Option<&Colour> {

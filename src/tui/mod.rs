@@ -1,29 +1,32 @@
 //! The interactive workspace.
 //!
 //! ```text
-//! ┌───────────────────────┬───────────────────────────┐
-//! │ prompt                │                           │
-//! │ palette               │        preview            │
-//! │ variants              │                           │
-//! │ render specs          │                           │
-//! └───────────────────────┴───────────────────────────┘
+//! ┌ shaipe  [preview] [variants] [edit renders] [transcript] ──────────────┐
+//! ├───────────────────────┬────────────────────────────────────────────────┤
+//! │ prompt or transcript  │ ‹ icon │ wordmark ›                            │
+//! │                       │                                                │
+//! ├───────────────────────┤            preview or source                   │
+//! │ palette               │                                                │
+//! └───────────────────────┴────────────────────────────────────────────────┘
 //! ```
 //!
-//! The left column describes the project, the right shows what the selection
-//! renders to. The preview goes through [`crate::preview`], so the TUI knows
-//! nothing about escape sequences or which graphics protocol is in use, and
-//! it renders through [`crate::render`], so it shows exactly what
+//! The left column describes the project, the right shows what the selected
+//! tab renders to. The preview goes through [`crate::preview`], so the TUI
+//! knows nothing about escape sequences or which graphics protocol is in use,
+//! and it renders through [`crate::render`], so it shows exactly what
 //! `shaipe render` would write — not an approximation of it.
 //!
-//! The prompt pane is editable: `enter` or a double-click hands the keyboard
-//! to the editor, `esc` or `tab` gives it back, and `e` opens the prompt in
-//! `$EDITOR`.
-//! Picking colours, editing variants and driving an agent are still later
-//! work, and the state in [`app::App`] is arranged to receive them.
+//! Both panes are editable, in one shared edit mode: `enter` hands the
+//! keyboard to the focused pane, `esc` gives it back, `tab` moves between them
+//! and keeps editing, and while editing the arrows belong to the pane. The
+//! variants and the render specifications are the preview's tabs rather than
+//! panes, and `m` swaps which of the two the tabs list.
 
 pub mod app;
+pub mod modal;
 pub mod panes;
 pub mod render_worker;
+pub mod toolbar;
 pub mod transcript;
 mod ui;
 pub mod watch;
@@ -55,6 +58,7 @@ use crate::project::Project;
 use crate::tools::{self, Registry, SessionCommand, SessionHandle};
 
 use app::{AgentRequest, AgentStatus, App, Focus};
+use toolbar::Button;
 
 /// How long to wait for a key when nothing is happening.
 ///
@@ -271,6 +275,10 @@ async fn event_loop(
     while !app.should_quit {
         let arrived = app.collect_preview();
         app.update_preview();
+        // The transcript takes the box when a turn starts and gives it back
+        // when one ends. Edge-triggered, so `t` during a turn is not undone on
+        // the very next frame.
+        app.follow_the_turn();
 
         // A new image is written *inside* `draw`, and under tmux that write is
         // over a megabyte of passthrough sequences and takes seconds. Nothing
@@ -332,6 +340,12 @@ async fn event_loop(
             command = commands.recv() => {
                 let Some(command) = command else { continue };
 
+                // What the variant on screen looks like before the agent
+                // touches anything. Taken here rather than inside the tool,
+                // because `write_svg` replaces the whole document and no tool
+                // can say which variant that moved.
+                let before = app.variant_fingerprint();
+
                 // The agent reaching back into the workspace. Serviced here,
                 // between frames, which is the only moment mutating the
                 // project is safe — and the reason there is no lock anywhere
@@ -339,9 +353,11 @@ async fn event_loop(
                 let applied = tools::session::serve(command, &registry, &mut app.project);
 
                 if applied.mutated {
-                    // How the preview follows the agent's edit: the same path
-                    // `r` takes, so there is one way to do it and not two.
-                    app.invalidate_preview();
+                    // The worker always takes the new project, so the source
+                    // view and the next tab are current; the preview is only
+                    // thrown away if the variant on screen is what moved. An
+                    // edit to the wordmark must not re-rasterise the icon.
+                    app.absorb_change(before);
                     app.mark_dirty();
                     // The prompt may have changed with it, and the editor's
                     // buffer is a copy.
@@ -610,10 +626,17 @@ fn drain_events() -> Result<()> {
 ///
 /// Separated from the loop so it can be tested without a terminal.
 fn handle(app: &mut App, key: KeyEvent) {
-    // The editor owns every printable key while it is engaged, so it is asked
-    // first. Saving is the exception: the editor's key map leaves `ctrl-s`
-    // alone, and a save that only works from outside the editor would be a
-    // save nobody reaches for.
+    // A modal owns every key while it is open, including `q`. Anything else
+    // would act on a workspace nobody can see.
+    if app.modal().is_some() {
+        app.modal_key(key);
+        return;
+    }
+
+    // The pane being edited owns every printable key, so it is asked first.
+    // Saving is the exception: the editor's key map leaves `ctrl-s` alone, and
+    // a save that only works from outside the editor would be a save nobody
+    // reaches for.
     let save = key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL);
     if app.is_editing() && !save {
         app.edit_key(key);
@@ -639,21 +662,27 @@ fn handle(app: &mut App, key: KeyEvent) {
     match key.code {
         _ if save => app.save(),
         KeyCode::Char('q') | KeyCode::Esc => app.request_quit(),
-        KeyCode::Enter if app.focus == Focus::Prompt => app.engage_editor(),
-        // `a` for ask, on the prompt pane, alongside `e` for edit. The same
-        // editor, a different buffer and a different destination: `enter`
-        // writes the project's prompt, `a` writes a message to the agent.
+        // The focused pane's editor: the prompt's text area, or the palette's
+        // fields. One key, because one edit mode.
+        KeyCode::Enter => app.engage_editor(),
         // The prompt *is* the instruction. `a` sends it; there is no second
-        // buffer to compose in and nothing to type first.
-        KeyCode::Char('a') if app.focus == Focus::Prompt => app.send_prompt(),
-        // Only on the focused prompt pane, and only while the editor is not
-        // engaged — once it is, `e` is a letter someone is writing. The
-        // editor's own key map has `ctrl-e` for the end of the line, so there
-        // is no chord left inside it that would not be taking something else
-        // away.
-        KeyCode::Char('e') if app.focus == Focus::Prompt => app.request_system_editor(),
-        KeyCode::Tab | KeyCode::Char('j') => app.focus_next(),
-        KeyCode::BackTab | KeyCode::Char('k') => app.focus_previous(),
+        // buffer to compose in and nothing to type first. Only from the prompt
+        // itself, and not while the transcript is in its place, so it never
+        // names a key that would work somewhere the user is not.
+        KeyCode::Char('a') if app.can_send() => app.send_prompt(),
+        // Only on the prompt, and only while the editor is not engaged — once
+        // it is, `e` is a letter someone is writing. The editor's own key map
+        // has `ctrl-e` for the end of the line, so there is no chord left
+        // inside it that would not be taking something else away.
+        KeyCode::Char('e') if app.can_send() => app.request_system_editor(),
+        KeyCode::Tab => app.focus_next(),
+        KeyCode::BackTab => app.focus_previous(),
+        // The tabs, wrapping at both ends. Left and right because the tabs are
+        // a row: up and down would be an arbitrary mapping onto a horizontal
+        // thing, and they belong to the panes.
+        KeyCode::Left | KeyCode::Char('[') => app.previous_tab(),
+        KeyCode::Right | KeyCode::Char(']') => app.next_tab(),
+        // Which of the prompt and the palette the arrows are moving in.
         KeyCode::Down => app.select_next(),
         KeyCode::Up => app.select_previous(),
         KeyCode::Char('r') => app.invalidate_preview(),
@@ -661,9 +690,12 @@ fn handle(app: &mut App, key: KeyEvent) {
         // Not `ctrl-r`, which is redo inside the prompt editor and worth more
         // there than a second way to reach this.
         KeyCode::Char('R') => app.reload_from_disk(),
-        // The picture, the SVG that produced it, or what the agent has been
-        // doing. Pressing it also stops the workspace choosing on your behalf.
-        KeyCode::Char('s') => app.cycle_view(),
+        // The three toggles, all global: what the right column shows, what the
+        // tabs list, and what the top-left box holds.
+        KeyCode::Char('s') => app.toggle_view(),
+        KeyCode::Char('m') => app.toggle_mode(),
+        KeyCode::Char('t') => app.toggle_left_view(),
+        KeyCode::Char('x') => app.open_renders_editor(),
         KeyCode::PageDown if app.scrolls() => app.scroll_view(10),
         KeyCode::PageUp if app.scrolls() => app.scroll_view(-10),
         _ => {}
@@ -677,13 +709,48 @@ fn handle(app: &mut App, key: KeyEvent) {
 fn handle_mouse(app: &mut App, mouse: MouseEvent) {
     let (column, row) = (mouse.column, mouse.row);
 
+    // A modal covers the panes, and the panes still hold the areas they were
+    // last drawn in. A click reaching one of them through the overlay would
+    // act on something that is not on screen.
+    if app.modal().is_some() {
+        return;
+    }
+
+    // The toolbar is outside every pane's rectangle, so it is asked before
+    // them rather than after — and it works whatever the panes are doing,
+    // including while one of them is being edited.
+    if let Some(button) = app.button_at(column, row) {
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            press(app, button);
+        }
+        return;
+    }
+
+    if let Some(tab) = app.tab_at(column, row) {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                app.select_tab(tab);
+                // A second click on a render specification's tab writes it,
+                // which is where double-clicking a row of the old renders pane
+                // went when that pane became this tab bar.
+                if app.register_tab_click(tab) {
+                    app.export_selected_render();
+                }
+            }
+            MouseEventKind::ScrollDown => app.next_tab(),
+            MouseEventKind::ScrollUp => app.previous_tab(),
+            _ => {}
+        }
+        return;
+    }
+
     // While editing, the prompt pane's rectangle belongs to the editor. Only
     // the wheel does anything with it — the editor has no way to place the
     // cursor at a screen cell — but a click there must still not be taken as
     // a click on a pane. A click anywhere else is a statement that the prompt
     // is no longer what the user is working on, so the editor is let go of
     // before that click is handled as it normally would be.
-    if app.is_editing() {
+    if app.is_editing_prompt() {
         if app.pane_at(column, row) == Some(Focus::Prompt) {
             app.edit_mouse(mouse);
             return;
@@ -693,9 +760,9 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
 
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
-            // The divider is checked first: it sits on the preview pane's left
-            // edge, so a click there would otherwise be swallowed as a click
-            // on the preview.
+            // The divider is checked first: it sits on the preview column's
+            // left edge, so a click there would otherwise be swallowed as a
+            // click on the preview.
             if column == app.column_width || column + 1 == app.column_width {
                 app.begin_resize();
                 return;
@@ -708,16 +775,11 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
             app.focus = focus;
             app.select_at(focus, row);
 
-            // A second click means "act on this", and what that is depends on
-            // the pane: a render specification is exported, and the prompt is
-            // opened for editing. Double-clicking prose to edit it is what
-            // every other text field does.
+            // A second click means "act on this", and for both panes that is
+            // the same thing: open it for editing. Double-clicking a field to
+            // edit it is what every other interface does.
             if repeat {
-                match focus {
-                    Focus::Renders => app.export_selected_render(),
-                    Focus::Prompt => app.engage_editor(),
-                    _ => {}
-                }
+                app.engage_editor();
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
@@ -740,6 +802,19 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
             }
         }
         _ => {}
+    }
+}
+
+/// Do what a toolbar button says.
+///
+/// The same functions the keys call, so a control cannot mean one thing to the
+/// mouse and another to the keyboard.
+fn press(app: &mut App, button: Button) {
+    match button {
+        Button::View => app.toggle_view(),
+        Button::Mode => app.toggle_mode(),
+        Button::Renders => app.open_renders_editor(),
+        Button::Transcript => app.toggle_left_view(),
     }
 }
 
@@ -889,14 +964,19 @@ mod tests {
     }
 
     #[test]
-    fn a_on_another_pane_does_nothing() {
-        for focus in [Focus::Palette, Focus::Variants, Focus::Renders] {
-            let mut app = app();
-            app.agent = AgentStatus::Ready;
-            app.focus = focus;
-            press(&mut app, KeyCode::Char('a'));
-            assert_eq!(app.pending_agent_request, None, "{focus:?}");
-        }
+    fn a_only_reaches_the_agent_from_where_the_prompt_actually_is() {
+        // From the palette it would be a letter nobody typed, and with the
+        // transcript in the box there is no prompt on screen to send.
+        let mut app = app();
+        app.agent = AgentStatus::Ready;
+        app.focus = Focus::Palette;
+        press(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.pending_agent_request, None, "from the palette");
+
+        app.focus = Focus::Prompt;
+        app.toggle_left_view();
+        press(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.pending_agent_request, None, "from the transcript");
     }
 
     #[test]
@@ -973,7 +1053,7 @@ mod tests {
     }
 
     #[test]
-    fn s_cycles_through_the_three_views() {
+    fn s_toggles_between_the_artwork_and_the_document_that_produced_it() {
         let mut app = app();
         assert_eq!(app.view(), app::View::Preview);
 
@@ -981,60 +1061,76 @@ mod tests {
         assert_eq!(app.view(), app::View::Source);
 
         press(&mut app, KeyCode::Char('s'));
-        assert_eq!(app.view(), app::View::Log);
-
-        press(&mut app, KeyCode::Char('s'));
         assert_eq!(app.view(), app::View::Preview);
     }
 
     #[test]
-    fn the_log_appears_while_the_agent_works_and_the_preview_when_it_finishes() {
+    fn m_swaps_what_the_tabs_list_and_x_opens_the_editor_for_them() {
+        let mut app = app();
+        assert_eq!(app.mode(), app::Mode::Variants);
+
+        press(&mut app, KeyCode::Char('m'));
+        assert_eq!(app.mode(), app::Mode::Renders);
+
+        press(&mut app, KeyCode::Char('x'));
+        assert!(app.modal().is_some());
+    }
+
+    #[test]
+    fn the_arrows_walk_the_tabs_and_wrap_at_both_ends() {
+        let mut app = app();
+        assert_eq!(app.tab(), 0);
+
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.tab(), 1);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.tab(), 0, "past the last comes the first");
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.tab(), 1, "and back the other way");
+    }
+
+    #[test]
+    fn the_transcript_takes_the_box_while_the_agent_works_and_gives_it_back() {
         // Nobody should have to know to press a key to watch a turn happen.
         let mut app = app();
         app.agent = AgentStatus::Ready;
-        app.focus = Focus::Prompt;
-        assert_eq!(app.view(), app::View::Preview);
+        assert_eq!(app.left_view(), app::LeftView::Prompt);
 
         press(&mut app, KeyCode::Char('a'));
-        assert_eq!(app.view(), app::View::Log, "the turn is invisible");
+        app.follow_the_turn();
+        assert_eq!(
+            app.left_view(),
+            app::LeftView::Transcript,
+            "the turn is invisible"
+        );
 
-        // The turn ends, and the thing worth looking at is the artwork.
+        // The turn ends, and the thing worth looking at is the prompt again.
         app.pending_agent_request = None;
         app.transcript.apply(crate::acp::AgentUpdate::Idle);
-        assert_eq!(app.view(), app::View::Preview);
+        app.follow_the_turn();
+        assert_eq!(app.left_view(), app::LeftView::Prompt);
     }
 
     #[test]
-    fn choosing_a_view_stops_the_workspace_choosing_for_you() {
-        // Automatic behaviour that overrides a deliberate choice is worse than
-        // none at all.
+    fn the_transcript_can_be_toggled_back_during_a_turn() {
+        // The box is a plain state, not an override that latches: a rule
+        // derived from `is_asking` on every frame would undo `t` before it
+        // reached the screen.
         let mut app = app();
         app.agent = AgentStatus::Ready;
-        app.focus = Focus::Prompt;
-
-        press(&mut app, KeyCode::Char('s'));
-        assert_eq!(app.view(), app::View::Source);
 
         press(&mut app, KeyCode::Char('a'));
+        app.follow_the_turn();
+        assert_eq!(app.left_view(), app::LeftView::Transcript);
+
+        press(&mut app, KeyCode::Char('t'));
+        assert_eq!(app.left_view(), app::LeftView::Prompt);
+        app.follow_the_turn();
         assert_eq!(
-            app.view(),
-            app::View::Source,
-            "the workspace overrode a view the user had picked"
+            app.left_view(),
+            app::LeftView::Prompt,
+            "the next frame took the choice back"
         );
-    }
-
-    #[test]
-    fn the_first_press_moves_on_from_whatever_is_on_screen() {
-        // Otherwise pressing `s` while the log is up automatically would jump
-        // somewhere unrelated.
-        let mut app = app();
-        app.agent = AgentStatus::Ready;
-        app.focus = Focus::Prompt;
-        press(&mut app, KeyCode::Char('a'));
-        assert_eq!(app.view(), app::View::Log);
-
-        press(&mut app, KeyCode::Char('s'));
-        assert_eq!(app.view(), app::View::Preview);
     }
 
     #[test]
@@ -1053,7 +1149,7 @@ mod tests {
         // Windows reports press *and* release. `apply` is where that is
         // filtered now that the loop no longer reads events itself.
         let mut app = app();
-        app.focus = Focus::Variants;
+        app.focus = Focus::Palette;
 
         for kind in [KeyEventKind::Press, KeyEventKind::Release] {
             apply(
@@ -1067,7 +1163,7 @@ mod tests {
             );
         }
 
-        assert_eq!(app.selected_variant(), 1);
+        assert_eq!(app.selection(Focus::Palette), 1);
     }
 
     #[test]
@@ -1092,12 +1188,12 @@ mod tests {
     #[test]
     fn the_arrow_keys_move_the_selection_within_the_focused_pane() {
         let mut app = app();
-        app.focus = Focus::Variants;
+        app.focus = Focus::Palette;
 
         press(&mut app, KeyCode::Down);
-        assert_eq!(app.selected_variant(), 1);
+        assert_eq!(app.selection(Focus::Palette), 1);
         press(&mut app, KeyCode::Up);
-        assert_eq!(app.selected_variant(), 0);
+        assert_eq!(app.selection(Focus::Palette), 0);
     }
 
     #[test]
@@ -1156,17 +1252,24 @@ mod tests {
     }
 
     #[test]
-    fn tab_while_editing_moves_to_the_next_pane_rather_than_indenting() {
+    fn tab_while_editing_moves_to_the_next_pane_and_keeps_editing_it() {
         // Tab is how the whole workspace is navigated, and a literal tab in a
         // paragraph of prose is worth much less than a consistent way out.
+        // The edit mode goes with it: both panes are editable, and dropping
+        // out of it on the way would cost a keystroke every single time.
         let mut app = engaged();
         type_text(&mut app, "prose");
 
         press(&mut app, KeyCode::Tab);
 
-        assert!(!app.is_editing());
         assert_eq!(app.focus, Focus::Palette);
+        assert_eq!(app.editing(), Some(Focus::Palette));
         assert_eq!(app.draft(), "prose", "no tab reached the buffer");
+
+        // And back, without the palette's buffer following it across.
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.focus, Focus::Prompt);
+        assert_eq!(app.draft(), "prose");
     }
 
     #[test]
@@ -1194,7 +1297,7 @@ mod tests {
     #[test]
     fn e_on_another_pane_is_not_a_request_for_the_system_editor() {
         let mut app = app();
-        app.focus = Focus::Variants;
+        app.focus = Focus::Palette;
 
         press(&mut app, KeyCode::Char('e'));
         assert!(!app.wants_system_editor());
@@ -1310,32 +1413,32 @@ mod tests {
         let mut app = laid_out();
         app.focus = Focus::Prompt;
 
-        let renders = app.area(Focus::Renders);
-        click(&mut app, renders.x + 2, renders.y + 1);
-        assert_eq!(app.focus, Focus::Renders);
+        let palette = app.area(Focus::Palette);
+        click(&mut app, palette.x + 2, palette.y + 1);
+        assert_eq!(app.focus, Focus::Palette);
     }
 
     #[test]
     fn clicking_a_row_selects_it() {
         let mut app = laid_out();
-        let variants = app.area(Focus::Variants);
+        let palette = app.area(Focus::Palette);
 
         // The second row of content: one row of border, then one entry.
-        click(&mut app, variants.x + 2, variants.y + 2);
-        assert_eq!(app.selected_variant(), 1);
+        click(&mut app, palette.x + 2, palette.y + 2);
+        assert_eq!(app.selection(Focus::Palette), 1);
     }
 
     #[test]
     fn clicking_a_panes_border_focuses_it_without_moving_the_selection() {
         let mut app = laid_out();
-        let variants = app.area(Focus::Variants);
-        app.focus = Focus::Variants;
+        let palette = app.area(Focus::Palette);
+        app.focus = Focus::Palette;
         app.select_next();
-        let before = app.selected_variant();
+        let before = app.selection(Focus::Palette);
 
-        click(&mut app, variants.x + 2, variants.y);
-        assert_eq!(app.focus, Focus::Variants);
-        assert_eq!(app.selected_variant(), before);
+        click(&mut app, palette.x + 2, palette.y);
+        assert_eq!(app.focus, Focus::Palette);
+        assert_eq!(app.selection(Focus::Palette), before);
     }
 
     #[test]
@@ -1344,24 +1447,109 @@ mod tests {
         // which list is meant, and it must not require clicking first.
         let mut app = laid_out();
         app.focus = Focus::Prompt;
-        let variants = app.area(Focus::Variants);
+        let palette = app.area(Focus::Palette);
 
         wheel(
             &mut app,
             MouseEventKind::ScrollDown,
-            variants.x + 2,
-            variants.y + 1,
+            palette.x + 2,
+            palette.y + 1,
         );
         assert_eq!(app.focus, Focus::Prompt, "scrolling must not steal focus");
-        assert_eq!(app.selection(Focus::Variants), 1);
+        assert_eq!(app.selection(Focus::Palette), 1);
 
         wheel(
             &mut app,
             MouseEventKind::ScrollUp,
-            variants.x + 2,
-            variants.y + 1,
+            palette.x + 2,
+            palette.y + 1,
         );
-        assert_eq!(app.selection(Focus::Variants), 0);
+        assert_eq!(app.selection(Focus::Palette), 0);
+    }
+
+    #[test]
+    fn clicking_a_toolbar_button_does_what_the_key_beside_it_does() {
+        // One function for both, so a control cannot mean one thing to the
+        // mouse and another to the keyboard.
+        let mut app = laid_out();
+
+        for (button, moved) in [
+            (
+                Button::View,
+                Box::new(|app: &App| app.view() == app::View::Source) as Box<dyn Fn(&App) -> bool>,
+            ),
+            (
+                Button::Mode,
+                Box::new(|app: &App| app.mode() == app::Mode::Renders),
+            ),
+            (
+                Button::Transcript,
+                Box::new(|app: &App| app.left_view() == app::LeftView::Transcript),
+            ),
+            (Button::Renders, Box::new(|app: &App| app.modal().is_some())),
+        ] {
+            let area = app.button_area(button).expect("it was drawn");
+            click(&mut app, area.x, area.y);
+            assert!(moved(&app), "{button:?} did nothing");
+            // Back the way it was, so the next button starts from the same
+            // workspace. The dialogue is the one that does not toggle.
+            if button == Button::Renders {
+                app.close_modal();
+            } else {
+                click(&mut app, area.x, area.y);
+            }
+        }
+    }
+
+    /// The first cell of a tab, wherever the layout happened to put it.
+    fn tab_cell(app: &App, index: usize) -> (u16, u16) {
+        (0..30)
+            .flat_map(|row| (0..100).map(move |column| (column, row)))
+            .find(|(column, row)| app.tab_at(*column, *row) == Some(index))
+            .unwrap_or_else(|| panic!("tab {index} was not drawn"))
+    }
+
+    #[test]
+    fn clicking_a_tab_selects_it() {
+        let mut app = laid_out();
+
+        let (column, row) = tab_cell(&app, 1);
+        click(&mut app, column, row);
+        assert_eq!(app.tab(), 1);
+    }
+
+    #[test]
+    fn double_clicking_a_render_specifications_tab_writes_it_to_dist() {
+        // Where double-clicking a row of the old renders pane went when that
+        // pane became this tab bar.
+        let directory = tempfile::tempdir().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(directory.path()).unwrap();
+
+        let mut app = laid_out();
+        app.toggle_mode();
+        // Drawn again, because the tabs now list the specifications.
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        let mut preview = Preview::detect(Backend::Blocks);
+        terminal
+            .draw(|frame| ui::draw(frame, &mut app, &mut preview))
+            .unwrap();
+
+        let (column, row) = tab_cell(&app, 0);
+        click(&mut app, column, row);
+        click(&mut app, column, row);
+
+        let notice = app
+            .notice
+            .as_ref()
+            .and_then(app::Notice::text)
+            .unwrap_or_default()
+            .to_owned();
+        std::env::set_current_dir(previous).unwrap();
+
+        assert!(notice.contains("favicon-32.png"), "{notice}");
+        assert!(directory.path().join("dist/favicon-32.png").is_file());
     }
 
     #[test]
@@ -1412,30 +1600,30 @@ mod tests {
         let mut app = laid_out();
 
         assert!(
-            !app.register_click(Focus::Renders, 4),
+            !app.register_click(Focus::Palette, 4),
             "the first click is never a repeat"
         );
-        assert!(app.register_click(Focus::Renders, 4), "the second is");
+        assert!(app.register_click(Focus::Palette, 4), "the second is");
         // Cleared afterwards, so a triple-click is one double-click and then a
         // fresh gesture, rather than firing the action twice.
         assert!(
-            !app.register_click(Focus::Renders, 4),
+            !app.register_click(Focus::Palette, 4),
             "the third starts again"
         );
         assert!(
-            !app.register_click(Focus::Renders, 9),
+            !app.register_click(Focus::Palette, 9),
             "a different row is a new click, however fast"
         );
     }
 
     #[test]
-    fn double_clicking_a_render_specification_writes_it() {
+    fn double_clicking_a_render_specifications_tab_writes_it() {
         let directory = tempfile::tempdir().unwrap();
         let previous = std::env::current_dir().unwrap();
         std::env::set_current_dir(directory.path()).unwrap();
 
         let mut app = App::new(fixtures::project(), "blocks");
-        app.focus = Focus::Renders;
+        app.toggle_mode();
         app.export_selected_render();
         let notice = app
             .notice
@@ -1465,14 +1653,17 @@ mod tests {
     }
 
     #[test]
-    fn double_clicking_a_pane_that_has_nothing_to_open_does_nothing() {
+    fn double_clicking_the_palette_opens_the_colour_under_the_pointer() {
+        // Both panes are editable now, so a second click means the same thing
+        // in each: open this for editing.
         let mut app = laid_out();
         let palette = app.area(Focus::Palette);
 
         click(&mut app, palette.x + 2, palette.y + 2);
-        click(&mut app, palette.x + 2, palette.y + 2);
+        assert!(!app.is_editing(), "one click only focuses");
 
-        assert!(!app.is_editing());
+        click(&mut app, palette.x + 2, palette.y + 2);
+        assert_eq!(app.editing(), Some(Focus::Palette));
         assert!(app.notice.is_none());
     }
 
@@ -1514,11 +1705,11 @@ mod tests {
     #[test]
     fn a_key_with_no_binding_changes_nothing() {
         let mut app = app();
-        let before = (app.focus, app.selected_variant(), app.should_quit);
+        let before = (app.focus, app.tab(), app.should_quit);
         handle(
             &mut app,
             KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE),
         );
-        assert_eq!((app.focus, app.selected_variant(), app.should_quit), before);
+        assert_eq!((app.focus, app.tab(), app.should_quit), before);
     }
 }

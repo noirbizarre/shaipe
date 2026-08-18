@@ -1,5 +1,15 @@
 //! Where the panes go.
 //!
+//! ```text
+//! ┌ shaipe  [preview] [variants] [edit renders] [transcript] ───────────────┐
+//! ├──────────── left, half ─────────┬──────────────── right ────────────────┤
+//! │ prompt, or the transcript  2/3  │ ‹ icon │ wordmark ›                   │
+//! │                                 │                                       │
+//! ├────────────────────────── 1/3 ──┤        preview, or the source         │
+//! │ palette                         │                                       │
+//! └─────────────────────────────────┴───────────────────────────────────────┘
+//! ```
+//!
 //! The preview draws through [`crate::preview::Preview`], which is a widget
 //! like everything else here, so this module never touches an escape
 //! sequence and never needs to know which protocol is in use.
@@ -7,165 +17,191 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 use crate::preview::Preview as Backend;
 
-use super::app::{App, Focus, Preview, View};
-use super::panes;
+use super::app::{App, Focus, LeftView, Preview, View};
+use super::modal::Modal;
+use super::{modal, panes, toolbar};
 
 /// Draw a frame.
 pub fn draw(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend) {
-    let [body, status] = Layout::default()
+    let [bar, body, status] = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .areas(frame.area());
 
-    // Sized in characters, not proportions: the column's contents are names
-    // and hex values of known width, and the preview should have every column
-    // they do not need. Draggable, hence read from the app rather than fixed.
-    app.resize_column(app.column_width, body.width);
+    toolbar::draw(frame, app, bar);
+
+    // Half the body until somebody drags the divider. Proportional rather than
+    // a fixed number of characters, because the left column is prose and a
+    // palette now rather than four lists of known width.
     let [left, right] = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(app.column_width),
+            Constraint::Length(app.column(body.width)),
             Constraint::Min(crate::tui::app::MIN_PREVIEW),
         ])
         .areas(body);
 
     draw_left(frame, app, left);
-    // Told about the area either way, so the preview stays correctly sized
-    // and switching back to it is instant rather than a re-render.
-    app.set_preview_area(right, backend.cell_size(), backend.scale());
-    match app.view() {
-        View::Preview => draw_preview(frame, app, backend, right),
-        View::Source => draw_scrolling(frame, app, right, View::Source),
-        View::Log => draw_scrolling(frame, app, right, View::Log),
-    }
+    draw_right(frame, app, backend, right);
 
     frame.render_widget(panes::status(app, status.width), status);
-}
 
-/// Rows an unfocused pane may occupy, borders included.
-///
-/// Small enough that focusing a pane visibly hands it the column, large
-/// enough that a collapsed pane still shows something. A collapsed list
-/// scrolls, so its selection stays visible.
-const COLLAPSED: u16 = 5;
-
-/// The height each pane should get.
-///
-/// The focused pane takes everything the others do not need; the others take
-/// what their contents want, up to [`COLLAPSED`]. This is what makes the
-/// prompt readable — as prose it is the one pane whose content has no natural
-/// height, and before this it was whatever the three lists left over.
-fn constraints(app: &App) -> [Constraint; Focus::COUNT] {
-    std::array::from_fn(|index| {
-        let focus = Focus::ALL[index];
-        if focus == app.focus {
-            Constraint::Min(5)
-        } else {
-            Constraint::Length(app.natural_height(focus).min(COLLAPSED))
-        }
-    })
+    // Last, and over everything: a modal that drew under a pane would be a
+    // dialogue nobody could read.
+    if let Some(Modal::Renders(editor)) = app.modal() {
+        modal::draw(frame, editor, &app.project, body);
+    }
 }
 
 /// Draw the description column.
+///
+/// Two panes at a fixed ratio, rather than a focused one that takes the column.
+/// The prompt is the reason: it is prose, it is what the whole workspace is
+/// about, and giving it two thirds unconditionally is worth more than making
+/// it grow when the keyboard happens to be in it.
 fn draw_left(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
-    let [prompt, palette, variants, renders] = Layout::default()
+    let [top, bottom] = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(constraints(app))
+        .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
         .areas(area);
 
-    for (focus, pane) in [
-        (Focus::Prompt, prompt),
-        (Focus::Palette, palette),
-        (Focus::Variants, variants),
-        (Focus::Renders, renders),
-    ] {
-        app.set_area(focus, pane);
+    app.set_area(Focus::Prompt, top);
+    app.set_area(Focus::Palette, bottom);
+
+    draw_prompt(frame, app, top);
+    draw_palette(frame, app, bottom);
+}
+
+/// Draw the prompt, or the transcript in its place.
+fn draw_prompt(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let focused = app.focus == Focus::Prompt;
+    let left = app.left_view();
+
+    // The frame is drawn separately and its interior filled in, rather than
+    // the editor carrying a block of its own: a block would have to be set on
+    // the text area, and that mutable borrow cannot coexist with the immutable
+    // one the contents take below.
+    let note = match left {
+        LeftView::Prompt => panes::agent_title(app),
+        // The transcript is not editable, so naming a key that reaches the
+        // agent from it would be naming a key that does nothing.
+        LeftView::Transcript => String::new(),
+    };
+    let block = panes::frame_titled(Focus::Prompt, focused, left.title(), &note);
+    let interior = block.inner(area);
+    frame.render_widget(&block, area);
+    if interior.height == 0 {
+        return;
     }
 
-    // A value, not a closure: the closure would borrow `app` immutably for the
-    // rest of the function, and the list panes need it mutably for their
-    // scroll state.
-    let focus = app.focus;
-    let focused = move |candidate: Focus| candidate == focus;
-
-    // The frame is drawn separately and its interior filled in, rather than
-    // the editor carrying a block of its own: a block would have to be set on
-    // the text area, and that mutable borrow cannot coexist with the immutable
-    // one the list panes take below.
-    let agent = panes::agent_title(app);
-    let prompt_block = panes::frame_titled(
-        Focus::Prompt,
-        focused(Focus::Prompt),
-        Focus::Prompt.title(),
-        &agent,
-    );
-
-    // The frame is drawn separately and its interior filled in, rather than
-    // the editor carrying a block of its own: a block would have to be set on
-    // the text area, and that mutable borrow cannot coexist with the immutable
-    // one the list panes take below.
-    //
-    // The editor takes the whole interior. It briefly shared it with the
-    // agent's transcript, which was a mistake twice over — it left the editor
-    // one row, and the transcript never had the height to be read in anyway.
-    // The transcript lives in the right-hand column now.
-    let interior = prompt_block.inner(prompt);
-    frame.render_widget(&prompt_block, prompt);
-
-    if interior.height > 0 {
-        if app.is_editing() {
+    match left {
+        LeftView::Prompt if app.is_editing_prompt() => {
             frame.render_widget(app.editor(), interior);
-        } else {
-            frame.render_widget(panes::prompt(app), interior);
         }
-    }
-
-    // Built before the mutable borrow of `app` that the list state needs.
-    let metadata = app.project.metadata();
-    let lists = [
-        (
-            Focus::Palette,
-            palette,
-            panes::palette(&metadata.palette, focused(Focus::Palette)),
-        ),
-        (
-            Focus::Variants,
-            variants,
-            panes::variants(
-                &metadata.variants,
-                metadata.primary.as_deref(),
-                focused(Focus::Variants),
-            ),
-        ),
-        (
-            Focus::Renders,
-            renders,
-            panes::renders(&metadata.renders, focused(Focus::Renders)),
-        ),
-    ];
-
-    for (focus, pane, list) in lists {
-        let list = list.block(panes::frame(focus, focused(focus)));
-        frame.render_stateful_widget(list, pane, app.list_state(focus));
+        LeftView::Prompt => frame.render_widget(panes::prompt(app), interior),
+        LeftView::Transcript => {
+            let paragraph = Paragraph::new(panes::transcript_lines(app)).wrap(Wrap { trim: false });
+            // Anchored to the bottom, measured in **wrapped rows**. Counting
+            // entries instead is the bug that kept the transcript off screen
+            // for a whole session: one 446-character prompt is a single line
+            // and fifteen rows.
+            let rows = u16::try_from(paragraph.line_count(interior.width)).unwrap_or(u16::MAX);
+            let bottom = rows.saturating_sub(interior.height);
+            frame.render_widget(
+                paragraph.scroll((bottom.saturating_sub(app.transcript_scroll()), 0)),
+                interior,
+            );
+        }
     }
 }
 
-/// Draw one of the scrolling views in place of the picture.
+/// Draw the palette pane.
+fn draw_palette(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let focused = app.focus == Focus::Palette;
+    // Built before the mutable borrow the list state needs.
+    let list = panes::palette(&app.project.metadata().palette, focused, app.palette_edit())
+        .block(panes::frame(Focus::Palette, focused));
+    frame.render_stateful_widget(list, area, app.list_state(Focus::Palette));
+}
+
+/// Draw the preview column: a row of tabs, and whatever they select.
+fn draw_right(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend, area: Rect) {
+    let [bar, body] = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .areas(area);
+
+    draw_tabs(frame, app, bar);
+
+    // Told about the area either way, so the preview stays correctly sized
+    // and switching back to it is instant rather than a re-render.
+    app.set_preview_area(body, backend.cell_size(), backend.scale());
+    match app.view() {
+        View::Preview => draw_preview(frame, app, backend, body),
+        View::Source => draw_source(frame, app, body),
+    }
+}
+
+/// Draw the tab bar, recording where each tab landed.
 ///
-/// The source and the log differ only in what they contain and how they wrap,
-/// so they share a frame, a scroll offset and a set of keys.
-fn draw_scrolling(frame: &mut Frame<'_>, app: &App, area: Rect, view: View) {
+/// The variants or the render specifications, depending on the mode. They were
+/// two panes in the left column, which meant the whole of a project's output
+/// was described in five rows nobody could read while the artwork had the
+/// screen.
+fn draw_tabs(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let names = app.tabs();
+    let selected = app.tab();
+
+    let mut spans = Vec::new();
+    let mut areas = Vec::new();
+    let mut x = area.x;
+
+    for (index, name) in names.iter().enumerate() {
+        let label = format!(" {name} ");
+        let width = label.chars().count() as u16;
+        spans.push(Span::styled(
+            label,
+            if index == selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::LightMagenta)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            },
+        ));
+        areas.push(Rect::new(x, area.y, width, 1).intersection(area));
+        x = x.saturating_add(width);
+    }
+
+    if names.is_empty() {
+        spans.push(Span::styled(
+            " this project declares none ",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    app.set_tab_areas(areas);
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Draw the document that produced the artwork.
+fn draw_source(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray))
         .title(Span::styled(
-            format!(" {} ", view.title()),
+            " source ",
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
@@ -177,32 +213,14 @@ fn draw_scrolling(frame: &mut Frame<'_>, app: &App, area: Rect, view: View) {
         return;
     }
 
-    let paragraph = match view {
-        // Not wrapped: an SVG has meaningful line structure, and rewrapping a
-        // path's coordinates across a narrow column makes it unreadable. It
-        // runs off the edge instead, which is the lesser harm.
-        View::Source => Paragraph::new(app.source_text()).style(Style::default().fg(Color::Gray)),
-        // Wrapped, because it is prose.
-        View::Log => Paragraph::new(panes::log(app)).wrap(Wrap { trim: false }),
-        View::Preview => return,
-    };
-
-    // Anchored to the bottom, measured in **wrapped rows**. Counting entries
-    // instead is the bug that kept the transcript off screen for a whole
-    // session: one 446-character prompt is a single line and fifteen rows, so
-    // the offset came out fourteen rows short and usually zero.
-    let rows = u16::try_from(paragraph.line_count(inner.width)).unwrap_or(u16::MAX);
-    let bottom = rows.saturating_sub(inner.height);
-    let scroll = match view {
-        // The newest entry is the one worth seeing, until somebody scrolls.
-        View::Log => bottom.saturating_sub(app.view_scroll()),
-        _ => app.view_scroll(),
-    };
-
-    frame.render_widget(paragraph.scroll((scroll, 0)), inner);
+    // Not wrapped: an SVG has meaningful line structure, and rewrapping a
+    // path's coordinates across a narrow column makes it unreadable. It runs
+    // off the edge instead, which is the lesser harm.
+    let paragraph = Paragraph::new(app.source_text()).style(Style::default().fg(Color::Gray));
+    frame.render_widget(paragraph.scroll((app.view_scroll(), 0)), inner);
 }
 
-/// Draw the preview column./// Draw the preview column.
+/// Draw the preview column.
 fn draw_preview(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend, area: Rect) {
     // The backend belongs here rather than in the status line, which was
     // spending fifteen columns of every row on every pane to say something
@@ -220,16 +238,16 @@ fn draw_preview(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend, are
     // In the title rather than over the image: a render can take a noticeable
     // moment, and replacing the previous preview with a spinner would be a
     // downgrade. The old image is more useful than an empty pane.
-    let caption = match app.spinner() {
-        Some(frame) => format!("{caption}{frame} rendering "),
+    let caption = match panes::rendering(app) {
+        Some(activity) => format!("{caption}{activity} "),
         None => caption,
     };
 
-    let block = ratatui::widgets::Block::default()
-        .borders(ratatui::widgets::Borders::ALL)
-        .border_type(ratatui::widgets::BorderType::Rounded)
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray))
-        .title(ratatui::text::Span::styled(
+        .title(Span::styled(
             caption,
             Style::default()
                 .fg(Color::DarkGray)
@@ -270,6 +288,7 @@ mod tests {
     use super::*;
     use crate::fixtures;
     use crate::preview::Backend as PreviewBackend;
+    use crate::tui::app::Mode;
 
     /// Draw one frame into an in-memory terminal.
     ///
@@ -316,7 +335,7 @@ mod tests {
     fn an_engaged_editor_takes_over_the_prompt_pane_of_a_whole_frame() {
         // Through `draw` rather than the widget alone: this is the path where
         // the editor's mutable borrow of the state has to coexist with the
-        // list panes' immutable borrow of the project.
+        // palette pane's immutable borrow of the project.
         let mut app = App::new(fixtures::project(), "blocks");
         app.engage_editor();
         app.set_draft("an engaged editor");
@@ -325,20 +344,59 @@ mod tests {
 
         assert!(text.contains("an engaged editor"), "{text}");
         // The rest of the workspace is still drawn around it.
-        assert!(text.contains("variants"), "{text}");
+        assert!(text.contains("palette"), "{text}");
     }
 
     #[test]
-    fn a_frame_shows_every_pane_and_the_key_hints() {
+    fn a_frame_shows_the_toolbar_the_panes_the_tabs_and_the_key_hints() {
         let mut app = App::new(fixtures::project(), "blocks");
         app.refresh_preview();
         let text = render(&mut app, 100, 30);
 
         for expected in [
-            "prompt", "palette", "variants", "renders", "preview", "quit",
+            // The toolbar, and every state it names.
+            "shaipe",
+            "preview",
+            "variants",
+            "transcript",
+            // The panes that are left.
+            "prompt",
+            "palette", // A tab per variant, and a way out.
+            "icon",
+            "quit",
         ] {
             assert!(text.contains(expected), "{expected} missing from:\n{text}");
         }
+    }
+
+    #[test]
+    fn the_left_column_is_half_the_body_until_somebody_drags_it() {
+        // It was thirty-eight characters, which is a sensible width for four
+        // lists of names and a poor one for a paragraph of prose.
+        let mut app = App::new(fixtures::project(), "blocks");
+        frame(&mut app, 100, 30);
+
+        assert_eq!(app.column_width, 50);
+        assert_eq!(app.area(Focus::Prompt).width, 50);
+    }
+
+    #[test]
+    fn the_prompt_gets_two_thirds_of_the_column_and_the_palette_the_rest() {
+        // Unconditionally: the prompt is what the workspace is about, and
+        // making it grow only when the keyboard is in it means it is short
+        // exactly when somebody is reading it.
+        let mut app = App::new(fixtures::project(), "blocks");
+
+        app.focus = Focus::Palette;
+        frame(&mut app, 100, 30);
+
+        let prompt = app.area(Focus::Prompt).height;
+        let palette = app.area(Focus::Palette).height;
+        assert!(
+            prompt > palette,
+            "the prompt should keep the larger share whatever has focus: \
+             {prompt} vs {palette}"
+        );
     }
 
     /// A prompt like a real one: several paragraphs, hundreds of characters.
@@ -355,24 +413,11 @@ finished.\n\nGeometric, flat, monoline, no gradients. The icon carries no \
 text, so it reads at 16 pixels.";
 
     #[test]
-    fn the_editor_gets_the_whole_pane_while_editing() {
-        // It briefly shared the pane with the transcript, which left it one
-        // row and the transcript none. The transcript lives elsewhere now.
-        let mut app = App::new(fixtures::project(), "blocks");
-        app.engage_editor();
-        app.set_draft("EDITING HERE");
-
-        let text = render(&mut app, 100, 30);
-        assert!(text.contains("EDITING HERE"), "{text}");
-    }
-
-    #[test]
     fn a_long_prompt_is_read_from_the_top() {
         // Not bottom-anchored: a prompt is a thing you wrote, not a
         // conversation with a newest end.
         let mut app = App::new(fixtures::project(), "blocks");
         app.project.metadata_mut().prompt = Some(LONG_PROMPT.to_owned());
-        app.focus = Focus::Prompt;
 
         let text = render(&mut app, 100, 30);
         assert!(
@@ -382,13 +427,12 @@ text, so it reads at 16 pixels.";
     }
 
     #[test]
-    fn the_log_shows_its_newest_entries_even_when_they_wrap() {
+    fn the_transcript_shows_its_newest_entries_even_when_they_wrap() {
         // The regression test for the whole business. The old one passed only
         // because the fixture's prompt was one row long, so counting entries
         // happened to equal counting rows. Here every entry wraps to several
         // rows, and an offset measured in entries lands nowhere near the end.
         let mut app = App::new(fixtures::project(), "blocks");
-        app.project.metadata_mut().prompt = Some(LONG_PROMPT.to_owned());
 
         for turn in 0..12 {
             app.transcript
@@ -398,10 +442,7 @@ text, so it reads at 16 pixels.";
                     "{LONG_PROMPT} — answered{turn}"
                 )));
         }
-        app.cycle_view();
-        while app.view() != crate::tui::app::View::Log {
-            app.cycle_view();
-        }
+        app.toggle_left_view();
 
         let text = render(&mut app, 100, 30);
         // A single unbroken word, because the screen is rows and a phrase
@@ -417,12 +458,9 @@ text, so it reads at 16 pixels.";
     }
 
     #[test]
-    fn the_log_says_what_to_do_when_it_is_empty() {
+    fn the_transcript_says_what_to_do_when_it_is_empty() {
         let mut app = App::new(fixtures::project(), "blocks");
-        app.cycle_view();
-        while app.view() != crate::tui::app::View::Log {
-            app.cycle_view();
-        }
+        app.toggle_left_view();
 
         let text = render(&mut app, 100, 30);
         assert!(text.contains("Nothing yet"), "{text}");
@@ -434,7 +472,6 @@ text, so it reads at 16 pixels.";
         // is looking. Said before a message is typed and swallowed, because
         // that reads like a bug rather than like a missing dependency.
         let mut app = App::new(fixtures::project(), "blocks");
-        app.focus = Focus::Prompt;
         app.agent = crate::tui::app::AgentStatus::Absent {
             reason: "cannot find `no-such-agent`".to_owned(),
         };
@@ -447,11 +484,14 @@ text, so it reads at 16 pixels.";
     }
 
     /// The preview pane's interior, for a 100x30 frame.
+    ///
+    /// One row of toolbar and one of tabs above it now, and the column starts
+    /// halfway across.
     const PREVIEW: Rect = Rect {
-        x: 40,
-        y: 1,
-        width: 58,
-        height: 27,
+        x: 51,
+        y: 3,
+        width: 48,
+        height: 25,
     };
 
     #[test]
@@ -489,66 +529,150 @@ text, so it reads at 16 pixels.";
     }
 
     #[test]
-    fn the_focused_pane_gets_the_column_and_the_others_collapse() {
-        // The prompt is prose with no natural height. Before this it got
-        // whatever the three lists left over, which for a real project was a
-        // handful of rows for several hundred characters.
+    fn the_tabs_list_the_variants_or_the_specifications_depending_on_the_mode() {
+        // They were two panes in the left column, which described the whole of
+        // a project's output in five rows nobody could read.
         let mut app = App::new(fixtures::project(), "blocks");
 
-        app.focus = Focus::Prompt;
-        frame(&mut app, 100, 30);
-        let prompt_focused = app.area(Focus::Prompt).height;
+        let variants = render(&mut app, 100, 30);
+        assert!(variants.contains("icon"), "{variants}");
+        assert!(variants.contains("wordmark"), "{variants}");
 
-        app.focus = Focus::Renders;
-        frame(&mut app, 100, 30);
-        let prompt_collapsed = app.area(Focus::Prompt).height;
-        let renders_focused = app.area(Focus::Renders).height;
-
-        assert!(
-            prompt_focused > prompt_collapsed * 2,
-            "focusing the prompt should visibly hand it the column: \
-             {prompt_focused} vs {prompt_collapsed}"
-        );
-        assert!(renders_focused > prompt_collapsed);
+        app.toggle_mode();
+        assert_eq!(app.mode(), Mode::Renders);
+        let renders = render(&mut app, 100, 30);
+        assert!(renders.contains("favicon-32"), "{renders}");
     }
 
     #[test]
-    fn a_collapsed_pane_still_shows_its_title() {
+    fn the_selected_tab_is_the_one_that_is_marked() {
         let mut app = App::new(fixtures::project(), "blocks");
-        app.focus = Focus::Prompt;
-        let text = render(&mut app, 100, 30);
+        frame(&mut app, 100, 30);
 
-        // Collapsed, but not gone: the point is to see the whole project at
-        // once and still be able to read the focused pane.
-        for title in ["palette", "variants", "renders"] {
-            assert!(text.contains(title), "{title} missing from:\n{text}");
+        // Wherever the layout put them, every tab is clickable and the first
+        // cell of the bar belongs to the first tab.
+        let first = (0..30)
+            .flat_map(|row| (0..100).map(move |column| (column, row)))
+            .find_map(|(column, row)| app.tab_at(column, row));
+        assert_eq!(first, Some(0), "the tabs were not drawn anywhere");
+
+        app.next_tab();
+        assert_eq!(app.tab(), 1);
+    }
+
+    #[test]
+    fn the_source_view_replaces_the_picture_rather_than_sitting_beside_it() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.refresh_preview();
+        app.toggle_view();
+
+        let rendered = frame(&mut app, 100, 30);
+        let text = (0..30)
+            .map(|y| {
+                (0..100)
+                    .map(|x| rendered[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("<svg"), "{text}");
+        assert_eq!(painted(&rendered, PREVIEW), 0, "the image is still drawn");
+    }
+
+    #[test]
+    fn the_renders_editor_covers_the_workspace() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.refresh_preview();
+        app.open_renders_editor();
+
+        let rendered = frame(&mut app, 100, 30);
+        let rows: Vec<String> = (0..30)
+            .map(|y| {
+                (0..100)
+                    .map(|x| rendered[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect();
+        let text = rows.join("\n");
+
+        assert!(text.contains("render specifications"), "{text}");
+        assert!(text.contains("background"), "the table's columns\n{text}");
+
+        // Over the picture, not beside it: the table is wider than the left
+        // column, so its last heading lands in the preview's own columns and
+        // there is no image left underneath it.
+        let (row, column) = rows
+            .iter()
+            .enumerate()
+            .find_map(|(row, line)| line.find("background").map(|column| (row, column)))
+            .expect("the heading is on some row");
+        let (row, column) = (u16::try_from(row).unwrap(), u16::try_from(column).unwrap());
+        assert!(
+            column > PREVIEW.x,
+            "the dialogue did not reach the preview's columns"
+        );
+        assert_eq!(
+            painted(
+                &rendered,
+                Rect::new(column, row, "background".len() as u16, 1)
+            ),
+            0,
+            "the picture was drawn through the dialogue"
+        );
+    }
+
+    #[test]
+    fn a_palette_being_edited_shows_what_has_been_typed_rather_than_what_is_committed() {
+        // Otherwise the keystrokes are invisible until they happen to parse,
+        // which for a hex colour is only at the very end.
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.focus = Focus::Palette;
+        app.engage_editor();
+        for _ in 0..7 {
+            app.edit_key(ratatui::crossterm::event::KeyEvent::new(
+                ratatui::crossterm::event::KeyCode::Backspace,
+                ratatui::crossterm::event::KeyModifiers::NONE,
+            ));
         }
+        for character in "#0066".chars() {
+            app.edit_key(ratatui::crossterm::event::KeyEvent::new(
+                ratatui::crossterm::event::KeyCode::Char(character),
+                ratatui::crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+
+        let text = render(&mut app, 100, 30);
+        assert!(
+            text.contains("#0066"),
+            "the half-typed colour is hidden\n{text}"
+        );
     }
 
     #[test]
     fn a_pane_smaller_than_its_contents_scrolls_to_keep_the_selection_visible() {
-        // Collapsing a pane is only acceptable because it scrolls; without
-        // this the selection could sit off-screen with no way to see it.
+        // The palette is the one list left, and it can outgrow a third of the
+        // column; without this the selection could sit off-screen.
         let mut app = App::new(fixtures::project(), "blocks");
-        for index in 0..10 {
+        for index in 0..20 {
             app.project
                 .metadata_mut()
-                .renders
-                .push(crate::project::RenderSpec::square(
-                    format!("spec-{index}"),
-                    "icon",
-                    16,
-                ));
+                .palette
+                .push(crate::project::Colour {
+                    name: format!("colour-{index}"),
+                    value: crate::project::Rgba::new(0x11, 0x22, 0x33, 0xff),
+                    role: None,
+                });
         }
 
-        app.focus = Focus::Renders;
-        while app.selection(Focus::Renders) + 1 < app.project.metadata().renders.len() {
+        app.focus = Focus::Palette;
+        while app.selection(Focus::Palette) + 1 < app.project.metadata().palette.len() {
             app.select_next();
         }
 
         let text = render(&mut app, 100, 30);
         assert!(
-            text.contains("spec-9"),
+            text.contains("colour-19"),
             "the selected entry should have scrolled into view:\n{text}"
         );
     }
@@ -556,8 +680,7 @@ text, so it reads at 16 pixels.";
     #[test]
     fn a_running_render_puts_a_spinner_on_the_screen() {
         // The reported symptom was an empty preview box with no sign that
-        // anything was happening. `App::spinner` being `Some` is not enough —
-        // it has to reach the frame.
+        // anything was happening. It has to reach the frame.
         let mut app = App::new(fixtures::project(), "blocks");
         assert!(app.begin_render(), "a render should have started");
         assert!(app.is_rendering());
@@ -600,6 +723,12 @@ text, so it reads at 16 pixels.";
         // user in raw mode on the alternate screen.
         let mut app = App::new(fixtures::project(), "blocks");
         app.refresh_preview();
+        for (width, height) in [(1, 1), (5, 3), (40, 2), (200, 60)] {
+            render(&mut app, width, height);
+        }
+
+        // And with the dialogue up, which is the one thing drawn over the top.
+        app.open_renders_editor();
         for (width, height) in [(1, 1), (5, 3), (40, 2), (200, 60)] {
             render(&mut app, width, height);
         }

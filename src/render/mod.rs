@@ -128,6 +128,40 @@ impl<'a> Renderer<'a> {
         })
     }
 
+    /// The isolated variant a specification names, as an SVG document.
+    ///
+    /// The step before either output: what [`Renderer::render`] returns
+    /// verbatim for [`Format::Svg`], and what [`Renderer::pixels`] rasterises.
+    ///
+    /// # Errors
+    ///
+    /// As [`Renderer::render`], minus the encoding and the rasterising.
+    pub fn isolated(&self, spec: &RenderSpec) -> Result<String> {
+        let source = self.project.source().to_owned();
+        let parsed = document::parse(&source, self.project.path())?;
+        isolate::isolate(self.project, &parsed, spec)
+    }
+
+    /// What this variant is made of, as bytes to compare against later.
+    ///
+    /// The cheapest honest answer to "did *this* variant change?" — the
+    /// workspace takes one either side of an edit and only re-renders when
+    /// they differ, so an agent rewriting the wordmark does not cost a
+    /// rasterise of the icon on screen. Not [`Renderer::isolated`], which
+    /// carries every definition the document has and so changes whenever any
+    /// variant does.
+    ///
+    /// Never rasterised, and never written: it is a comparison, not an asset.
+    ///
+    /// # Errors
+    ///
+    /// As [`Renderer::isolated`].
+    pub fn fingerprint(&self, spec: &RenderSpec) -> Result<String> {
+        let source = self.project.source().to_owned();
+        let parsed = document::parse(&source, self.project.path())?;
+        isolate::fingerprint(self.project, &parsed, spec)
+    }
+
     /// Rasterise a specification, stopping at the pixels.
     ///
     /// The step before [`Renderer::render`] encodes anything. Callers that

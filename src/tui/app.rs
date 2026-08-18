@@ -17,9 +17,11 @@ use ratatui::widgets::ListState;
 use ratatui_textarea::{TextArea, WrapMode};
 
 use crate::preview::{Image, Scale};
-use crate::project::{Format, Project, RenderSpec};
+use crate::project::{Format, Project, RenderSpec, Rgba};
 use crate::render::{RenderOptions, Renderer};
+use crate::tui::modal::{Modal, RendersEditor};
 use crate::tui::render_worker::{Rendered, Worker};
+use crate::tui::toolbar::Button;
 use crate::tui::transcript::Transcript;
 use crate::tui::watch::Watcher;
 
@@ -31,9 +33,6 @@ pub const MIN_COLUMN: u16 = 24;
 
 /// How much room the preview column always keeps.
 pub const MIN_PREVIEW: u16 = 12;
-
-/// The description column's width before anyone drags it.
-pub const DEFAULT_COLUMN: u16 = 38;
 
 /// How close together two clicks count as one double-click.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
@@ -61,21 +60,20 @@ const DEBOUNCE: Duration = Duration::from_millis(120);
 const EXPORT_DIRECTORY: &str = "dist";
 
 /// Which pane the keyboard is talking to.
+///
+/// Two, not four: the variants and the render specifications are the preview's
+/// tabs now, chosen by [`Mode`], and neither is a list to walk on the left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
-    /// The prompt.
+    /// The prompt, or the transcript in its place.
     Prompt,
     /// The palette.
     Palette,
-    /// The variants.
-    Variants,
-    /// The render specifications.
-    Renders,
 }
 
 impl Focus {
     /// Every pane, in the order `Tab` visits them.
-    pub const ALL: [Self; 4] = [Self::Prompt, Self::Palette, Self::Variants, Self::Renders];
+    pub const ALL: [Self; 2] = [Self::Prompt, Self::Palette];
 
     /// How many panes there are.
     pub const COUNT: usize = Self::ALL.len();
@@ -86,10 +84,127 @@ impl Focus {
         match self {
             Self::Prompt => "prompt",
             Self::Palette => "palette",
+        }
+    }
+}
+
+/// What the top-left box is showing.
+///
+/// One box with two contents rather than two panes: the prompt and the
+/// transcript are never wanted at the same moment, and a pane each would have
+/// left both of them too short to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LeftView {
+    /// The project's own description of itself.
+    #[default]
+    Prompt,
+    /// What the agent has said and done.
+    Transcript,
+}
+
+impl LeftView {
+    /// The other one.
+    #[must_use]
+    pub const fn other(self) -> Self {
+        match self {
+            Self::Prompt => Self::Transcript,
+            Self::Transcript => Self::Prompt,
+        }
+    }
+
+    /// What to call it, in a pane title.
+    #[must_use]
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Prompt => "prompt",
+            Self::Transcript => "transcript",
+        }
+    }
+}
+
+/// What the preview's tabs are listing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    /// One tab per variant, previewed at a default size.
+    #[default]
+    Variants,
+    /// One tab per render specification, previewed exactly as declared.
+    Renders,
+}
+
+impl Mode {
+    /// The other one.
+    #[must_use]
+    pub const fn other(self) -> Self {
+        match self {
+            Self::Variants => Self::Renders,
+            Self::Renders => Self::Variants,
+        }
+    }
+
+    /// What to call it, on the toolbar.
+    #[must_use]
+    pub const fn title(self) -> &'static str {
+        match self {
             Self::Variants => "variants",
             Self::Renders => "renders",
         }
     }
+
+    /// Its position in `tab`.
+    const fn index(self) -> usize {
+        match self {
+            Self::Variants => 0,
+            Self::Renders => 1,
+        }
+    }
+}
+
+/// Which part of a colour the palette editor is changing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PaletteField {
+    /// What the project calls it.
+    Name,
+    /// The colour itself.
+    #[default]
+    Value,
+}
+
+impl PaletteField {
+    /// The other one.
+    #[must_use]
+    pub const fn other(self) -> Self {
+        match self {
+            Self::Name => Self::Value,
+            Self::Value => Self::Name,
+        }
+    }
+}
+
+/// A committed palette edit, once the buffer has been understood.
+///
+/// The parsing happens before the project is borrowed mutably, so a field that
+/// says nothing usable costs a `return` rather than a half-applied change.
+enum Edit {
+    /// A new name for the colour.
+    Name(String),
+    /// A new value for it.
+    Value(Rgba),
+}
+
+/// A field of the palette being edited, and whether it currently parses.///
+/// Handed to the pane so the half-typed text is what is drawn. Without it the
+/// pane would show the committed value and the keystrokes would be invisible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaletteEdit<'a> {
+    /// Which colour.
+    pub row: usize,
+    /// Which of its fields.
+    pub field: PaletteField,
+    /// What has been typed so far.
+    pub text: &'a str,
+    /// Whether that text is something the project could hold.
+    pub valid: bool,
 }
 
 /// What the preview pane is showing.
@@ -238,6 +353,10 @@ fn instruct(prompt: &str) -> String {
 }
 
 /// What the right-hand column is showing.
+///
+/// Two, not three: the transcript used to be a third view here, and it is the
+/// top-left box now — see [`LeftView`]. What is left is the artwork and the
+/// document that produced it, which is a toggle rather than a cycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum View {
     /// The rendered artwork.
@@ -245,8 +364,6 @@ pub enum View {
     Preview,
     /// The SVG that produced it.
     Source,
-    /// What the agent has been doing.
-    Log,
 }
 
 impl View {
@@ -256,17 +373,15 @@ impl View {
         match self {
             Self::Preview => "preview",
             Self::Source => "source",
-            Self::Log => "log",
         }
     }
 
-    /// The next one round.
+    /// The other one.
     #[must_use]
-    pub const fn next(self) -> Self {
+    pub const fn other(self) -> Self {
         match self {
             Self::Preview => Self::Source,
-            Self::Source => Self::Log,
-            Self::Log => Self::Preview,
+            Self::Source => Self::Preview,
         }
     }
 }
@@ -309,13 +424,23 @@ pub struct App {
     /// project is always what the pane shows. It survives disengaging, so
     /// leaving the editor and coming back keeps the cursor where it was.
     editor: TextArea<'static>,
-    /// Whether keys go to the editor rather than to the workspace.
+    /// Which pane the keyboard is editing, if any.
     ///
-    /// Explicit rather than implied by [`Focus::Prompt`], because every
-    /// printable key is an edit while the editor has the keyboard, `q` and `r`
-    /// among them. There has to be a state in which the prompt pane is focused
-    /// and the workspace's own shortcuts still work.
-    editing: bool,
+    /// One edit mode shared by the prompt and the palette, rather than a flag
+    /// each. It is explicit rather than implied by the focus, because every
+    /// printable key is an edit while a pane is being edited, `q` and `r`
+    /// among them: there has to be a state in which a pane is focused and the
+    /// workspace's own shortcuts still work.
+    editing: Option<Focus>,
+    /// Which part of the selected colour the palette editor is changing.
+    palette_field: PaletteField,
+    /// What has been typed into that field so far.
+    ///
+    /// A buffer rather than editing the project in place, because a colour is
+    /// unparsable for most of the time it takes to type one: `#f0` is not a
+    /// value the project can hold, and refusing the keystroke would make the
+    /// field impossible to use.
+    palette_buffer: String,
     /// Whether `$EDITOR` has been asked for and not yet opened.
     ///
     /// A flag rather than the deed, because opening an editor needs the
@@ -344,16 +469,36 @@ pub struct App {
     /// Only the spinner reads it, which derives its frame from elapsed time
     /// rather than storing one.
     agent_since: Instant,
-    /// Which view the user picked, if they picked one.
+    /// Which view the right-hand column is showing.
     ///
-    /// `None` means the workspace decides: the log while the agent works, the
-    /// preview when it has finished, because that is when each is the thing
-    /// worth looking at. Pressing a view key fills this in and the workspace
-    /// stops deciding — automatic behaviour that overrides a deliberate
-    /// choice is worse than none at all.
-    chosen: Option<View>,
-    /// How far down the scrollable views are scrolled, in rows.
+    /// A plain state, toggled by `s`. Nothing chooses it on the user's behalf:
+    /// the transcript, which was the one view worth showing automatically, is
+    /// in the left column now and has its own rule — see [`App::follow_the_turn`].
+    view: View,
+    /// Which of the prompt and the transcript the top-left box is showing.
+    left: LeftView,
+    /// Whether a turn was running last time the box was asked to follow one.
+    ///
+    /// Edge-triggered rather than derived, so that toggling with `t` during a
+    /// turn is not undone on the very next frame.
+    was_asking: bool,
+    /// What the preview's tabs are listing.
+    mode: Mode,
+    /// The selected tab, per mode.
+    ///
+    /// One each, so switching to the render specifications and back returns to
+    /// the variant that was on screen rather than to the first one.
+    tab: [usize; 2],
+    /// How far down the source is scrolled, in rows.
     view_scroll: u16,
+    /// How far back through the transcript the reader has gone, in rows.
+    transcript_scroll: u16,
+    /// The modal covering the workspace, if any.
+    modal: Option<Modal>,
+    /// Where each toolbar button was drawn last frame.
+    toolbar: Vec<(Button, Rect)>,
+    /// Where each preview tab was drawn last frame.
+    tabs: Vec<Rect>,
 
     /// Where each pane was drawn last frame.
     ///
@@ -366,6 +511,8 @@ pub struct App {
     preview_pixels: (u32, u32),
     /// The last click, for recognising a double-click.
     last_click: Option<(Focus, u16, Instant)>,
+    /// The last click on a tab, for the same reason.
+    last_tab_click: Option<(usize, Instant)>,
     /// Whether the column divider is being dragged.
     resizing: bool,
     /// Whether to skip drawing the image for one frame.
@@ -406,14 +553,16 @@ impl App {
         let editor = Self::editor_for(project.metadata().prompt.as_deref().unwrap_or_default());
         Self {
             project,
-            focus: Focus::Variants,
+            focus: Focus::Prompt,
             should_quit: false,
             backend,
             verbose: 0,
-            column_width: DEFAULT_COLUMN,
+            column_width: 0,
             notice: None,
             editor,
-            editing: false,
+            editing: None,
+            palette_field: PaletteField::default(),
+            palette_buffer: String::new(),
             editor_requested: false,
             dirty: false,
             confirm_quit: false,
@@ -425,12 +574,21 @@ impl App {
             },
             pending_agent_request: None,
             agent_since: Instant::now(),
-            chosen: None,
+            view: View::default(),
+            left: LeftView::default(),
+            was_asking: false,
+            mode: Mode::default(),
+            tab: [0; 2],
             view_scroll: 0,
+            transcript_scroll: 0,
+            modal: None,
+            toolbar: Vec::new(),
+            tabs: Vec::new(),
             areas: [Rect::ZERO; Focus::COUNT],
             preview_area: Rect::ZERO,
             preview_pixels: (0, 0),
             last_click: None,
+            last_tab_click: None,
             resizing: false,
             holding_image: false,
             list_states: std::array::from_fn(|_| ListState::default()),
@@ -464,23 +622,34 @@ impl App {
 
     /// How many selectable rows the focused pane has.
     fn focused_len(&self) -> usize {
-        let metadata = self.project.metadata();
-        match self.focus {
-            Focus::Prompt => 0,
-            Focus::Palette => metadata.palette.len(),
-            Focus::Variants => metadata.variants.len(),
-            Focus::Renders => metadata.renders.len(),
-        }
+        self.pane_len(self.focus)
     }
 
     /// Move the keyboard to the next pane.
+    ///
+    /// Keeps the edit mode: `tab` says which pane the arrows belong to, and
+    /// dropping out of editing on the way would make moving between two
+    /// editable panes cost an extra keystroke every time.
     pub fn focus_next(&mut self) {
-        self.focus = Focus::ALL[(self.focus_index() + 1) % Focus::COUNT];
+        self.move_focus(Focus::ALL[(self.focus_index() + 1) % Focus::COUNT]);
     }
 
     /// Move the keyboard to the previous pane.
     pub fn focus_previous(&mut self) {
-        self.focus = Focus::ALL[(self.focus_index() + Focus::COUNT - 1) % Focus::COUNT];
+        self.move_focus(Focus::ALL[(self.focus_index() + Focus::COUNT - 1) % Focus::COUNT]);
+    }
+
+    /// Move the keyboard to a named pane, taking the edit mode with it.
+    fn move_focus(&mut self, focus: Focus) {
+        let editing = self.editing.is_some();
+        // Committed on the way out rather than on arrival: the buffer belongs
+        // to the pane being left, and carrying it across would write a colour
+        // name into the prompt.
+        self.leave_edit();
+        self.focus = focus;
+        if editing {
+            self.engage_editor();
+        }
     }
 
     /// A text area holding `text`, styled the way the prompt pane wants it.
@@ -497,22 +666,52 @@ impl App {
         editor
     }
 
-    /// Hand the keyboard to the prompt editor.
-    pub const fn engage_editor(&mut self) {
-        self.focus = Focus::Prompt;
-        self.editing = true;
+    /// Hand the keyboard to the focused pane's editor.
+    ///
+    /// One mode for two panes. The prompt's editor is a text area; the
+    /// palette's is a field on the selected colour. What they share is that
+    /// while either is engaged the arrows belong to the pane and every
+    /// printable key is an edit.
+    pub fn engage_editor(&mut self) {
+        self.editing = Some(self.focus);
+        if self.focus == Focus::Palette {
+            self.load_palette_field();
+        }
     }
 
-    /// Take the keyboard back from the prompt editor.
+    /// Take the keyboard back.
     pub fn disengage_editor(&mut self) {
-        self.editing = false;
-        self.commit_prompt();
+        self.leave_edit();
     }
 
-    /// Whether keys are going to the prompt editor.
+    /// Leave whichever editor is engaged, committing what it holds.
+    fn leave_edit(&mut self) {
+        match self.editing.take() {
+            Some(Focus::Prompt) => self.commit_prompt(),
+            Some(Focus::Palette) => self.commit_palette_field(),
+            None => {}
+        }
+    }
+
+    /// Whether keys are going to a pane's editor.
     #[must_use]
     pub const fn is_editing(&self) -> bool {
+        self.editing.is_some()
+    }
+
+    /// Which pane is being edited, if any.
+    #[must_use]
+    pub const fn editing(&self) -> Option<Focus> {
         self.editing
+    }
+
+    /// Whether the prompt's text area has the keyboard.
+    ///
+    /// Distinct from [`Self::is_editing`], which the palette also satisfies:
+    /// only this one means the text area is what a keypress should reach.
+    #[must_use]
+    pub fn is_editing_prompt(&self) -> bool {
+        self.editing == Some(Focus::Prompt)
     }
 
     /// Whether the project holds changes that are not on disk.
@@ -572,13 +771,14 @@ impl App {
         self.commit_prompt();
     }
 
-    /// Apply a keypress to the prompt editor.
+    /// Apply a keypress to whichever pane is being edited.
     ///
-    /// Two keys are taken before the editor sees them. `esc` leaves the pane —
-    /// the editor has no modes, so it has no other use for it. And `tab` moves
-    /// to the next pane rather than indenting: tab is how the whole workspace
-    /// is navigated, and a literal tab in a paragraph of prose is worth much
-    /// less than a consistent way out.
+    /// Three keys are taken before the pane sees them, and they are the same
+    /// three for both panes, which is the point of having one edit mode. `esc`
+    /// leaves; `tab` and `shift-tab` move to the next pane and keep editing —
+    /// tab is how the workspace is navigated, and a literal tab in a paragraph
+    /// of prose is worth much less than a consistent way out. Everything else
+    /// belongs to the pane, arrows included.
     pub fn edit_key(&mut self, key: KeyEvent) {
         // Taken before the text area sees it. `alt+a` is free in its key map,
         // where `alt+f`, `alt+b`, `alt+d` and `alt+h` are not, and unlike
@@ -594,24 +794,134 @@ impl App {
 
         match key.code {
             KeyCode::Esc => {
-                self.disengage_editor();
+                self.leave_edit();
                 return;
             }
             KeyCode::Tab => {
-                self.disengage_editor();
                 self.focus_next();
                 return;
             }
             KeyCode::BackTab => {
-                self.disengage_editor();
                 self.focus_previous();
                 return;
             }
             _ => {}
         }
 
-        self.editor.input(key);
-        self.commit_prompt();
+        match self.editing {
+            Some(Focus::Palette) => self.palette_key(key),
+            _ => {
+                self.editor.input(key);
+                self.commit_prompt();
+            }
+        }
+    }
+
+    /// Apply a keypress to the palette's field editor.
+    ///
+    /// The arrows belong to the pane: up and down change which colour is being
+    /// edited, left and right which of its fields. Each of those commits what
+    /// is in the buffer first, so moving away from a field is as good as
+    /// finishing it.
+    fn palette_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Up => {
+                self.commit_palette_field();
+                self.select_previous();
+                self.load_palette_field();
+            }
+            KeyCode::Down => {
+                self.commit_palette_field();
+                self.select_next();
+                self.load_palette_field();
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Enter => {
+                self.commit_palette_field();
+                self.palette_field = self.palette_field.other();
+                self.load_palette_field();
+            }
+            KeyCode::Backspace => {
+                self.palette_buffer.pop();
+                self.commit_palette_field();
+            }
+            KeyCode::Char(character) => {
+                self.palette_buffer.push(character);
+                self.commit_palette_field();
+            }
+            _ => {}
+        }
+    }
+
+    /// Fill the buffer from the colour and field now selected.
+    fn load_palette_field(&mut self) {
+        let row = self.selection(Focus::Palette);
+        self.palette_buffer = self
+            .project
+            .metadata()
+            .palette
+            .colours()
+            .get(row)
+            .map(|colour| match self.palette_field {
+                PaletteField::Name => colour.name.clone(),
+                PaletteField::Value => colour.value.to_string(),
+            })
+            .unwrap_or_default();
+    }
+
+    /// Write the buffer back to the project, if it says something usable.
+    ///
+    /// An unusable buffer is kept and shown rather than refused: `#f0` is what
+    /// every hex colour looks like halfway through being typed, and rejecting
+    /// the keystroke would make the field impossible to use. The pane draws it
+    /// in red until it parses, and nothing reaches the document until it does.
+    fn commit_palette_field(&mut self) {
+        let row = self.selection(Focus::Palette);
+        let field = self.palette_field;
+        let text = self.palette_buffer.trim().to_owned();
+
+        // Parsed before anything is borrowed mutably, and a failure simply
+        // leaves the document alone.
+        let value = match field {
+            // An empty name would leave a colour nothing can refer to.
+            PaletteField::Name => (!text.is_empty()).then_some(Edit::Name(text)),
+            PaletteField::Value => text.parse::<Rgba>().ok().map(Edit::Value),
+        };
+        let Some(edit) = value else { return };
+
+        let palette = &mut self.project.metadata_mut().palette;
+        let Some(colour) = palette.colour_mut(row) else {
+            return;
+        };
+
+        let changed = match edit {
+            Edit::Name(name) if colour.name != name => {
+                colour.name = name;
+                true
+            }
+            Edit::Value(rgba) if colour.value != rgba => {
+                colour.value = rgba;
+                true
+            }
+            _ => false,
+        };
+
+        if changed {
+            self.dirty = true;
+        }
+    }
+
+    /// The palette field being edited, for the pane to draw.
+    #[must_use]
+    pub fn palette_edit(&self) -> Option<PaletteEdit<'_>> {
+        (self.editing == Some(Focus::Palette)).then(|| PaletteEdit {
+            row: self.selection(Focus::Palette),
+            field: self.palette_field,
+            text: &self.palette_buffer,
+            valid: match self.palette_field {
+                PaletteField::Name => !self.palette_buffer.trim().is_empty(),
+                PaletteField::Value => self.palette_buffer.trim().parse::<Rgba>().is_ok(),
+            },
+        })
     }
 
     /// Ask the agent to make the artwork match the project's prompt.
@@ -648,58 +958,160 @@ impl App {
     }
 
     /// What the right-hand column is showing.
-    ///
-    /// The user's choice if they have made one, and otherwise whichever is
-    /// worth looking at: the log while a turn is running, the artwork once it
-    /// is not.
     #[must_use]
-    pub fn view(&self) -> View {
-        self.chosen.unwrap_or(if self.is_asking() {
-            View::Log
-        } else {
-            View::Preview
-        })
+    pub const fn view(&self) -> View {
+        self.view
     }
 
-    /// Show the next view, and stop choosing on the user's behalf.
-    pub const fn cycle_view(&mut self) {
-        self.chosen = Some(match self.chosen {
-            // The first press moves on from whatever is on screen, so it does
-            // what it looks like it will do rather than jumping somewhere
-            // unrelated.
-            None => self.view_now().next(),
-            Some(view) => view.next(),
-        });
+    /// Swap the artwork for the document that produced it, or back.
+    pub const fn toggle_view(&mut self) {
+        self.view = self.view.other();
         self.view_scroll = 0;
     }
 
-    /// What is on screen, without borrowing the choice logic.
-    const fn view_now(&self) -> View {
-        match self.chosen {
-            Some(view) => view,
-            None if self.pending_agent_request.is_some() => View::Log,
-            None => View::Preview,
+    /// Which of the prompt and the transcript the top-left box is showing.
+    #[must_use]
+    pub const fn left_view(&self) -> LeftView {
+        self.left
+    }
+
+    /// Swap one for the other.
+    pub const fn toggle_left_view(&mut self) {
+        self.left = self.left.other();
+        self.transcript_scroll = 0;
+    }
+
+    /// Show whichever of the two the turn makes interesting.
+    ///
+    /// The transcript when one starts, the prompt when it ends. Edge-triggered
+    /// on purpose: the box is a plain state that `t` toggles at any moment, and
+    /// a rule derived from `is_asking` on every frame would undo that toggle
+    /// before it reached the screen.
+    pub fn follow_the_turn(&mut self) {
+        let asking = self.is_asking();
+        if asking != self.was_asking {
+            self.was_asking = asking;
+            self.left = if asking {
+                LeftView::Transcript
+            } else {
+                LeftView::Prompt
+            };
+            self.transcript_scroll = 0;
         }
     }
 
-    /// Whether the view is one that scrolls.
+    /// What the preview's tabs are listing.
     #[must_use]
-    pub fn scrolls(&self) -> bool {
-        matches!(self.view(), View::Source | View::Log)
+    pub const fn mode(&self) -> Mode {
+        self.mode
     }
 
-    /// How far down the scrollable views are scrolled.
+    /// Swap the variants for the render specifications, or back.
+    pub const fn toggle_mode(&mut self) {
+        self.mode = self.mode.other();
+    }
+
+    /// The names on the tab bar, in order.
+    #[must_use]
+    pub fn tabs(&self) -> Vec<String> {
+        let metadata = self.project.metadata();
+        match self.mode {
+            Mode::Variants => metadata
+                .variants
+                .iter()
+                .map(|variant| variant.name.clone())
+                .collect(),
+            Mode::Renders => metadata
+                .renders
+                .iter()
+                .map(|spec| spec.name.clone())
+                .collect(),
+        }
+    }
+
+    /// Which tab is selected.
+    ///
+    /// Clamped rather than trusted: an agent's edit can delete the variant
+    /// that was on screen, and an out-of-range index would panic on draw.
+    #[must_use]
+    pub fn tab(&self) -> usize {
+        self.tab[self.mode.index()].min(self.tab_count().saturating_sub(1))
+    }
+
+    /// How many tabs the current mode has.
+    fn tab_count(&self) -> usize {
+        let metadata = self.project.metadata();
+        match self.mode {
+            Mode::Variants => metadata.variants.len(),
+            Mode::Renders => metadata.renders.len(),
+        }
+    }
+
+    /// Show the next tab, wrapping past the last.
+    pub fn next_tab(&mut self) {
+        self.step_tab(1);
+    }
+
+    /// Show the previous tab, wrapping past the first.
+    pub fn previous_tab(&mut self) {
+        self.step_tab(-1);
+    }
+
+    /// Show a tab by position, ignoring one that is not there.
+    pub fn select_tab(&mut self, index: usize) {
+        if index < self.tab_count() {
+            self.tab[self.mode.index()] = index;
+        }
+    }
+
+    /// Move the tab selection, wrapping at both ends.
+    ///
+    /// Wrapping because a project has a handful of variants, and reaching the
+    /// second from the last by going forwards is quicker than noticing that
+    /// the end has been reached.
+    fn step_tab(&mut self, delta: isize) {
+        let count = self.tab_count();
+        if count == 0 {
+            return;
+        }
+        let current = self.tab() as isize;
+        self.tab[self.mode.index()] = (current + delta).rem_euclid(count as isize) as usize;
+    }
+
+    /// Whether something on screen scrolls.
+    #[must_use]
+    pub fn scrolls(&self) -> bool {
+        self.view == View::Source || self.left == LeftView::Transcript
+    }
+
+    /// How far down the source is scrolled.
     #[must_use]
     pub const fn view_scroll(&self) -> u16 {
         self.view_scroll
     }
 
+    /// How far back through the transcript the reader has gone.
+    #[must_use]
+    pub const fn transcript_scroll(&self) -> u16 {
+        self.transcript_scroll
+    }
+
     /// Scroll by a page, in whichever direction.
+    ///
+    /// Whichever of the two scrollable things is on screen; the source wins
+    /// when both are, because the right column is the larger of the two and
+    /// the one the eye is on.
     ///
     /// Clamped at the top; the bottom is left to the widget, which simply
     /// draws nothing past the end.
     pub const fn scroll_view(&mut self, rows: i16) {
-        self.view_scroll = self.view_scroll.saturating_add_signed(rows);
+        if matches!(self.view, View::Source) {
+            self.view_scroll = self.view_scroll.saturating_add_signed(rows);
+        } else {
+            // The transcript is anchored to its newest entry, so scrolling
+            // "down" is going back through it.
+            self.transcript_scroll = self.transcript_scroll.saturating_add_signed(rows);
+        }
     }
 
     /// The document as it now stands, for the source view.
@@ -865,6 +1277,9 @@ impl App {
     /// when there is nothing to lose.
     pub fn reload_from_disk(&mut self) {
         let path = self.project.path().to_path_buf();
+        // Taken before the project is replaced, so the same rule that governs
+        // an agent's tool call governs a text editor in another window.
+        let before = self.variant_fingerprint();
 
         match Project::open(&path) {
             Ok(project) => {
@@ -884,7 +1299,7 @@ impl App {
                         .unwrap_or_default()
                         .as_str(),
                 );
-                self.invalidate_preview();
+                self.absorb_change(before);
                 self.notice = Some(Notice::info(format!("reloaded {}", path.display())));
             }
             // Reported, not fatal. A half-written file is a normal thing to
@@ -951,43 +1366,56 @@ impl App {
 
     /// How many rows a given pane has.
     fn pane_len(&self, focus: Focus) -> usize {
-        let metadata = self.project.metadata();
         match focus {
+            // Prose, not rows. The arrows scroll it rather than selecting in
+            // it, so it has nothing for the selection machinery to move.
             Focus::Prompt => 0,
-            Focus::Palette => metadata.palette.len(),
-            Focus::Variants => metadata.variants.len(),
-            Focus::Renders => metadata.renders.len(),
+            Focus::Palette => self.project.metadata().palette.len(),
         }
     }
 
-    /// The selected variant's index.
+    /// Which variant is on screen.
+    ///
+    /// In `Renders` mode that is the one the selected specification names,
+    /// which is not necessarily the one with the same position in the list.
     #[must_use]
-    pub fn selected_variant(&self) -> usize {
-        self.selection(Focus::Variants)
+    pub fn current_variant(&self) -> Option<String> {
+        let metadata = self.project.metadata();
+        match self.mode {
+            Mode::Variants => metadata
+                .variants
+                .get(self.tab())
+                .map(|variant| variant.name.clone()),
+            Mode::Renders => metadata
+                .renders
+                .get(self.tab())
+                .map(|spec| spec.variant.clone()),
+        }
     }
 
     /// What the preview should be showing.
     ///
-    /// A selected render specification wins, because it is the more specific
-    /// statement: it names a variant *and* a size and background. Otherwise
-    /// the selected variant is previewed at a default size.
+    /// A render specification is the more specific statement: it names a
+    /// variant *and* a size and background, so in that mode it is obeyed
+    /// exactly. A variant on its own is previewed at a default size.
     #[must_use]
     pub fn preview_spec(&self) -> Option<RenderSpec> {
         let metadata = self.project.metadata();
 
-        let mut spec = if self.focus == Focus::Renders
-            && let Some(spec) = metadata.renders.get(self.selection(Focus::Renders))
-        {
-            let mut spec = spec.clone();
-            // A preview is pixels on a screen, so an SVG specification is
-            // previewed by rasterising it. Handing SVG bytes to the preview
-            // layer instead put the words "not a PNG" in the pane, which is
-            // true, useless, and looks like a bug in the project.
-            spec.format = Format::Png;
-            spec
-        } else {
-            let variant = metadata.variants.get(self.selected_variant())?;
-            RenderSpec::square(&variant.name, &variant.name, PREVIEW_SIZE)
+        let mut spec = match self.mode {
+            Mode::Renders => {
+                let mut spec = metadata.renders.get(self.tab())?.clone();
+                // A preview is pixels on a screen, so an SVG specification is
+                // previewed by rasterising it. Handing SVG bytes to the preview
+                // layer instead put the words "not a PNG" in the pane, which is
+                // true, useless, and looks like a bug in the project.
+                spec.format = Format::Png;
+                spec
+            }
+            Mode::Variants => {
+                let variant = metadata.variants.get(self.tab())?;
+                RenderSpec::square(&variant.name, &variant.name, PREVIEW_SIZE)
+            }
         };
 
         self.fit_to_pane(&mut spec);
@@ -1035,6 +1463,45 @@ impl App {
         self.in_flight = None;
     }
 
+    /// What the variant on screen currently looks like, as bytes.
+    ///
+    /// [`Renderer::fingerprint`] for the current variant at a fixed size. Two
+    /// of these either side of a change answer the only question the preview
+    /// has — whether *this* variant moved — without the tools layer having to
+    /// report what an agent touched, which it cannot: `write_svg` replaces the
+    /// whole document.
+    ///
+    /// `None` when there is nothing to isolate, which compares equal to itself
+    /// and so leaves the preview alone.
+    #[must_use]
+    pub fn variant_fingerprint(&self) -> Option<String> {
+        let variant = self.current_variant()?;
+        // A fixed size, not the fitted one: the canvas is in the isolated
+        // document, and comparing at the pane's size would call resizing the
+        // terminal a change to the artwork.
+        let spec = RenderSpec::square(&variant, &variant, PREVIEW_SIZE);
+        Renderer::new(&self.project, RenderOptions::default())
+            .and_then(|renderer| renderer.fingerprint(&spec))
+            .ok()
+    }
+
+    /// Take a change to the project, re-rendering only if it shows.
+    ///
+    /// `before` is what [`Self::variant_fingerprint`] said beforehand. The
+    /// worker is always given the new project, so the source view and the next
+    /// tab are current; the preview is only thrown away when the variant on
+    /// screen is one of the things that moved. An agent editing the wordmark
+    /// while the icon is on screen must not cost a rasterise and, under Kitty,
+    /// a megabyte of terminal traffic.
+    pub fn absorb_change(&mut self, before: Option<String>) {
+        self.worker.reload(&self.project);
+        if before != self.variant_fingerprint() {
+            self.rendered_from = None;
+            self.desired = None;
+            self.in_flight = None;
+        }
+    }
+
     /// Whether a render is in progress.
     ///
     /// Drives the spinner, and the shorter poll interval that lets it animate.
@@ -1067,25 +1534,21 @@ impl App {
         self.holding_image
     }
 
-    /// The spinner's current frame, or `None` when nothing is rendering.
+    /// When the work the preview is waiting on began, if it is waiting.
     ///
-    /// Derived from how long the render has been running rather than from a
-    /// counter incremented per frame, so it turns at a steady rate however
-    /// often the workspace happens to redraw.
+    /// The spinner itself lives in [`super::panes`], with the agent's: two
+    /// implementations of the same animation drifted apart the moment one of
+    /// them was tuned, and "generating a preview" and "the agent is working"
+    /// are the same statement to the person reading them.
     #[must_use]
-    pub fn spinner(&self) -> Option<&'static str> {
-        const FRAMES: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
-        const PERIOD: Duration = Duration::from_millis(90);
-
-        let started = match (self.in_flight.as_ref(), self.holding_image) {
-            (Some((_, _, started)), _) => *started,
+    pub fn rendering_since(&self) -> Option<Instant> {
+        match (self.in_flight.as_ref(), self.holding_image) {
+            (Some((_, _, started)), _) => Some(*started),
             // Nothing is rendering, but an image is about to be written and
             // that write is the slow part under tmux.
-            (None, true) => Instant::now(),
-            (None, false) => return None,
-        };
-        let step = started.elapsed().as_millis() / PERIOD.as_millis();
-        Some(FRAMES[(step as usize) % FRAMES.len()])
+            (None, true) => Some(Instant::now()),
+            (None, false) => None,
+        }
     }
 
     /// Start a render if the selection has settled on something new.
@@ -1219,24 +1682,6 @@ impl App {
         }
     }
 
-    /// How many rows a pane would like, borders included.
-    ///
-    /// A list wants one row per entry; the prompt is prose and wants as much
-    /// as it can get, so it reports a floor rather than a size.
-    #[must_use]
-    pub fn natural_height(&self, focus: Focus) -> u16 {
-        match focus {
-            // Prose has no natural height: it wants every row it can have, so
-            // it reports the maximum and lets the caller cap it. Returning
-            // "no rows, plus borders" instead made the collapsed prompt two
-            // rows of border with the text entirely hidden.
-            Focus::Prompt => u16::MAX,
-            _ => u16::try_from(self.pane_len(focus))
-                .unwrap_or(u16::MAX)
-                .saturating_add(2),
-        }
-    }
-
     /// Record where the preview was drawn, and how big that is in pixels.
     ///
     /// The pixel size is what [`App::preview_spec`] fits the render to. It
@@ -1317,6 +1762,103 @@ impl App {
         self.column_width = column.clamp(MIN_COLUMN, most);
     }
 
+    /// How wide the description column should be drawn.
+    ///
+    /// Half the body until somebody drags it. Half rather than a fixed number
+    /// of characters because the left column is now prose and a palette rather
+    /// than four lists of known width, and prose wants room in proportion to
+    /// the screen it is being read on.
+    pub fn column(&mut self, total_width: u16) -> u16 {
+        // Zero is "nobody has said", not a width. A dragged column is never
+        // zero, because `resize_column` clamps it to `MIN_COLUMN`.
+        let wanted = if self.column_width == 0 {
+            total_width / 2
+        } else {
+            self.column_width
+        };
+        self.resize_column(wanted, total_width);
+        self.column_width
+    }
+
+    /// Record where a toolbar button was drawn.
+    pub(crate) fn set_toolbar(&mut self, buttons: Vec<(Button, Rect)>) {
+        self.toolbar = buttons;
+    }
+
+    /// The toolbar button at a point, if any.
+    #[must_use]
+    pub fn button_at(&self, column: u16, row: u16) -> Option<Button> {
+        self.toolbar
+            .iter()
+            .find(|(_, area)| area.contains(ratatui::layout::Position::new(column, row)))
+            .map(|(button, _)| *button)
+    }
+
+    /// Where a toolbar button was drawn last frame.
+    #[must_use]
+    pub fn button_area(&self, button: Button) -> Option<Rect> {
+        self.toolbar
+            .iter()
+            .find(|(candidate, _)| *candidate == button)
+            .map(|(_, area)| *area)
+    }
+
+    /// Record where the preview's tabs were drawn.
+    pub(crate) fn set_tab_areas(&mut self, areas: Vec<Rect>) {
+        self.tabs = areas;
+    }
+
+    /// The tab at a point, if any.
+    #[must_use]
+    pub fn tab_at(&self, column: u16, row: u16) -> Option<usize> {
+        self.tabs
+            .iter()
+            .position(|area| area.contains(ratatui::layout::Position::new(column, row)))
+    }
+
+    /// The modal covering the workspace, if any.
+    #[must_use]
+    pub const fn modal(&self) -> Option<&Modal> {
+        self.modal.as_ref()
+    }
+
+    /// Open the render specifications editor.
+    ///
+    /// The one operation on the project that is neither a keystroke into a
+    /// field nor an agent's doing: adding, removing and retyping a
+    /// specification needs a table, and a table needs the whole screen.
+    pub fn open_renders_editor(&mut self) {
+        // The editor opens on what is on screen, so the row under the cursor
+        // is the specification the tab bar was showing.
+        let row = if self.mode == Mode::Renders {
+            self.tab()
+        } else {
+            0
+        };
+        self.modal = Some(Modal::Renders(RendersEditor::new(row, &self.project)));
+    }
+
+    /// Close whatever modal is open.
+    pub fn close_modal(&mut self) {
+        self.modal = None;
+    }
+
+    /// Apply a keypress to the modal, which owns every key while it is open.
+    ///
+    /// Returns whether the modal is still open afterwards, so the caller does
+    /// not have to ask twice.
+    pub fn modal_key(&mut self, key: KeyEvent) {
+        let Some(Modal::Renders(mut editor)) = self.modal.take() else {
+            return;
+        };
+        if editor.key(key, &mut self.project) {
+            self.dirty = true;
+        }
+        if !editor.closed() {
+            self.modal = Some(Modal::Renders(editor));
+        }
+    }
+
     /// Note a click, reporting whether it is a repeat of the last one.
     ///
     /// "Same place, soon after" rather than a count: a double-click that moved
@@ -1330,6 +1872,30 @@ impl App {
         // than firing the action again.
         self.last_click = (!repeat).then_some((focus, row, now));
         repeat
+    }
+
+    /// Note a click on a tab, reporting whether it is a repeat of the last one.
+    ///
+    /// Its own record rather than [`Self::register_click`]'s: the tabs are not
+    /// a pane, and a click on a tab followed by a click on the same row of a
+    /// pane is two gestures rather than a double-click.
+    pub fn register_tab_click(&mut self, index: usize) -> bool {
+        let now = Instant::now();
+        let repeat = self
+            .last_tab_click
+            .is_some_and(|(at, when)| at == index && now.duration_since(when) < DOUBLE_CLICK);
+        self.last_tab_click = (!repeat).then_some((index, now));
+        repeat
+    }
+
+    /// Whether the prompt is what the keyboard would reach right now.
+    ///
+    /// `a` and `e` act on the prompt, and both would be silently useless from
+    /// the palette or with the transcript in the box. A key that does nothing
+    /// where it is offered is worse than one that is not offered.
+    #[must_use]
+    pub fn can_send(&self) -> bool {
+        self.focus == Focus::Prompt && self.left == LeftView::Prompt
     }
 
     /// Begin dragging the column divider.
@@ -1376,7 +1942,7 @@ impl App {
         self.selected[index] = next as usize;
     }
 
-    /// Render the selected specification and write it to `dist/`.
+    /// Render the specification on screen and write it to `dist/`.
     ///
     /// The result goes to the status line rather than being returned: an
     /// export that fails must not close the workspace, and a project mid-edit
@@ -1386,7 +1952,8 @@ impl App {
             .project
             .metadata()
             .renders
-            .get(self.selection(Focus::Renders))
+            .get(self.tab())
+            .filter(|_| self.mode == Mode::Renders)
             .cloned()
         else {
             return;
@@ -1539,35 +2106,46 @@ mod tests {
     }
 
     #[test]
-    fn each_pane_remembers_its_own_selection() {
-        // Otherwise moving through the variants would silently move the
-        // palette's cursor too, and the preview would jump on the way back.
+    fn each_mode_remembers_its_own_tab() {
+        // Otherwise looking at a render specification and coming back would
+        // land on the first variant rather than the one that was on screen.
         let mut app = app();
 
-        app.focus = Focus::Variants;
-        app.select_next();
-        app.focus = Focus::Palette;
-        assert_eq!(app.selection(Focus::Palette), 0);
-        assert_eq!(app.selection(Focus::Variants), 1);
+        app.next_tab();
+        assert_eq!(app.tab(), 1);
+
+        app.toggle_mode();
+        assert_eq!(app.tab(), 0, "the specifications start at their own first");
+
+        app.toggle_mode();
+        assert_eq!(app.tab(), 1, "the variant that was on screen came back");
     }
 
     #[test]
-    fn the_selection_wraps_at_both_ends_of_a_pane() {
+    fn the_tabs_wrap_at_both_ends() {
+        // A project has a handful of variants, and reaching the last by going
+        // forwards is quicker than noticing that the end has been reached.
         let mut app = app();
-        app.focus = Focus::Variants;
+
+        app.previous_tab();
+        assert_eq!(app.tab(), 1, "moving left from the first wraps to the last");
+        app.next_tab();
+        assert_eq!(
+            app.tab(),
+            0,
+            "moving right from the last wraps to the first"
+        );
+    }
+
+    #[test]
+    fn the_palette_selection_wraps_at_both_ends() {
+        let mut app = app();
+        app.focus = Focus::Palette;
 
         app.select_previous();
-        assert_eq!(
-            app.selected_variant(),
-            1,
-            "moving up from the first wraps to the last"
-        );
+        assert_eq!(app.selection(Focus::Palette), 1);
         app.select_next();
-        assert_eq!(
-            app.selected_variant(),
-            0,
-            "moving down from the last wraps to the first"
-        );
+        assert_eq!(app.selection(Focus::Palette), 0);
     }
 
     #[test]
@@ -1579,22 +2157,22 @@ mod tests {
     }
 
     #[test]
-    fn a_selection_left_beyond_the_end_of_a_shrunken_pane_is_clamped() {
-        // Editing will make panes shrink under a cursor; an unclamped index
-        // would panic during drawing, taking the terminal down with it.
+    fn a_tab_left_beyond_the_end_of_a_shrunken_list_is_clamped() {
+        // An agent's edit can delete the variant that was on screen, and an
+        // unclamped index would panic during drawing, taking the terminal
+        // down with it.
         let mut app = app();
-        app.focus = Focus::Variants;
-        app.select_next();
+        app.next_tab();
         app.project.metadata_mut().variants.truncate(1);
 
-        assert_eq!(app.selected_variant(), 0);
+        assert_eq!(app.tab(), 0);
     }
 
     #[test]
-    fn selecting_a_render_specification_previews_that_specification_exactly() {
+    fn a_render_specifications_tab_previews_that_specification_exactly() {
         let mut app = app();
-        app.focus = Focus::Renders;
-        app.select_next();
+        app.toggle_mode();
+        app.next_tab();
 
         let spec = app.preview_spec().unwrap();
         assert_eq!(spec.name, "banner");
@@ -1602,9 +2180,8 @@ mod tests {
     }
 
     #[test]
-    fn selecting_a_variant_previews_it_at_a_default_size() {
-        let mut app = app();
-        app.focus = Focus::Variants;
+    fn a_variants_tab_previews_it_at_a_default_size() {
+        let app = app();
         assert_eq!(app.preview_spec().unwrap().variant, "icon");
     }
 
@@ -1621,16 +2198,16 @@ mod tests {
     }
 
     #[test]
-    fn moving_the_selection_makes_the_preview_follow() {
+    fn moving_between_tabs_makes_the_preview_follow() {
         let mut app = app();
-        app.focus = Focus::Renders;
+        app.toggle_mode();
         app.refresh_preview();
         let Preview::Ready { image, .. } = app.preview().clone() else {
             panic!("expected a preview");
         };
         assert_eq!((image.width(), image.height()), (32, 32));
 
-        app.select_next();
+        app.next_tab();
         app.refresh_preview();
         let Preview::Ready { image, .. } = app.preview().clone() else {
             panic!("expected a preview");
@@ -1658,7 +2235,7 @@ mod tests {
             format: Format::Png,
             background: crate::project::Background::Transparent,
         });
-        app.focus = Focus::Renders;
+        app.mode = Mode::Renders;
         with_pane(&mut app, 58, 27);
 
         let spec = app.preview_spec().unwrap();
@@ -1679,7 +2256,7 @@ mod tests {
             format: Format::Png,
             background: crate::project::Background::Transparent,
         });
-        app.focus = Focus::Renders;
+        app.mode = Mode::Renders;
         with_pane(&mut app, 30, 10);
 
         let spec = app.preview_spec().unwrap();
@@ -1691,7 +2268,6 @@ mod tests {
     fn a_preview_is_never_enlarged_to_fill_the_pane() {
         // A preview must not invent detail the asset does not have.
         let mut app = app();
-        app.focus = Focus::Variants;
         with_pane(&mut app, 200, 60);
 
         let spec = app.preview_spec().unwrap();
@@ -1701,7 +2277,6 @@ mod tests {
     #[test]
     fn a_preview_stops_shrinking_before_it_becomes_unrecognisable() {
         let mut app = app();
-        app.focus = Focus::Variants;
         with_pane(&mut app, 1, 1);
 
         let spec = app.preview_spec().unwrap();
@@ -1712,8 +2287,7 @@ mod tests {
     fn before_the_first_frame_a_preview_uses_its_declared_size() {
         // `preview_pixels` is `(0, 0)` until something has been drawn, and a
         // zero-sized pane must not be read as "shrink to nothing".
-        let mut app = app();
-        app.focus = Focus::Variants;
+        let app = app();
         assert_eq!(app.preview_spec().unwrap().width, PREVIEW_SIZE);
     }
 
@@ -1722,7 +2296,6 @@ mod tests {
         // The fitted size is part of the cache key, so growing the pane has to
         // produce a better preview rather than a stretched old one.
         let mut app = app();
-        app.focus = Focus::Variants;
         with_pane(&mut app, 10, 5);
         app.refresh_preview();
         let small = app.preview_image().unwrap().width();
@@ -1743,7 +2316,7 @@ mod tests {
         spec.format = Format::Svg;
         app.project.metadata_mut().renders.push(spec);
 
-        app.focus = Focus::Renders;
+        app.mode = Mode::Renders;
         assert_eq!(app.preview_spec().unwrap().format, Format::Png);
 
         app.invalidate_preview();
@@ -1752,34 +2325,24 @@ mod tests {
     }
 
     #[test]
-    fn a_render_in_progress_is_visible_as_a_spinner() {
+    fn a_render_in_progress_is_something_the_spinner_can_be_derived_from() {
         // `Preview::Pending` and the spinner were unreachable while rendering
         // was synchronous: the frame could only be drawn once the render had
         // already finished, so there was never anything to report.
         let mut app = app();
-        assert!(app.spinner().is_none(), "nothing is rendering yet");
+        assert!(app.rendering_since().is_none(), "nothing is rendering yet");
 
         app.begin_render();
 
         assert!(app.is_rendering());
-        assert!(app.spinner().is_some(), "a running render must be visible");
+        assert!(
+            app.rendering_since().is_some(),
+            "a running render must be visible"
+        );
 
         app.refresh_preview();
         assert!(!app.is_rendering());
-        assert!(app.spinner().is_none());
-    }
-
-    #[test]
-    fn the_spinner_advances_over_time() {
-        let mut app = app();
-        app.begin_render();
-        // Backdated rather than slept: a test that waits for an animation is a
-        // test that is slow and flaky for no benefit.
-        let first = app.spinner().unwrap();
-        if let Some((_, _, started)) = app.in_flight.as_mut() {
-            *started = Instant::now() - Duration::from_millis(200);
-        }
-        assert_ne!(first, app.spinner().unwrap());
+        assert!(app.rendering_since().is_none());
     }
 
     #[test]
@@ -1789,16 +2352,16 @@ mod tests {
         // megabyte of terminal traffic.
         let mut app = app();
         app.refresh_preview();
-        app.focus = Focus::Renders;
+        app.mode = Mode::Renders;
 
-        app.select_next();
+        app.next_tab();
         app.update_preview();
         assert!(
             !app.is_rendering(),
             "a render started before the selection settled"
         );
 
-        app.select_next();
+        app.next_tab();
         app.update_preview();
         assert!(!app.is_rendering());
 
@@ -1818,9 +2381,8 @@ mod tests {
         app.refresh_preview();
         let after_initial = app.sequence;
 
-        app.focus = Focus::Variants;
         for _ in 0..3 {
-            app.select_next();
+            app.next_tab();
         }
 
         app.update_preview();
@@ -1846,9 +2408,8 @@ mod tests {
         app.refresh_preview();
         let after_initial = app.sequence;
 
-        app.focus = Focus::Variants;
-        app.select_next();
-        app.select_previous();
+        app.next_tab();
+        app.previous_tab();
 
         app.changed_at = Instant::now() - DEBOUNCE;
         app.update_preview();
@@ -1885,6 +2446,162 @@ mod tests {
 
         assert!(matches!(app.preview(), Preview::Failed(_)));
     }
+    /// Rewrite the project's source, as `write_svg` does.
+    ///
+    /// Through `from_source` rather than by poking at the metadata, because
+    /// replacing the whole document is exactly what the only mutating tool
+    /// there is does — and the reason nothing can say which variant moved.
+    fn rewrite(app: &mut App, from: &str, to: &str) {
+        app.project = Project::from_source("logo.svg", app.project.source().replace(from, to))
+            .expect("still a project");
+    }
+
+    #[test]
+    fn an_edit_to_another_variant_does_not_regenerate_the_preview() {
+        // An agent rewriting the wordmark while the icon is on screen must not
+        // cost a rasterise and, under Kitty, a megabyte of terminal traffic.
+        let mut app = app();
+        app.refresh_preview();
+        let after_initial = app.sequence;
+        assert_eq!(app.current_variant().as_deref(), Some("icon"));
+
+        let before = app.variant_fingerprint();
+        rewrite(
+            &mut app,
+            r#"<rect width="256" height="64""#,
+            r#"<rect width="256" height="60""#,
+        );
+        app.absorb_change(before);
+
+        // Twice, with the debounce wound back in between: the first call is
+        // what settles on a specification, and backdating before it would be
+        // undone by it.
+        app.update_preview();
+        app.changed_at = Instant::now() - DEBOUNCE;
+        app.update_preview();
+        assert_eq!(
+            app.sequence, after_initial,
+            "the wordmark moved, and the icon was re-rendered for it"
+        );
+    }
+
+    #[test]
+    fn an_edit_to_the_previewed_variant_regenerates_it() {
+        // The other half of the same rule: the gate must not be so tight that
+        // the preview stops following the agent at all.
+        let mut app = app();
+        app.refresh_preview();
+        let after_initial = app.sequence;
+
+        let before = app.variant_fingerprint();
+        rewrite(
+            &mut app,
+            r#"<rect width="64" height="64""#,
+            r#"<rect width="64" height="60""#,
+        );
+        app.absorb_change(before);
+
+        app.update_preview();
+        app.changed_at = Instant::now() - DEBOUNCE;
+        app.update_preview();
+        assert_eq!(app.sequence, after_initial + 1, "the preview went stale");
+    }
+
+    #[test]
+    fn a_palette_colour_is_edited_in_place_and_reaches_the_document() {
+        // No tool and no dialogue: the palette is a pane, and a colour is two
+        // fields on the row the cursor is on.
+        let mut app = app();
+        app.focus = Focus::Palette;
+        app.engage_editor();
+
+        for _ in 0..7 {
+            app.edit_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        }
+        for character in "#0066ff".chars() {
+            app.edit_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+
+        assert_eq!(
+            app.project.metadata().palette.colours()[0]
+                .value
+                .to_string(),
+            "#0066ff"
+        );
+        assert!(app.is_dirty());
+        assert!(app.project.to_svg().unwrap().contains("#0066ff"));
+    }
+
+    #[test]
+    fn a_half_typed_colour_is_kept_on_screen_and_out_of_the_document() {
+        // `#00` is what every hex colour looks like partway through being
+        // typed. Refusing the keystroke would make the field unusable; letting
+        // it through would put something that is not a colour into the project.
+        let mut app = app();
+        app.focus = Focus::Palette;
+        app.engage_editor();
+
+        for _ in 0..7 {
+            app.edit_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        }
+        for character in "#00".chars() {
+            app.edit_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+
+        let edit = app.palette_edit().expect("the palette is being edited");
+        assert_eq!(edit.text, "#00", "the keystrokes are invisible");
+        assert!(!edit.valid, "and nothing says they are not a colour yet");
+
+        // The document holds whatever the last thing that *was* a colour said
+        // — the field commits as it is typed — and never the half of one.
+        let committed = app.project.metadata().palette.colours()[0].value;
+        assert!(
+            committed.to_string().parse::<Rgba>().is_ok(),
+            "{committed} is not a colour"
+        );
+        assert!(!app.project.to_svg().unwrap().contains("\"#00\""));
+    }
+
+    #[test]
+    fn renaming_a_colour_keeps_finding_the_one_being_renamed() {
+        // Looked up by name, the row would stop being found on the very first
+        // keystroke — which is why the palette is edited by position.
+        let mut app = app();
+        app.focus = Focus::Palette;
+        app.engage_editor();
+        app.edit_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+
+        for _ in 0..6 {
+            app.edit_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        }
+        for character in "brand".chars() {
+            app.edit_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+
+        assert_eq!(app.project.metadata().palette.colours()[0].name, "brand");
+    }
+
+    #[test]
+    fn a_colour_cannot_be_left_with_no_name_at_all() {
+        // Nothing could refer to it afterwards, and the reader would not give
+        // it back. The name commits as it is typed, so what this asserts is
+        // that the *empty* buffer is the one thing never written.
+        let mut app = app();
+        app.focus = Focus::Palette;
+        app.engage_editor();
+        app.edit_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+
+        for _ in 0..10 {
+            app.edit_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        }
+        app.edit_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert!(
+            !app.project.metadata().palette.colours()[0].name.is_empty(),
+            "a colour was left with no name"
+        );
+    }
+
     /// A project in a temporary directory, so the tests can write to it.
     fn on_disk() -> (tempfile::TempDir, App) {
         let directory = tempfile::tempdir().expect("a temporary directory");

@@ -114,6 +114,23 @@ The interactive TUI.
 - [ ] A colour picker for the palette pane
 - [ ] Add, remove and reorder variants and render specifications
 - [ ] Export all assets from the workspace
+- [x] A toolbar naming every state the workspace is in, and clickable
+- [x] The left column is half the width, prompt over palette at 2:1, and no
+      pane grows just because it has the keyboard
+- [x] The variants and the render specifications are the preview's tabs, walked
+      with `←` and `→`, wrapping at both ends
+- [x] `m` swaps which of the two the tabs list, globally
+- [x] `s` swaps the preview for the source, globally
+- [x] Edit a palette colour's name and value in place, committed as you type,
+      with the half-typed text on screen and only a colour reaching the document
+- [x] One edit mode for the prompt and the palette: `enter` engages the focused
+      pane, `tab` moves between them without leaving it, arrows belong to the
+      pane
+- [x] A modal render specifications editor — `x` — that adds, removes and
+      retypes every field of one
+- [x] Mouse: double-click a render specification's tab to export it
+- [x] One spinner implementation for rasterising and for the agent, so
+      "generating a preview" and "working" animate identically
 
 ## Agent integration
 
@@ -158,6 +175,10 @@ see `docs/adr/004-tools-not-a-model.md`.
 - [x] `s` cycles the right-hand column between the preview, the SVG the agent
       would read, and the log of what it did
 - [x] The log appears by itself while a turn runs and gives way to the result
+- [x] The transcript takes the prompt's box rather than the right-hand column,
+      and `t` swaps the two at any moment, during a turn or not
+- [x] An agent's edit only re-renders the preview when it changes the variant
+      on screen, compared as isolated bytes either side of the call
 - [x] Notices expire, so a save stops hiding every key hint for the session
 - [x] `alt+a` reaches the agent from inside the editor, which swallows every
       other key

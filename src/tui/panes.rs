@@ -5,13 +5,15 @@
 //! decision, so a change to the layout does not touch a pane and a change to a
 //! pane does not touch the layout.
 
+use std::time::Instant;
+
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wrap};
 
-use crate::project::{Palette, RenderSpec, Rgba, Variant};
+use crate::project::{Palette, Rgba};
 
-use super::app::{AgentStatus, App, Focus};
+use super::app::{AgentStatus, App, Focus, LeftView, PaletteEdit, PaletteField, View};
 use super::transcript::Entry;
 use crate::acp::ToolStatus;
 
@@ -121,16 +123,35 @@ pub fn agent_title(app: &App) -> String {
     }
 }
 
-/// What the agent is doing, for the right-hand end of the status line.
+/// One turn of the spinner, from when the work started.
 ///
-/// A spinner and a word, derived from an `Instant` at draw time so that no
-/// animation state is stored anywhere — the same shape as [`App::spinner`].
-/// Without this the only sign that a prompt had been sent was the transcript
-/// filling in, which happens seconds later and off to the left.
-fn agent_activity(app: &App) -> Option<String> {
+/// Derived from elapsed time rather than from a counter incremented per frame,
+/// so it turns at a steady rate however often the workspace happens to redraw.
+///
+/// One implementation, deliberately. There were two — one for rasterising a
+/// preview and one for the agent — and they were the same animation with the
+/// same period written twice. To the person reading them they are the same
+/// statement: something is happening and it has not finished.
+fn spin(since: Instant) -> &'static str {
     const FRAMES: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
     const PERIOD: u128 = 90;
 
+    let step = since.elapsed().as_millis() / PERIOD;
+    FRAMES[(step as usize) % FRAMES.len()]
+}
+
+/// What the preview is waiting on, for its pane title.
+#[must_use]
+pub fn rendering(app: &App) -> Option<String> {
+    app.rendering_since()
+        .map(|since| format!("{} rendering", spin(since)))
+}
+
+/// What the agent is doing, for the right-hand end of the status line.
+///
+/// Without this the only sign that a prompt had been sent was the transcript
+/// filling in, which happens seconds later and off to the left.
+fn agent_activity(app: &App) -> Option<String> {
     let doing = match &app.agent {
         AgentStatus::Connecting => "starting…".to_owned(),
         AgentStatus::Busy => app
@@ -143,21 +164,17 @@ fn agent_activity(app: &App) -> Option<String> {
         AgentStatus::Ready | AgentStatus::Absent { .. } => return None,
     };
 
-    let step = app.agent_since().elapsed().as_millis() / PERIOD;
-    Some(format!(
-        "{} {doing}",
-        FRAMES[(step as usize) % FRAMES.len()]
-    ))
+    Some(format!("{} {doing}", spin(app.agent_since())))
 }
 
 /// What the agent has been doing, one entry at a time.
 ///
-/// Rendered into the right-hand column rather than the prompt pane: it needs
-/// height, and the prompt pane has three rows when it is not focused.
-pub fn log(app: &App) -> Vec<Line<'static>> {
+/// Rendered into the top-left box, in place of the prompt — see
+/// [`crate::tui::app::LeftView`].
+pub fn transcript_lines(app: &App) -> Vec<Line<'static>> {
     if app.transcript.is_empty() {
         return vec![Line::styled(
-            "Nothing yet. Press `a` on the prompt pane to ask the agent to \
+            "Nothing yet. Press `a` on the prompt to ask the agent to \
              make the artwork match it.",
             Style::default().fg(Color::DarkGray),
         )];
@@ -263,20 +280,46 @@ fn swatch(colour: Rgba) -> Span<'static> {
 }
 
 /// The palette pane.
-pub fn palette(palette: &Palette, focused: bool) -> List<'static> {
+///
+/// The one list left in the left column, and the only one that is edited in
+/// place. `edit` is what has been typed rather than what the project holds:
+/// a hex colour does not parse until its last character, so drawing the
+/// committed value would make every keystroke but the final one invisible.
+pub fn palette(palette: &Palette, focused: bool, edit: Option<PaletteEdit<'_>>) -> List<'static> {
     let items: Vec<ListItem> = palette
         .colours()
         .iter()
-        .map(|colour| {
+        .enumerate()
+        .map(|(row, colour)| {
+            let editing = edit.filter(|edit| edit.row == row);
+            let field = |which: PaletteField, committed: String| match editing {
+                Some(edit) if edit.field == which => Span::styled(
+                    edit.text.to_owned(),
+                    if edit.valid {
+                        Style::default().fg(Color::Black).bg(Color::LightCyan)
+                    } else {
+                        // Shown, not refused: it is on its way to being a
+                        // colour, and nothing has reached the document.
+                        Style::default().fg(Color::Black).bg(Color::LightRed)
+                    },
+                ),
+                _ => Span::raw(committed),
+            };
+
             let mut spans = vec![
                 swatch(colour.value),
                 Span::raw(" "),
-                Span::raw(colour.name.clone()),
+                field(PaletteField::Name, colour.name.clone()),
                 Span::raw("  "),
-                Span::styled(
-                    colour.value.to_string(),
-                    Style::default().fg(Color::DarkGray),
-                ),
+                match editing {
+                    Some(edit) if edit.field == PaletteField::Value => {
+                        field(PaletteField::Value, String::new())
+                    }
+                    _ => Span::styled(
+                        colour.value.to_string(),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                },
             ];
             if let Some(role) = &colour.role {
                 spans.push(Span::styled(
@@ -285,50 +328,6 @@ pub fn palette(palette: &Palette, focused: bool) -> List<'static> {
                 ));
             }
             ListItem::new(Line::from(spans))
-        })
-        .collect();
-
-    List::new(items).highlight_style(selected(focused))
-}
-
-/// The variants pane.
-pub fn variants(variants: &[Variant], primary: Option<&str>, focused: bool) -> List<'static> {
-    let items: Vec<ListItem> = variants
-        .iter()
-        .map(|variant| {
-            let mut spans = vec![Span::raw(variant.name.clone())];
-            // Which variant the document's root draws is otherwise invisible,
-            // and it is the one that shows up on GitHub.
-            if primary == Some(variant.name.as_str()) {
-                spans.push(Span::styled(" ●", Style::default().fg(Color::LightMagenta)));
-            }
-            spans.push(Span::styled(
-                format!("  #{}", variant.element),
-                Style::default().fg(Color::DarkGray),
-            ));
-            ListItem::new(Line::from(spans))
-        })
-        .collect();
-
-    List::new(items).highlight_style(selected(focused))
-}
-
-/// The render specifications pane.
-pub fn renders(specs: &[RenderSpec], focused: bool) -> List<'static> {
-    let items: Vec<ListItem> = specs
-        .iter()
-        .map(|spec| {
-            ListItem::new(Line::from(vec![
-                Span::raw(spec.name.clone()),
-                Span::styled(
-                    format!("  {}x{}", spec.width, spec.height),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::styled(
-                    format!("  {}", spec.variant),
-                    Style::default().fg(Color::Blue),
-                ),
-            ]))
         })
         .collect();
 
@@ -517,13 +516,20 @@ pub fn status(app: &App, width: u16) -> Paragraph<'static> {
 
 /// Which keys are worth naming, in the order they are read.
 ///
-/// Follows the focus, for room and for honesty: the prompt pane has no rows,
-/// so `↑↓` never moved anything there, and re-rendering is not offered from it
-/// because a prompt is metadata and cannot change what the preview shows.
+/// Follows the state, for room and for honesty: the keys that move between
+/// tabs are not offered while a modal owns every one of them, and the prompt's
+/// own two keys are not offered while the palette has the keyboard.
 fn hints(app: &App) -> Vec<Hint> {
+    // A modal owns every key, so listing the workspace's would be worse than
+    // listing none. Its own keys are along the bottom of the dialogue, which
+    // is where somebody looking at a dialogue is looking.
+    if app.modal().is_some() {
+        return vec![Hint::essential("esc", "close")];
+    }
+
     if app.is_editing() {
-        // The workspace's own keys all mean something else while the editor
-        // has the keyboard, and listing those would be worse than listing none.
+        // The workspace's own keys all mean something else while a pane is
+        // being edited.
         let waiting = app.transcript.is_busy();
 
         let mut hints = vec![
@@ -541,27 +547,45 @@ fn hints(app: &App) -> Vec<Hint> {
         return hints;
     }
 
-    let mut hints = vec![Hint::optional("tab", "pane", 2)];
+    let mut hints = vec![
+        Hint::optional("tab", "pane", 2),
+        Hint::essential("enter", "edit"),
+    ];
 
-    if app.focus == Focus::Prompt {
-        hints.push(Hint::essential("enter", "edit"));
+    if app.focus == Focus::Prompt && app.left_view() == LeftView::Prompt {
         // Essential, and this is the whole point of the type. `a` is the only
         // way to reach the agent, and it was invisible for as long as it was
         // the first thing dropped to make the numbers work.
         hints.push(Hint::essential("a", "send"));
-        hints.push(Hint::optional("e", "$EDITOR", 4));
-    } else {
-        hints.push(Hint::optional("↑↓", "select", 3));
-        hints.push(Hint::optional("r", "render", 3));
+        hints.push(Hint::optional("e", "$EDITOR", 3));
     }
 
+    // The ordering of what is given up first, most eager last in this list.
+    // There are far more keys than columns now, so this is where the line
+    // decides what a narrow terminal is for: the toggles that have a visible
+    // button on the toolbar go before the ones that do not.
+    hints.push(Hint::optional("←→", "tab", 9));
+    hints.push(Hint::optional("m", app.mode().other().title(), 5));
     hints.push(Hint::optional(
         "s",
-        if app.scrolls() { "preview" } else { "source" },
-        3,
+        match app.view() {
+            View::Preview => "source",
+            View::Source => "preview",
+        },
+        2,
     ));
+    hints.push(Hint::optional(
+        "t",
+        match app.left_view() {
+            LeftView::Prompt => "transcript",
+            LeftView::Transcript => "prompt",
+        },
+        6,
+    ));
+    hints.push(Hint::optional("x", "renders", 8));
+    hints.push(Hint::optional("r", "render", 4));
     hints.push(Hint::optional("ctrl-s", "save", 1));
-    hints.push(Hint::optional("R", "reload", 5));
+    hints.push(Hint::optional("R", "reload", 7));
     hints.push(Hint::essential("q", "quit"));
 
     hints
@@ -596,7 +620,7 @@ mod tests {
     #[test]
     fn the_palette_pane_shows_each_colours_name_value_and_role() {
         let project = fixtures::project();
-        let output = drawn(palette(&project.metadata().palette, true), 60, 4);
+        let output = drawn(palette(&project.metadata().palette, true, None), 60, 4);
 
         assert!(output.contains("accent"), "{output}");
         assert!(output.contains("#f05032"), "{output}");
@@ -604,26 +628,31 @@ mod tests {
     }
 
     #[test]
-    fn the_variants_pane_marks_the_primary_variant() {
+    fn a_field_being_typed_into_is_drawn_instead_of_the_value_it_will_become() {
+        // A hex colour does not parse until its last character, so drawing the
+        // committed value would make every keystroke but the final one
+        // invisible.
         let project = fixtures::project();
-        let metadata = project.metadata();
         let output = drawn(
-            variants(&metadata.variants, metadata.primary.as_deref(), true),
+            palette(
+                &project.metadata().palette,
+                true,
+                Some(PaletteEdit {
+                    row: 0,
+                    field: PaletteField::Value,
+                    text: "#0066",
+                    valid: false,
+                }),
+            ),
             60,
             4,
         );
 
-        assert!(output.contains("icon ●"), "{output}");
-        assert!(output.contains("#mark-wide"), "{output}");
-    }
-
-    #[test]
-    fn the_renders_pane_shows_each_specifications_size_and_variant() {
-        let project = fixtures::project();
-        let output = drawn(renders(&project.metadata().renders, true), 60, 4);
-
-        assert!(output.contains("favicon-32"), "{output}");
-        assert!(output.contains("128x32"), "{output}");
+        assert!(output.contains("#0066"), "{output}");
+        assert!(
+            !output.contains("#f05032"),
+            "the committed value is still there:\n{output}"
+        );
     }
 
     #[test]

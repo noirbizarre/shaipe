@@ -147,12 +147,13 @@ shaipe tui logo.svg
 ```
 
 ```text
-┌───────────────────────┬───────────────────────────┐
-│ prompt                │                           │
-│ palette               │         preview           │
-│ variants              │                           │
-│ render specs          │                           │
-└───────────────────────┴───────────────────────────┘
+┌ shaipe  [preview] [variants] [edit renders] [transcript] ─────────────────┐
+├───────────────────────────────┬───────────────────────────────────────────┤
+│ prompt, or the transcript     │ ‹ icon │ wordmark ›                       │
+│                               │                                           │
+├───────────────────────────────┤        preview, or the source             │
+│ palette                       │                                           │
+└───────────────────────────────┴───────────────────────────────────────────┘
 ```
 
 The preview uses whichever graphics protocol the terminal actually reports —
@@ -160,15 +161,23 @@ Kitty, Sixel or iTerm2 — and falls back to Unicode half-blocks everywhere else
 It is produced by the same renderer `shaipe render` uses, so it is the asset
 rather than an impression of it.
 
-`tab` moves between panes and the focused pane takes the column, `↑↓` selects,
-`r` re-renders, `q` quits. The mouse works: click to focus and select, wheel to
-scroll, drag the divider to resize, double-click the prompt to edit it and a
-render specification to write it to `dist/`.
+The variants and the render specifications are the preview's **tabs**: `←` and
+`→` move between them, wrapping at both ends, and `m` swaps which of the two the
+tabs list. `s` swaps the picture for the SVG that produced it. `t` swaps the
+prompt for the transcript. Each of those has a button on the toolbar as well,
+because a mode with no visible affordance is one people find by accident.
 
-`enter` on the prompt pane — or a double-click on it — hands the keyboard to an
-editor; `esc` or `tab` gives it back, and `e` opens the prompt in `$VISUAL` or
-`$EDITOR` instead. `ctrl-s` writes the project back to its file. The status line
-marks unsaved work, and quitting with any asks first.
+`tab` moves between the prompt and the palette, `enter` hands the keyboard to
+whichever has it and `esc` gives it back. Both panes are edited in place: the
+prompt is prose, and a palette colour is its name and its value, committed as
+you type. `r` re-renders, `x` opens the render specifications editor, `q` quits.
+The mouse works: click a toolbar button or a tab, click a pane to focus it,
+double-click to edit it, wheel to scroll, drag the divider to resize, and
+double-click a specification's tab to write it to `dist/`.
+
+`e` opens the prompt in `$VISUAL` or `$EDITOR` instead. `ctrl-s` writes the
+project back to its file. The status line marks unsaved work, and quitting with
+any asks first.
 
 If the preview looks wrong, ask:
 
@@ -276,31 +285,45 @@ shaipe --no-agent                       # open the workspace without one
 shaipe --yes                            # approve the agent's own tools
 ```
 
-Inside the prompt pane:
+The keys:
 
 | Key | |
 |---|---|
-| `enter` | edit the project's prompt — committed as you type |
+| `enter` | edit the focused pane — the prompt, or a palette colour — committed as you type |
+| `esc` | stop editing |
+| `tab` / `shift-tab` | move between the prompt and the palette, still editing |
 | `a` | **send the prompt to the agent**, so it makes the artwork match |
 | `alt+a` | the same, without leaving the editor |
 | `e` | open the prompt in `$EDITOR` |
-| `s` | cycle the right-hand column: preview → source → log |
-| `PageUp` / `PageDown` | scroll the source or the log |
+| `←` / `→` | the previous or next tab, wrapping at both ends |
+| `m` | swap the variants for the render specifications |
+| `s` | swap the preview for the SVG that produced it |
+| `t` | swap the prompt for the transcript |
+| `x` | open the render specifications editor |
+| `PageUp` / `PageDown` | scroll the source, or the transcript |
 | `ctrl-c` | stop the turn the agent is on; again to quit |
 | `ctrl-s` | save the project |
 | `R` | re-read the project from disk, discarding what is in memory |
 
 The prompt *is* the instruction. There is no chat: you describe the artwork in
-the prompt pane and press `a`, and the agent reads the document, rewrites it and
+the prompt box and press `a`, and the agent reads the document, rewrites it and
 looks at the result.
 
-While it works the right-hand column shows the log — what it said and which
-tools it ran — and when the turn ends it goes back to the preview, which by
-then is the new artwork. The footer carries a spinner and the tool it is
-running. Pressing `s` yourself takes that choice over for the session.
+While it works the box shows the transcript — what it said and which tools it
+ran — and when the turn ends it gives the prompt back, by which time the
+preview is the new artwork. `t` swaps the two at any moment, during a turn or
+not. The footer carries a spinner and the tool it is running.
 
-`a` only works from the pane — once the editor has the keyboard it owns every
-key — so `alt+a` is the one that works from inside it.
+An edit only re-renders the preview when it changes the variant you are looking
+at, so the agent rewriting the wordmark leaves the icon on screen alone.
+
+`a` only works where the prompt actually is — once the editor has the keyboard
+it owns every key — so `alt+a` is the one that works from inside it.
+
+The render specifications editor is a table: `↑↓` picks a row, `←→` a field,
+`ctrl-n` adds a specification, `ctrl-d` removes one and `esc` closes it. Chords
+for adding and removing, because `+` and `-` are characters somebody typing a
+size expects to reach the field.
 
 ### What the agent may and may not do
 
