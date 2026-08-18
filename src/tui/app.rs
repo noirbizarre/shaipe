@@ -141,31 +141,100 @@ impl AgentStatus {
     }
 }
 
-/// What the prompt editor's buffer is for.
+/// How long a notice stays on screen.
 ///
-/// One widget, two jobs, and they must not be confused. Writing the project's
-/// prompt is editing *metadata* — it is committed to the document on every
-/// keystroke. Asking an agent for a change is sending a *message*, and
-/// committing that would rewrite the artwork's description every time somebody
-/// said "make it bluer".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum EditorMode {
-    /// Editing the project's `<shaipe:prompt>`. Committed as it is typed.
-    #[default]
-    Prompt,
-    /// Composing a message to the agent. Committed nowhere.
-    Ask,
+/// Long enough to read, short enough that the keys come back on their own.
+/// Nothing cleared a notice before, and since the status line shows one
+/// *instead of* the hints, a single save removed every key hint for the rest
+/// of the session — including the one that reaches the agent.
+const NOTICE: Duration = Duration::from_secs(4);
+
+/// How long a failure stays on screen.
+///
+/// Longer, because "wrote logo.svg" is a confirmation and "save failed: …" is
+/// something to act on.
+const WARNING: Duration = Duration::from_secs(12);
+
+/// Something the workspace has to say, and when it said it.
+#[derive(Debug, Clone)]
+pub struct Notice {
+    text: String,
+    raised: Instant,
+    lifetime: Duration,
 }
 
-impl EditorMode {
-    /// What to call it, in a pane title.
+impl Notice {
+    /// Something that went as intended.
     #[must_use]
-    pub const fn title(self) -> &'static str {
-        match self {
-            Self::Prompt => "prompt",
-            Self::Ask => "ask the agent",
+    pub fn info(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            raised: Instant::now(),
+            lifetime: NOTICE,
         }
     }
+
+    /// Something that did not, and stays longer for it.
+    #[must_use]
+    pub fn warning(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            raised: Instant::now(),
+            lifetime: WARNING,
+        }
+    }
+
+    /// What it says, while it still has anything to say.
+    ///
+    /// `None` once it has aged out, so the caller shows the key hints again
+    /// without anything having to clear it. The workspace redraws on a 250 ms
+    /// tick, so it goes of its own accord within that.
+    #[must_use]
+    pub fn text(&self) -> Option<&str> {
+        (self.raised.elapsed() < self.lifetime).then_some(&self.text)
+    }
+
+    /// Whether it is reporting a failure.
+    #[must_use]
+    pub fn is_warning(&self) -> bool {
+        self.lifetime == WARNING
+    }
+
+    /// How long it stays on screen.
+    #[must_use]
+    pub const fn lifetime(&self) -> Duration {
+        self.lifetime
+    }
+
+    /// One that has already aged out, for testing what the line does then.
+    ///
+    /// A constructor rather than sleeping: a test that waits four seconds to
+    /// assert a four-second timeout is a test nobody runs.
+    #[cfg(test)]
+    #[must_use]
+    pub fn aged(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            raised: Instant::now() - NOTICE - Duration::from_secs(1),
+            lifetime: NOTICE,
+        }
+    }
+}
+
+/// What Shaipe asks the agent when the prompt is sent.
+///
+/// The prompt is a description of the artwork, not an instruction — sent bare,
+/// it gives a model nothing to do, and the likeliest reply is agreement. This
+/// says what to do with it, and names the tools, because the preamble is read
+/// once and this is read every turn.
+fn instruct(prompt: &str) -> String {
+    format!(
+        "Update this project's SVG so that it matches the prompt below.\n\n\
+         Read the current document with `get_svg`, write the new one with \
+         `write_svg`, and look at the result with `render_svg` before you \
+         finish. Change the artwork only — leave the `<metadata>` block as you \
+         found it.\n\n---\n\n{prompt}"
+    )
 }
 
 /// Something a keypress asked the agent to do.
@@ -197,9 +266,8 @@ pub struct App {
 
     /// How wide the description column is. Draggable.
     pub column_width: u16,
-    /// A transient message, shown in the status line until something replaces
-    /// it. Used to report what an export actually wrote.
-    pub notice: Option<String>,
+    /// A transient message, shown in the status line until it ages out.
+    pub notice: Option<Notice>,
 
     /// The prompt editor's buffer and cursor.
     ///
@@ -214,14 +282,6 @@ pub struct App {
     /// among them. There has to be a state in which the prompt pane is focused
     /// and the workspace's own shortcuts still work.
     editing: bool,
-    /// What the editor is being used for.
-    ///
-    /// The same buffer serves two purposes that must not be confused: writing
-    /// the project's own prompt, which is metadata, and asking an agent for a
-    /// change, which is a message. Committing an agent request into the
-    /// project's `<shaipe:prompt>` would rewrite the artwork's description
-    /// every time somebody said "make it bluer".
-    mode: EditorMode,
     /// Whether `$EDITOR` has been asked for and not yet opened.
     ///
     /// A flag rather than the deed, because opening an editor needs the
@@ -245,6 +305,15 @@ pub struct App {
     pub agent: AgentStatus,
     /// What the last keypress asked the agent for, if anything.
     pub pending_agent_request: Option<AgentRequest>,
+    /// When the agent last changed what it was doing.
+    ///
+    /// Only the spinner reads it, which derives its frame from elapsed time
+    /// rather than storing one.
+    agent_since: Instant,
+    /// Whether the right-hand column shows the SVG rather than the picture.
+    source: bool,
+    /// How far down the source is scrolled, in lines.
+    source_scroll: u16,
 
     /// Where each pane was drawn last frame.
     ///
@@ -310,12 +379,14 @@ impl App {
             confirm_quit: false,
             watcher: Watcher::new(project_for_worker.path()),
             stale: false,
-            mode: EditorMode::Prompt,
             transcript: Transcript::default(),
             agent: AgentStatus::Absent {
                 reason: "no agent was started".to_owned(),
             },
             pending_agent_request: None,
+            agent_since: Instant::now(),
+            source: false,
+            source_scroll: 0,
             areas: [Rect::ZERO; Focus::COUNT],
             preview_area: Rect::ZERO,
             preview_pixels: (0, 0),
@@ -387,71 +458,15 @@ impl App {
     }
 
     /// Hand the keyboard to the prompt editor.
-    pub fn engage_editor(&mut self) {
+    pub const fn engage_editor(&mut self) {
         self.focus = Focus::Prompt;
         self.editing = true;
-        self.set_mode(EditorMode::Prompt);
-    }
-
-    /// Hand the keyboard to the editor to compose a message for the agent.
-    ///
-    /// The buffer is swapped rather than shared: a half-written question must
-    /// not appear in the project's prompt, and a half-written prompt must not
-    /// be sent to an agent.
-    pub fn engage_ask(&mut self) {
-        self.focus = Focus::Prompt;
-        self.editing = true;
-        self.set_mode(EditorMode::Ask);
     }
 
     /// Take the keyboard back from the prompt editor.
     pub fn disengage_editor(&mut self) {
         self.editing = false;
-        // Only the prompt is metadata. Leaving `Ask` throws the draft away,
-        // which is the right default for a message nobody sent.
-        if self.mode == EditorMode::Prompt {
-            self.commit_prompt();
-        } else {
-            self.set_mode(EditorMode::Prompt);
-        }
-    }
-
-    /// Switch what the buffer is for, keeping the project's prompt intact.
-    fn set_mode(&mut self, mode: EditorMode) {
-        if self.mode == mode {
-            return;
-        }
-
-        // Leaving the prompt: commit it, then start the message empty.
-        // Returning to it: reload it from the project, so whatever the message
-        // was is gone and the prompt is exactly what is on disk.
-        if self.mode == EditorMode::Prompt {
-            self.commit_prompt();
-            self.editor = Self::editor_for("");
-        } else {
-            self.editor = Self::editor_for(self.project.metadata().prompt.as_deref().unwrap_or(""));
-        }
-
-        self.mode = mode;
-    }
-
-    /// What the editor's buffer is currently for.
-    #[must_use]
-    pub const fn mode(&self) -> EditorMode {
-        self.mode
-    }
-
-    /// Swap between writing the project's prompt and asking the agent.
-    ///
-    /// The way out of the trap this fixes: while the editor has the keyboard
-    /// it swallows every key, so `a` — the way in from the pane — typed a
-    /// letter instead, and a whole message went into the project's prompt
-    /// while nothing was ever sent.
-    pub fn toggle_mode(&mut self) {
-        self.set_mode(match self.mode {
-            EditorMode::Prompt => EditorMode::Ask,
-            EditorMode::Ask => EditorMode::Prompt,
-        });
+        self.commit_prompt();
     }
 
     /// Whether keys are going to the prompt editor.
@@ -483,14 +498,7 @@ impl App {
     /// `write_svg` with a new `<shaipe:prompt>`. The buffer is a copy, so
     /// without this the next keystroke would write the stale one back.
     ///
-    /// Does nothing while a message to the agent is being composed: that
-    /// buffer is not the prompt, and replacing it would destroy what someone
-    /// is in the middle of typing.
     pub fn reload_prompt(&mut self) {
-        if self.mode != EditorMode::Prompt {
-            return;
-        }
-
         let prompt = self.project.metadata().prompt.clone().unwrap_or_default();
         if prompt != self.draft() {
             self.editor = Self::editor_for(&prompt);
@@ -521,13 +529,7 @@ impl App {
     /// one place and the cursor cannot be left pointing past the new end.
     pub fn set_draft(&mut self, text: &str) {
         self.editor = Self::editor_for(text);
-        // Only the prompt is metadata. `$EDITOR` is only reachable in that
-        // mode today, but a `set_draft` that committed whatever it was given
-        // would put an agent message into `<shaipe:prompt>` the first time
-        // that stopped being true.
-        if self.mode == EditorMode::Prompt {
-            self.commit_prompt();
-        }
+        self.commit_prompt();
     }
 
     /// Apply a keypress to the prompt editor.
@@ -542,8 +544,11 @@ impl App {
         // where `alt+f`, `alt+b`, `alt+d` and `alt+h` are not, and unlike
         // `alt+enter` it cannot be swallowed: the text area matches
         // `Key::Enter, ..`, which ignores every modifier.
+        //
+        // The same thing `a` does from the pane, without having to leave the
+        // editor to do it.
         if key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::ALT) {
-            self.toggle_mode();
+            self.send_prompt();
             return;
         }
 
@@ -562,36 +567,34 @@ impl App {
                 self.focus_previous();
                 return;
             }
-            // Only in `Ask`: a paragraph of prose needs its newlines, and the
-            // project's prompt is a paragraph. A message is one thing said
-            // once, so `enter` sends it.
-            KeyCode::Enter if self.mode == EditorMode::Ask => {
-                self.submit_to_agent();
-                return;
-            }
             _ => {}
         }
 
         self.editor.input(key);
-        if self.mode == EditorMode::Prompt {
-            self.commit_prompt();
-        }
+        self.commit_prompt();
     }
 
-    /// Send what has been typed to the agent.
+    /// Ask the agent to make the artwork match the project's prompt.
+    ///
+    /// The prompt *is* the instruction — there is no second buffer and no
+    /// conversation. What is on screen is what is sent, and it stays on screen
+    /// afterwards, because it is the project's own description of itself and
+    /// not a message that has been posted.
     ///
     /// Records the request rather than sending it: sending needs an `await`,
     /// and making key handling asynchronous would mean every test asserting
     /// that `esc` moves the focus needed a runtime to do it.
-    fn submit_to_agent(&mut self) {
-        let text = self.draft().trim().to_owned();
-        if text.is_empty() {
-            // An empty message is not a turn, and a turn costs a model call.
-            return;
-        }
+    pub fn send_prompt(&mut self) {
+        // Committed first, so what is sent is what is on screen rather than
+        // what was on screen when the editor was last left.
+        self.commit_prompt();
 
-        self.editor = Self::editor_for("");
-        self.transcript.push_user(text.clone());
+        let Some(prompt) = self.project.metadata().prompt.clone() else {
+            self.notice = Some(Notice::warning(
+                "there is no prompt to send — press enter and describe the artwork",
+            ));
+            return;
+        };
 
         if let AgentStatus::Absent { reason } = &self.agent {
             let reason = reason.clone();
@@ -600,8 +603,71 @@ impl App {
             return;
         }
 
-        self.agent = AgentStatus::Busy;
-        self.pending_agent_request = Some(AgentRequest::Prompt(text));
+        self.transcript.push_user(prompt.clone());
+        self.pending_agent_request = Some(AgentRequest::Prompt(instruct(&prompt)));
+    }
+
+    /// Whether the right-hand column is showing the SVG rather than the
+    /// picture.
+    #[must_use]
+    pub const fn shows_source(&self) -> bool {
+        self.source
+    }
+
+    /// Swap the right-hand column between the picture and the SVG.
+    pub const fn toggle_source(&mut self) {
+        self.source = !self.source;
+        self.source_scroll = 0;
+    }
+
+    /// How far down the source is scrolled.
+    #[must_use]
+    pub const fn source_scroll(&self) -> u16 {
+        self.source_scroll
+    }
+
+    /// Scroll the source by a page, in whichever direction.
+    ///
+    /// Clamped at the top; the bottom is left to the widget, which simply
+    /// draws nothing past the end.
+    pub const fn scroll_source(&mut self, lines: i16) {
+        self.source_scroll = self.source_scroll.saturating_add_signed(lines);
+    }
+
+    /// The document as it now stands, for the source view.
+    ///
+    /// `to_svg` rather than `source`, so what is read here is exactly what
+    /// `get_svg` hands the agent — including a prompt edit that has not been
+    /// saved. Seeing whether anything actually changed is the whole point of
+    /// the view, and a stale copy would defeat it.
+    #[must_use]
+    pub fn source_text(&self) -> String {
+        self.project
+            .to_svg()
+            .unwrap_or_else(|error| format!("could not render the document: {error}"))
+    }
+
+    /// When the agent last changed what it was doing.
+    #[must_use]
+    pub const fn agent_since(&self) -> Instant {
+        self.agent_since
+    }
+
+    /// Note what the agent is doing now.
+    ///
+    /// Restarts the spinner, so a new turn does not inherit the phase of the
+    /// last one.
+    pub fn set_agent(&mut self, status: AgentStatus) {
+        if self.agent != status {
+            self.agent_since = Instant::now();
+            self.agent = status;
+        }
+    }
+
+    /// Whether a prompt is on its way to the agent, or being worked on.
+    #[must_use]
+    pub const fn is_asking(&self) -> bool {
+        self.pending_agent_request.is_some() || self.transcript.is_busy()
     }
 
     /// Ask the agent to stop the turn it is on.
@@ -615,9 +681,7 @@ impl App {
     /// at a screen cell, so a click inside the pane would have nothing to do.
     pub fn edit_mouse(&mut self, mouse: MouseEvent) {
         self.editor.input(mouse);
-        if self.mode == EditorMode::Prompt {
-            self.commit_prompt();
-        }
+        self.commit_prompt();
     }
 
     /// Ask for the prompt to be opened in `$EDITOR`.
@@ -674,23 +738,23 @@ impl App {
         // `R` takes theirs; saving again takes yours.
         if self.stale {
             self.stale = false;
-            self.notice = Some(format!(
+            self.notice = Some(Notice::warning(format!(
                 "{} changed on disk — R to take it, or ctrl-s again to overwrite it",
                 self.project.path().display()
-            ));
+            )));
             return;
         }
 
         self.commit_prompt();
         self.notice = Some(match self.project.save() {
-            Ok(()) => {
+            Ok(()) => Notice::info({
                 self.dirty = false;
                 self.confirm_quit = false;
                 // Its own write must not come back as somebody else's change.
                 self.watcher.accept(self.project.path());
                 format!("wrote {}", self.project.path().display())
-            }
-            Err(error) => format!("save failed: {error}"),
+            }),
+            Err(error) => Notice::warning(format!("save failed: {error}")),
         });
     }
 
@@ -711,10 +775,10 @@ impl App {
 
         if self.dirty {
             self.stale = true;
-            self.notice = Some(format!(
+            self.notice = Some(Notice::warning(format!(
                 "{} changed on disk — R to take it, losing your edits",
                 self.project.path().display()
-            ));
+            )));
             return;
         }
 
@@ -753,11 +817,13 @@ impl App {
                         .as_str(),
                 );
                 self.invalidate_preview();
-                self.notice = Some(format!("reloaded {}", path.display()));
+                self.notice = Some(Notice::info(format!("reloaded {}", path.display())));
             }
             // Reported, not fatal. A half-written file is a normal thing to
             // catch mid-save, and the next tick will find it finished.
-            Err(error) => self.notice = Some(format!("could not reload: {error}")),
+            Err(error) => {
+                self.notice = Some(Notice::warning(format!("could not reload: {error}")));
+            }
         }
     }
 
@@ -1264,8 +1330,8 @@ impl App {
                 .and_then(|renderer| renderer.render(&spec))
                 .and_then(|asset| asset.write_to(directory))
             {
-                Ok(path) => format!("wrote {}", path.display()),
-                Err(error) => format!("export failed: {error}"),
+                Ok(path) => Notice::info(format!("wrote {}", path.display())),
+                Err(error) => Notice::warning(format!("export failed: {error}")),
             },
         );
     }
@@ -1396,7 +1462,8 @@ mod tests {
         assert!(!app.should_quit);
         assert!(
             app.notice
-                .as_deref()
+                .as_ref()
+                .and_then(Notice::text)
                 .is_some_and(|notice| notice.contains("save failed")),
             "{:?}",
             app.notice
@@ -1750,20 +1817,6 @@ mod tests {
 
         assert!(matches!(app.preview(), Preview::Failed(_)));
     }
-    #[test]
-    fn setting_the_draft_while_asking_does_not_touch_the_projects_prompt() {
-        // `$EDITOR` is only reachable from the prompt today, but a `set_draft`
-        // that committed whatever it was given would put an agent message into
-        // `<shaipe:prompt>` the first time that stopped being true.
-        let mut app = App::new(fixtures::project(), "blocks");
-        let before = app.project.metadata().prompt.clone();
-
-        app.engage_ask();
-        app.set_draft("make it bluer");
-
-        assert_eq!(app.draft(), "make it bluer");
-        assert_eq!(app.project.metadata().prompt, before);
-    }
     /// A project in a temporary directory, so the tests can write to it.
     fn on_disk() -> (tempfile::TempDir, App) {
         let directory = tempfile::tempdir().expect("a temporary directory");
@@ -1817,7 +1870,8 @@ mod tests {
         );
         assert!(
             app.notice
-                .as_deref()
+                .as_ref()
+                .and_then(Notice::text)
                 .is_some_and(|n| n.contains("changed on disk"))
         );
         drop(directory);
@@ -1900,7 +1954,8 @@ mod tests {
 
         assert!(
             app.notice
-                .as_deref()
+                .as_ref()
+                .and_then(Notice::text)
                 .is_some_and(|n| n.contains("could not reload"))
         );
         assert!(!app.should_quit);

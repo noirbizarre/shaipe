@@ -7,11 +7,12 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::text::Span;
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 use crate::preview::Preview as Backend;
 
-use super::app::{App, EditorMode, Focus, Preview};
+use super::app::{App, Focus, Preview};
 use super::panes;
 
 /// Draw a frame.
@@ -34,8 +35,14 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend) {
         .areas(body);
 
     draw_left(frame, app, left);
+    // Told about the area either way, so the preview stays correctly sized
+    // and switching back to it is instant rather than a re-render.
     app.set_preview_area(right, backend.cell_size(), backend.scale());
-    draw_preview(frame, app, backend, right);
+    if app.shows_source() {
+        draw_source(frame, app, right);
+    } else {
+        draw_preview(frame, app, backend, right);
+    }
 
     frame.render_widget(panes::status(app, status.width), status);
 }
@@ -90,11 +97,12 @@ fn draw_left(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     // the editor carrying a block of its own: a block would have to be set on
     // the text area, and that mutable borrow cannot coexist with the immutable
     // one the list panes take below.
+    let agent = panes::agent_title(app);
     let prompt_block = panes::frame_titled(
         Focus::Prompt,
         focused(Focus::Prompt),
-        app.mode().title(),
-        panes::agent_title(app),
+        Focus::Prompt.title(),
+        &agent,
     );
     let interior = prompt_block.inner(prompt);
     frame.render_widget(&prompt_block, prompt);
@@ -105,13 +113,9 @@ fn draw_left(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         // push the line being typed off the bottom, and a field nobody can see
         // is one nobody can type into.
         //
-        // Editing the project's prompt is prose and wants room; composing a
-        // message is one thing said once and wants a line or two. Neither is
-        // allowed to take the whole pane while there is a conversation to read.
-        let wanted = match app.mode() {
-            EditorMode::Prompt => interior.height.saturating_sub(1).max(1),
-            EditorMode::Ask => 3.min(interior.height),
-        };
+        // The prompt is prose and wants room, but never the whole pane: there
+        // is a transcript above it worth reading while it works.
+        let wanted = interior.height.saturating_sub(1).max(1);
         let [above, editing] = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(0), Constraint::Length(wanted)])
@@ -153,6 +157,33 @@ fn draw_left(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         let list = list.block(panes::frame(focus, focused(focus)));
         frame.render_stateful_widget(list, pane, app.list_state(focus));
     }
+}
+
+/// Draw the SVG itself, in place of the picture of it.
+fn draw_source(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(Span::styled(
+            " source ",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Not wrapped: an SVG has meaningful line structure, and rewrapping a
+    // path's coordinates across a narrow column makes it unreadable. It
+    // scrolls sideways off the edge instead, which is the lesser harm.
+    frame.render_widget(
+        Paragraph::new(app.source_text())
+            .style(Style::default().fg(Color::Gray))
+            .scroll((app.source_scroll(), 0)),
+        inner,
+    );
 }
 
 /// Draw the preview column.
@@ -302,7 +333,7 @@ mod tests {
         // conversation. A field that scrolls out of view is one nobody can
         // type into, and the pane would look inert rather than full.
         let mut app = App::new(fixtures::project(), "blocks");
-        app.engage_ask();
+        app.engage_editor();
         app.set_draft("STILLVISIBLE");
 
         for turn in 0..40 {

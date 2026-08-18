@@ -149,8 +149,14 @@ see `docs/adr/004-tools-not-a-model.md`.
 - [ ] Show the agent's plan in the transcript
 - [ ] Prove the vision loop against a vision-capable model, and say in the
       README which models can and cannot see a render
-- [x] `a` on the prompt pane asks the agent, using the prompt editor with a
-      buffer that is never committed to the project
+- [x] ~~`a` opens a message box for the agent~~ — there is no chat; the prompt
+      is the instruction and `a` sends it
+- [x] `a` sends the project's prompt to the agent, which makes the artwork
+      match it
+- [x] A spinner and the running tool in the status line, so a turn is visibly
+      happening
+- [x] `s` swaps the preview for the SVG the agent would read
+- [x] Notices expire, so a save stops hiding every key hint for the session
 - [x] `alt+a` reaches the agent from inside the editor, which swallows every
       other key
 - [x] The project file is watched, so an agent writing it directly still

@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wr
 
 use crate::project::{Palette, RenderSpec, Rgba, Variant};
 
-use super::app::{AgentStatus, App, EditorMode, Focus};
+use super::app::{AgentStatus, App, Focus};
 use super::transcript::Entry;
 use crate::acp::ToolStatus;
 
@@ -116,32 +116,52 @@ pub fn prompt(app: &App, height: u16) -> Paragraph<'static> {
 
 /// A one-line summary of the agent, for the pane's title.
 #[must_use]
-pub fn agent_title(app: &App) -> &'static str {
+pub fn agent_title(app: &App) -> String {
     // The key named here has to be the one that works from where the user is.
     // While the editor has the keyboard it swallows every key, so bare `a`
-    // types a letter — saying otherwise is how a whole message ends up in the
-    // project's prompt with nothing sent.
-    //
-    // Named whenever there is an agent at all, `Connecting` included. It used
-    // to appear only once the agent was `Ready` *and* the transcript was
-    // empty, which meant that during the seconds after startup — and forever
-    // if the handshake never landed — nothing on screen mentioned it.
-    let chord = if app.is_editing() && app.mode() == EditorMode::Prompt {
-        "  alt+a to ask the agent"
-    } else if app.is_editing() {
-        "  ready"
-    } else {
-        "  a to ask the agent"
-    };
+    // types a letter.
+    let chord = if app.is_editing() { "alt+a" } else { "a" };
 
-    match app.agent {
+    match &app.agent {
         // The pane's body already says why, at length and in yellow. Naming a
         // key that would answer "no agent is connected" adds nothing.
-        AgentStatus::Absent { .. } => "",
-        AgentStatus::Connecting => chord,
-        AgentStatus::Ready => chord,
-        AgentStatus::Busy => "  working…",
+        AgentStatus::Absent { .. } => String::new(),
+        // Distinct from `Ready`, which it was not: a handshaking agent looked
+        // exactly like one waiting for work, and that is the state in which a
+        // prompt sits queued rather than running.
+        AgentStatus::Connecting => "  starting the agent…".to_owned(),
+        AgentStatus::Ready => format!("  {chord} to send it to the agent"),
+        AgentStatus::Busy => "  working…".to_owned(),
     }
+}
+
+/// What the agent is doing, for the right-hand end of the status line.
+///
+/// A spinner and a word, derived from an `Instant` at draw time so that no
+/// animation state is stored anywhere — the same shape as [`App::spinner`].
+/// Without this the only sign that a prompt had been sent was the transcript
+/// filling in, which happens seconds later and off to the left.
+fn agent_activity(app: &App) -> Option<String> {
+    const FRAMES: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+    const PERIOD: u128 = 90;
+
+    let doing = match &app.agent {
+        AgentStatus::Connecting => "starting…".to_owned(),
+        AgentStatus::Busy => app
+            .transcript
+            .running_tool()
+            // The tool it is on, when it is on one. A name is worth much more
+            // than "working": it is the difference between knowing it is
+            // rendering and wondering whether it has hung.
+            .map_or_else(|| "working…".to_owned(), str::to_owned),
+        AgentStatus::Ready | AgentStatus::Absent { .. } => return None,
+    };
+
+    let step = app.agent_since().elapsed().as_millis() / PERIOD;
+    Some(format!(
+        "{} {doing}",
+        FRAMES[(step as usize) % FRAMES.len()]
+    ))
 }
 
 /// The conversation, one entry at a time.
@@ -375,17 +395,29 @@ pub fn status(app: &App, width: u16) -> Paragraph<'static> {
     }
     // A notice replaces the hints rather than crowding them: it reports what
     // an export just wrote, which is the only thing worth reading afterwards.
-    else if let Some(notice) = &app.notice {
-        spans.push(Span::styled(
-            notice.clone(),
-            Style::default().fg(Color::LightGreen),
-        ));
+    // A notice replaces the hints rather than crowding them — but only while
+    // it is still worth reading. Nothing used to clear one, so a single save
+    // removed every key hint for the rest of the session.
+    else if let Some(text) = app.notice.as_ref().and_then(super::app::Notice::text) {
+        let colour = if app
+            .notice
+            .as_ref()
+            .is_some_and(super::app::Notice::is_warning)
+        {
+            Color::LightRed
+        } else {
+            Color::LightGreen
+        };
+        spans.push(Span::styled(text.to_owned(), Style::default().fg(colour)));
         spans.push(Span::raw("   "));
     } else {
         // The markers are measured first: they are not hints and are never
         // dropped, so whatever they take is not room the hints have.
         let markers = usize::from(app.is_stale()) * "● on disk  ".len()
-            + usize::from(app.is_dirty()) * "● unsaved  ".len();
+            + usize::from(app.is_dirty()) * "● unsaved  ".len()
+            // The agent's activity is not a hint and is never dropped, so
+            // whatever it takes is not room the hints have.
+            + agent_activity(app).map_or(0, |activity| activity.chars().count() + 3);
 
         let room = usize::from(width).saturating_sub(markers);
 
@@ -426,6 +458,13 @@ pub fn status(app: &App, width: u16) -> Paragraph<'static> {
         ));
     }
 
+    if let Some(activity) = agent_activity(app) {
+        spans.push(Span::styled(
+            format!("   {activity}"),
+            Style::default().fg(Color::LightCyan),
+        ));
+    }
+
     Paragraph::new(Line::from(spans))
 }
 
@@ -443,19 +482,12 @@ fn hints(app: &App) -> Vec<Hint> {
         let mut hints = vec![
             Hint::essential("esc", "leave"),
             Hint::optional("tab", "pane", 2),
+            // The same thing `a` does from the pane, without leaving.
+            Hint::essential("alt+a", "send"),
         ];
 
-        if app.mode() == EditorMode::Ask {
-            // `enter` means different things in the two modes, and a hint that
-            // said the wrong one would be worse than none.
-            hints.push(Hint::essential("enter", "send"));
-            if waiting {
-                hints.push(Hint::essential("ctrl-c", "stop"));
-            } else {
-                hints.push(Hint::essential("alt+a", "prompt"));
-            }
-        } else {
-            hints.push(Hint::essential("alt+a", "ask"));
+        if waiting {
+            hints.push(Hint::essential("ctrl-c", "stop"));
         }
 
         hints.push(Hint::optional("ctrl-s", "save", 1));
@@ -469,13 +501,22 @@ fn hints(app: &App) -> Vec<Hint> {
         // Essential, and this is the whole point of the type. `a` is the only
         // way to reach the agent, and it was invisible for as long as it was
         // the first thing dropped to make the numbers work.
-        hints.push(Hint::essential("a", "ask"));
+        hints.push(Hint::essential("a", "send"));
         hints.push(Hint::optional("e", "$EDITOR", 4));
     } else {
         hints.push(Hint::optional("↑↓", "select", 3));
         hints.push(Hint::optional("r", "render", 3));
     }
 
+    hints.push(Hint::optional(
+        "s",
+        if app.shows_source() {
+            "preview"
+        } else {
+            "source"
+        },
+        3,
+    ));
     hints.push(Hint::optional("ctrl-s", "save", 1));
     hints.push(Hint::optional("R", "reload", 5));
     hints.push(Hint::essential("q", "quit"));
@@ -492,6 +533,7 @@ mod tests {
     use super::*;
     use crate::Project;
     use crate::fixtures;
+    use crate::tui::app::Notice;
 
     /// Everything a widget drew, as one string.
     fn drawn(widget: impl Widget, width: u16, height: u16) -> String {
@@ -624,7 +666,7 @@ mod tests {
             );
             if focus == Focus::Prompt {
                 assert!(
-                    line.contains(" ask"),
+                    line.contains(" send"),
                     "{focus:?}: the agent is unreachable\n{line}"
                 );
                 assert!(line.contains("edit"), "{focus:?}\n{line}");
@@ -656,7 +698,7 @@ mod tests {
             app.agent = agent.clone();
 
             let line = footer(&app, 80);
-            assert!(line.contains(" ask"), "{agent:?}\n{line}");
+            assert!(line.contains(" send"), "{agent:?}\n{line}");
         }
     }
 
@@ -668,23 +710,23 @@ mod tests {
         app.focus = Focus::Prompt;
 
         let line = footer(&app, 80);
-        for expected in ["tab", "edit", "ask", "$EDITOR", "save", "reload", "quit"] {
+        for expected in ["tab", "edit", "send", "$EDITOR", "source", "save", "quit"] {
             assert!(line.contains(expected), "{expected} missing from\n{line}");
         }
     }
 
     #[test]
     fn a_narrow_terminal_gives_up_the_least_important_hints_first() {
-        // The point of measuring at all: `$EDITOR` and `reload` go, `ask` and
-        // `quit` stay. Nothing is lost permanently — it comes back with the
-        // room.
+        // The point of measuring at all: `$EDITOR` and `reload` go, `send`
+        // and `quit` stay. Nothing is lost permanently — it comes back with
+        // the room.
         let mut app = App::new(fixtures::project(), "blocks");
         app.focus = Focus::Prompt;
 
         let narrow = footer(&app, 46);
 
         assert!(
-            narrow.contains("ask"),
+            narrow.contains("send"),
             "the agent went unreachable\n{narrow}"
         );
         assert!(narrow.contains("quit"), "no way out\n{narrow}");
@@ -706,6 +748,70 @@ mod tests {
 
         let line = footer(&app, 30);
         assert!(line.contains("quit") || line.contains("ask"), "{line}");
+    }
+
+    #[test]
+    fn a_notice_stops_hiding_the_key_hints_once_it_is_old() {
+        // Nothing cleared a notice, and the line shows one *instead of* the
+        // hints — so a single save removed every key for the rest of the
+        // session, including the one that reaches the agent.
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.focus = Focus::Prompt;
+
+        app.notice = Some(Notice::info("wrote logo.svg"));
+        let fresh = drawn(status(&app, 100), 100, 1);
+        assert!(fresh.contains("wrote logo.svg"), "{fresh}");
+        assert!(!fresh.contains("quit"), "{fresh}");
+
+        // Aged out. No timer and no keypress: the status line simply stops
+        // asking for it, and the 250ms tick redraws.
+        app.notice = Some(Notice::aged("wrote logo.svg"));
+        let stale = drawn(status(&app, 100), 100, 1);
+        assert!(!stale.contains("wrote logo.svg"), "{stale}");
+        assert!(
+            stale.contains("send"),
+            "the hints did not come back\n{stale}"
+        );
+        assert!(stale.contains("quit"), "{stale}");
+    }
+
+    #[test]
+    fn a_failure_is_readable_for_longer_than_a_confirmation() {
+        // "wrote logo.svg" is a confirmation; "save failed: …" is something
+        // to act on, and four seconds is not long enough to act.
+        assert!(Notice::warning("x").lifetime() > Notice::info("x").lifetime());
+    }
+
+    #[test]
+    fn the_status_line_shows_what_the_agent_is_doing() {
+        // Sending used to have no visible effect until the transcript filled
+        // in seconds later and off to the left.
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.agent = AgentStatus::Busy;
+        app.transcript.push_user("a mark".to_owned());
+        app.transcript.apply(crate::acp::AgentUpdate::ToolStarted {
+            id: "1".to_owned(),
+            title: "render_svg".to_owned(),
+        });
+
+        let line = drawn(status(&app, 120), 120, 1);
+        assert!(line.contains("render_svg"), "{line}");
+    }
+
+    #[test]
+    fn a_connecting_agent_does_not_look_like_a_ready_one() {
+        // They rendered identically, and connecting is the state in which a
+        // prompt waits rather than runs.
+        let mut app = App::new(fixtures::project(), "blocks");
+
+        app.agent = AgentStatus::Connecting;
+        let connecting = format!("{}|{}", agent_title(&app), drawn(status(&app, 120), 120, 1));
+
+        app.agent = AgentStatus::Ready;
+        let ready = format!("{}|{}", agent_title(&app), drawn(status(&app, 120), 120, 1));
+
+        assert_ne!(connecting, ready);
+        assert!(connecting.contains("starting"), "{connecting}");
     }
 
     #[test]
@@ -731,7 +837,7 @@ mod tests {
         app.engage_editor();
         assert!(drawn(status(&app, 80), 80, 1).contains("alt+a"));
 
-        app.engage_ask();
+        app.engage_editor();
         assert!(drawn(status(&app, 80), 80, 1).contains("alt+a"));
     }
 
@@ -745,16 +851,6 @@ mod tests {
 
         app.agent = AgentStatus::Ready;
         assert!(agent_title(&app).contains('a'), "{}", agent_title(&app));
-    }
-
-    #[test]
-    fn the_pane_title_says_which_mode_the_editor_is_in() {
-        // The two modes look identical and do very different things.
-        let mut app = App::new(fixtures::project(), "blocks");
-        assert_eq!(app.mode().title(), "prompt");
-
-        app.engage_ask();
-        assert_eq!(app.mode().title(), "ask the agent");
     }
 
     #[test]
@@ -799,7 +895,7 @@ mod tests {
     #[test]
     fn a_notice_replaces_the_key_hints_so_it_is_actually_read() {
         let mut app = App::new(fixtures::project(), "blocks");
-        app.notice = Some("wrote dist/favicon-32.png".to_owned());
+        app.notice = Some(Notice::info("wrote dist/favicon-32.png"));
         let output = drawn(status(&app, 90), 90, 1);
 
         assert!(output.contains("wrote dist/favicon-32.png"), "{output}");

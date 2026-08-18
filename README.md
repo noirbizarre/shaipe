@@ -259,12 +259,8 @@ This needs no ACP and no agent. It opens the file itself, and works headlessly.
 shaipe logo.svg
 ```
 
-Tab to the prompt pane and press `a`. The same editor that writes the project's
-prompt is handed to you with an empty buffer, the pane's title changes to say
-so, and `enter` sends rather than adding a line — because a prompt is a
-paragraph and a question is one thing said once. What you type there is never
-written into the project's `<shaipe:prompt>`; asking for a change is not the
-same as changing the description of the artwork. Shaipe starts
+Tab to the prompt pane, press `enter` and describe the artwork you want, then
+press `a`. Shaipe starts
 `opencode acp`, gives it a session-scoped MCP server pointing at *the project
 you are looking at*, and shows you what the agent does with it. When the agent
 edits the SVG, the preview follows on its own.
@@ -285,15 +281,21 @@ Inside the prompt pane:
 | Key | |
 |---|---|
 | `enter` | edit the project's prompt — committed as you type |
-| `a` | ask the agent — sent on `enter`, committed nowhere |
-| `alt+a` | switch between the two **without leaving the editor** |
-| `e` | open the project's prompt in `$EDITOR` |
+| `a` | **send the prompt to the agent**, so it makes the artwork match |
+| `alt+a` | the same, without leaving the editor |
+| `e` | open the prompt in `$EDITOR` |
+| `s` | swap the right-hand column between the picture and the SVG |
 | `ctrl-c` | stop the turn the agent is on; again to quit |
 | `ctrl-s` | save the project |
 | `R` | re-read the project from disk, discarding what is in memory |
 
-`a` only works from the pane; once the editor has the keyboard it owns every
-key, so `alt+a` is the one that works from inside it.
+The prompt *is* the instruction. There is no chat: you describe the artwork in
+the prompt pane and press `a`, and the agent reads the document, rewrites it and
+looks at the result. The footer shows a spinner and the tool it is running while
+it works, and the transcript records what it did.
+
+`a` only works from the pane — once the editor has the keyboard it owns every
+key — so `alt+a` is the one that works from inside it.
 
 ### What the agent may and may not do
 

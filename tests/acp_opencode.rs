@@ -114,7 +114,6 @@ async fn turn(
 
     agent
         .prompt(prompt.to_owned())
-        .await
         .expect("the agent takes a prompt");
 
     let mut said = String::new();

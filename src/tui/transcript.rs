@@ -55,6 +55,22 @@ impl Transcript {
         self.busy
     }
 
+    /// The tool the agent is running, if it is running one.
+    ///
+    /// The most recent, so a burst of calls names the one actually in flight
+    /// rather than the first of them.
+    #[must_use]
+    pub fn running_tool(&self) -> Option<&str> {
+        self.entries.iter().rev().find_map(|entry| match entry {
+            Entry::Tool {
+                title,
+                status: ToolStatus::Running,
+                ..
+            } => Some(title.as_str()),
+            _ => None,
+        })
+    }
+
     /// Whether anything has been said at all.
     #[must_use]
     pub fn is_empty(&self) -> bool {

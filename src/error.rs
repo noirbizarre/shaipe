@@ -413,6 +413,19 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    /// The agent has not finished with the last thing it was given.
+    #[error("the agent is still working on the last prompt")]
+    #[diagnostic(
+        code(shaipe::acp::agent_busy),
+        help(
+            "Wait for the turn to finish, or press ctrl-c to stop it. The \
+             workspace stays responsive either way — a prompt is never allowed \
+             to queue behind another, because waiting for one would mean \
+             waiting inside the event loop."
+        )
+    )]
+    AgentBusy,
+
     /// The agent stopped, or was never running.
     #[error("`{command}` is no longer running")]
     #[diagnostic(

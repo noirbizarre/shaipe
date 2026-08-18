@@ -341,12 +341,21 @@ impl Agent {
     /// # Errors
     ///
     /// Returns [`Error::AgentExited`] if the agent is no longer running.
-    pub async fn prompt(&self, text: String) -> Result<()> {
+    pub fn prompt(&self, text: String) -> Result<()> {
+        // `try_send`, never `send`. The channel is one deep and is not drained
+        // until the handshake finishes, so awaiting a full one blocks whoever
+        // is calling — and the caller is the workspace's event loop, which
+        // then stops drawing and stops answering keys until the agent becomes
+        // ready or dies. One prompt may wait for the handshake, which is the
+        // useful case; a second is refused rather than allowed to freeze the
+        // workspace.
         self.prompts
-            .send(Turn(text))
-            .await
-            .map_err(|_| Error::AgentExited {
-                command: self.command.clone(),
+            .try_send(Turn(text))
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => Error::AgentBusy,
+                mpsc::error::TrySendError::Closed(_) => Error::AgentExited {
+                    command: self.command.clone(),
+                },
             })
     }
 
@@ -355,9 +364,14 @@ impl Agent {
     /// # Errors
     ///
     /// Returns [`Error::AgentExited`] if the agent is no longer running.
-    pub async fn cancel(&self) -> Result<()> {
-        self.cancels.send(()).await.map_err(|_| Error::AgentExited {
-            command: self.command.clone(),
+    pub fn cancel(&self) -> Result<()> {
+        // Same reasoning as `prompt`: a cancel that blocked the event loop
+        // would make `ctrl-c` the one key guaranteed to freeze the workspace.
+        self.cancels.try_send(()).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(()) => Error::AgentBusy,
+            mpsc::error::TrySendError::Closed(()) => Error::AgentExited {
+                command: self.command.clone(),
+            },
         })
     }
 
@@ -860,6 +874,38 @@ mod tests {
         assert!(reason.contains("definitely-not-installed"), "{reason}");
         // The help, which is the half that says what to do about it.
         assert!(reason.contains("--no-agent"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn a_second_prompt_is_refused_rather_than_allowed_to_block() {
+        // The freeze this guards against: the prompt channel is one deep and
+        // is not drained until the handshake finishes, so an awaited `send`
+        // parks whoever called it — and the caller is the workspace's event
+        // loop, which then stops drawing and stops answering keys.
+        //
+        // `sleep` stands in for an agent that never finishes shaking hands.
+        let config = AgentConfig {
+            command: vec!["sleep".to_owned(), "60".to_owned()],
+            cwd: std::env::temp_dir(),
+            mcp_servers: Vec::new(),
+            policy: Policy::Guarded,
+            env: BTreeMap::new(),
+            note: None,
+        };
+
+        let (agent, _updates) = Agent::start(config);
+
+        // The first waits for the handshake, which is the useful case.
+        assert!(agent.prompt("one".to_owned()).is_ok());
+
+        // The second must come straight back rather than parking.
+        let refused = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            agent.prompt("two".to_owned())
+        })
+        .await
+        .expect("`prompt` blocked; the workspace would freeze here");
+
+        assert!(matches!(refused, Err(Error::AgentBusy)), "{refused:?}");
     }
 
     #[test]
