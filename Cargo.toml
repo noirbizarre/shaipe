@@ -109,7 +109,16 @@ roxmltree = "0.21.1"
 # Default features are off deliberately: they include `chafa-dyn`, which links
 # a system library through `pkg-config` that no CI runner is guaranteed to
 # have. Only `crossterm` is needed, matching the backend the TUI drives.
-ratatui = "0.30.2"
+# `unstable-rendered-line-info` is `Paragraph::line_count`, which is how the
+# log knows how many *rows* its entries occupy rather than how many lines they
+# are made of. Counting lines is exactly the bug that kept the transcript off
+# screen: one 446-character prompt is a single line and fifteen rows.
+#
+# Unstable, and taken deliberately. Unlike an undocumented environment
+# variable — which ADR 013 rejected for the same family of reasons — a cargo
+# feature is pinned by `Cargo.lock`, so it breaking is a compile error on a
+# deliberate upgrade rather than silence in the field.
+ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 ratatui-image = { version = "11.0.6", default-features = false, features = ["crossterm"] }
 
 # The prompt editor. This is the ratatui-org fork of `tui-textarea`: the

@@ -64,25 +64,25 @@ fn selected(focused: bool) -> Style {
 }
 
 /// The prompt pane.
-pub fn prompt(app: &App, height: u16) -> Paragraph<'static> {
+pub fn prompt(app: &App) -> Paragraph<'static> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    // The project's own prompt first, then the conversation about it. The
-    // editor is drawn separately, on the pane's last rows, so it cannot be
-    // pushed off the bottom by a transcript that keeps growing.
     match &app.project.metadata().prompt {
-        Some(prompt) => lines.push(Line::styled(
-            prompt.clone(),
-            Style::default().fg(Color::Gray),
-        )),
+        // One `Line` per paragraph. Pushed whole, its newlines were not line
+        // breaks in the `Vec<Line>` model at all — which is how a fifteen-row
+        // prompt came to be counted as a single line.
+        Some(prompt) => lines.extend(
+            prompt
+                .lines()
+                .map(|line| Line::styled(line.to_owned(), Style::default().fg(Color::Gray))),
+        ),
         None => lines.push(Line::styled(
             "No prompt recorded.",
             Style::default().fg(Color::DarkGray),
         )),
     }
 
-    // Why the agent cannot be asked, said before it is reached for rather than
-    // after a message has been typed and swallowed.
+    // Why the agent cannot be asked, beside the key that will not work.
     if let AgentStatus::Absent { reason } = &app.agent {
         lines.push(Line::raw(""));
         for line in reason.lines() {
@@ -93,25 +93,11 @@ pub fn prompt(app: &App, height: u16) -> Paragraph<'static> {
         }
     }
 
-    if !app.transcript.is_empty() {
-        lines.push(Line::raw(""));
-        lines.extend(transcript(app));
-    }
-
-    // Anchored to the bottom, so a conversation scrolls the way every other
-    // conversation does: the newest thing is the thing you can see.
-    //
-    // Counted in lines rather than in wrapped rows, so a long entry can still
-    // push a little too far. Exact scrolling needs the wrap width and the
-    // widget's own line breaking, and being approximately right at the bottom
-    // beats being exactly right at the top.
-    let overflow = u16::try_from(lines.len())
-        .unwrap_or(u16::MAX)
-        .saturating_sub(height);
-
-    Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .scroll((overflow, 0))
+    // Read from the top, and not scrolled. A prompt is a thing you wrote, not
+    // a conversation with a newest end — and the transcript that wanted the
+    // bottom of this pane lives in the right-hand column now, where there is
+    // room for it.
+    Paragraph::new(lines).wrap(Wrap { trim: false })
 }
 
 /// A one-line summary of the agent, for the pane's title.
@@ -164,29 +150,53 @@ fn agent_activity(app: &App) -> Option<String> {
     ))
 }
 
-/// The conversation, one entry at a time.
+/// What the agent has been doing, one entry at a time.
+///
+/// Rendered into the right-hand column rather than the prompt pane: it needs
+/// height, and the prompt pane has three rows when it is not focused.
+pub fn log(app: &App) -> Vec<Line<'static>> {
+    if app.transcript.is_empty() {
+        return vec![Line::styled(
+            "Nothing yet. Press `a` on the prompt pane to ask the agent to \
+             make the artwork match it.",
+            Style::default().fg(Color::DarkGray),
+        )];
+    }
+
+    transcript(app)
+}
+
+/// The entries themselves.
 fn transcript(app: &App) -> Vec<Line<'static>> {
-    app.transcript
-        .entries()
-        .iter()
-        .map(|entry| match entry {
-            Entry::You(text) => Line::from(vec![
-                Span::styled("you  ", Style::default().fg(Color::LightMagenta)),
-                Span::raw(text.clone()),
-            ]),
-            Entry::Agent(text) => Line::from(vec![
-                Span::styled("     ", Style::default()),
-                Span::raw(text.clone()),
-            ]),
+    let mut lines = Vec::new();
+
+    for entry in app.transcript.entries() {
+        match entry {
+            Entry::You(text) => lines.extend(paragraphs(
+                text,
+                "you  ",
+                Style::default().fg(Color::LightMagenta),
+                Style::default(),
+            )),
+            Entry::Agent(text) => {
+                lines.extend(paragraphs(
+                    text,
+                    "     ",
+                    Style::default(),
+                    Style::default(),
+                ));
+            }
             // Dimmed and marked, because reasoning read as a statement is how
             // a person ends up believing the agent said something it did not.
-            Entry::Thought(text) => Line::styled(
-                format!("     {text}"),
+            Entry::Thought(text) => lines.extend(paragraphs(
+                text,
+                "     ",
+                Style::default(),
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::ITALIC),
-            ),
-            Entry::Tool { title, status, .. } => Line::from(vec![
+            )),
+            Entry::Tool { title, status, .. } => lines.push(Line::from(vec![
                 Span::styled(
                     format!("  {} ", status.glyph()),
                     Style::default().fg(match status {
@@ -196,10 +206,47 @@ fn transcript(app: &App) -> Vec<Line<'static>> {
                     }),
                 ),
                 Span::styled(title.clone(), Style::default().fg(Color::Cyan)),
-            ]),
-            Entry::Notice(text) => {
-                Line::styled(format!("     {text}"), Style::default().fg(Color::Yellow))
-            }
+            ])),
+            Entry::Notice(text) => lines.extend(paragraphs(
+                text,
+                "     ",
+                Style::default(),
+                Style::default().fg(Color::Yellow),
+            )),
+        }
+    }
+
+    lines
+}
+
+/// One `Line` per paragraph, with a gutter on the first.
+///
+/// An agent's message contains newlines, and a `Span` holding one is a single
+/// `Line` that draws as several rows — which is how anything measured in lines
+/// ends up short. Splitting here keeps the count and the drawing in agreement,
+/// and it is the same mistake the prompt pane made with the project's prompt.
+fn paragraphs(
+    text: &str,
+    gutter: &'static str,
+    gutter_style: Style,
+    style: Style,
+) -> Vec<Line<'static>> {
+    text.lines()
+        .enumerate()
+        .map(|(index, line)| {
+            Line::from(vec![
+                // The gutter only on the first, so a wrapped paragraph is not
+                // mistaken for several entries.
+                Span::styled(
+                    if index == 0 { gutter } else { "     " },
+                    if index == 0 {
+                        gutter_style
+                    } else {
+                        Style::default()
+                    },
+                ),
+                Span::styled(line.to_owned(), style),
+            ])
         })
         .collect()
 }
@@ -510,11 +557,7 @@ fn hints(app: &App) -> Vec<Hint> {
 
     hints.push(Hint::optional(
         "s",
-        if app.shows_source() {
-            "preview"
-        } else {
-            "source"
-        },
+        if app.scrolls() { "preview" } else { "source" },
         3,
     ));
     hints.push(Hint::optional("ctrl-s", "save", 1));
@@ -589,7 +632,7 @@ mod tests {
         project.metadata_mut().prompt = None;
         let app = App::new(project, "blocks");
 
-        assert!(drawn(prompt(&app, 4), 60, 4).contains("No prompt"));
+        assert!(drawn(prompt(&app), 60, 4).contains("No prompt"));
     }
 
     #[test]

@@ -155,7 +155,9 @@ see `docs/adr/004-tools-not-a-model.md`.
       match it
 - [x] A spinner and the running tool in the status line, so a turn is visibly
       happening
-- [x] `s` swaps the preview for the SVG the agent would read
+- [x] `s` cycles the right-hand column between the preview, the SVG the agent
+      would read, and the log of what it did
+- [x] The log appears by itself while a turn runs and gives way to the result
 - [x] Notices expire, so a save stops hiding every key hint for the session
 - [x] `alt+a` reaches the agent from inside the editor, which swallows every
       other key

@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 use crate::preview::Preview as Backend;
 
-use super::app::{App, Focus, Preview};
+use super::app::{App, Focus, Preview, View};
 use super::panes;
 
 /// Draw a frame.
@@ -38,10 +38,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend) {
     // Told about the area either way, so the preview stays correctly sized
     // and switching back to it is instant rather than a re-render.
     app.set_preview_area(right, backend.cell_size(), backend.scale());
-    if app.shows_source() {
-        draw_source(frame, app, right);
-    } else {
-        draw_preview(frame, app, backend, right);
+    match app.view() {
+        View::Preview => draw_preview(frame, app, backend, right),
+        View::Source => draw_scrolling(frame, app, right, View::Source),
+        View::Log => draw_scrolling(frame, app, right, View::Log),
     }
 
     frame.render_widget(panes::status(app, status.width), status);
@@ -104,29 +104,25 @@ fn draw_left(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         Focus::Prompt.title(),
         &agent,
     );
+
+    // The frame is drawn separately and its interior filled in, rather than
+    // the editor carrying a block of its own: a block would have to be set on
+    // the text area, and that mutable borrow cannot coexist with the immutable
+    // one the list panes take below.
+    //
+    // The editor takes the whole interior. It briefly shared it with the
+    // agent's transcript, which was a mistake twice over — it left the editor
+    // one row, and the transcript never had the height to be read in anyway.
+    // The transcript lives in the right-hand column now.
     let interior = prompt_block.inner(prompt);
     frame.render_widget(&prompt_block, prompt);
 
-    if app.is_editing() && interior.height > 0 {
-        // The editor gets the bottom of the pane and the conversation the
-        // rest. The other way round, a transcript that keeps growing would
-        // push the line being typed off the bottom, and a field nobody can see
-        // is one nobody can type into.
-        //
-        // The prompt is prose and wants room, but never the whole pane: there
-        // is a transcript above it worth reading while it works.
-        let wanted = interior.height.saturating_sub(1).max(1);
-        let [above, editing] = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(wanted)])
-            .areas(interior);
-
-        if above.height > 0 {
-            frame.render_widget(panes::prompt(app, above.height), above);
+    if interior.height > 0 {
+        if app.is_editing() {
+            frame.render_widget(app.editor(), interior);
+        } else {
+            frame.render_widget(panes::prompt(app), interior);
         }
-        frame.render_widget(app.editor(), editing);
-    } else if interior.height > 0 {
-        frame.render_widget(panes::prompt(app, interior.height), interior);
     }
 
     // Built before the mutable borrow of `app` that the list state needs.
@@ -159,14 +155,17 @@ fn draw_left(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     }
 }
 
-/// Draw the SVG itself, in place of the picture of it.
-fn draw_source(frame: &mut Frame<'_>, app: &App, area: Rect) {
+/// Draw one of the scrolling views in place of the picture.
+///
+/// The source and the log differ only in what they contain and how they wrap,
+/// so they share a frame, a scroll offset and a set of keys.
+fn draw_scrolling(frame: &mut Frame<'_>, app: &App, area: Rect, view: View) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray))
         .title(Span::styled(
-            " source ",
+            format!(" {} ", view.title()),
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
@@ -174,19 +173,36 @@ fn draw_source(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
 
-    // Not wrapped: an SVG has meaningful line structure, and rewrapping a
-    // path's coordinates across a narrow column makes it unreadable. It
-    // scrolls sideways off the edge instead, which is the lesser harm.
-    frame.render_widget(
-        Paragraph::new(app.source_text())
-            .style(Style::default().fg(Color::Gray))
-            .scroll((app.source_scroll(), 0)),
-        inner,
-    );
+    let paragraph = match view {
+        // Not wrapped: an SVG has meaningful line structure, and rewrapping a
+        // path's coordinates across a narrow column makes it unreadable. It
+        // runs off the edge instead, which is the lesser harm.
+        View::Source => Paragraph::new(app.source_text()).style(Style::default().fg(Color::Gray)),
+        // Wrapped, because it is prose.
+        View::Log => Paragraph::new(panes::log(app)).wrap(Wrap { trim: false }),
+        View::Preview => return,
+    };
+
+    // Anchored to the bottom, measured in **wrapped rows**. Counting entries
+    // instead is the bug that kept the transcript off screen for a whole
+    // session: one 446-character prompt is a single line and fifteen rows, so
+    // the offset came out fourteen rows short and usually zero.
+    let rows = u16::try_from(paragraph.line_count(inner.width)).unwrap_or(u16::MAX);
+    let bottom = rows.saturating_sub(inner.height);
+    let scroll = match view {
+        // The newest entry is the one worth seeing, until somebody scrolls.
+        View::Log => bottom.saturating_sub(app.view_scroll()),
+        _ => app.view_scroll(),
+    };
+
+    frame.render_widget(paragraph.scroll((scroll, 0)), inner);
 }
 
-/// Draw the preview column.
+/// Draw the preview column./// Draw the preview column.
 fn draw_preview(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend, area: Rect) {
     // The backend belongs here rather than in the status line, which was
     // spending fifteen columns of every row on every pane to say something
@@ -325,45 +341,91 @@ mod tests {
         }
     }
 
+    /// A prompt like a real one: several paragraphs, hundreds of characters.
+    ///
+    /// The fixture's is `A square and a bar.` — nineteen characters, one
+    /// wrapped row — which is why counting lines where rows were meant looked
+    /// correct in every test while being fourteen rows out in the workspace.
+    const LONG_PROMPT: &str = "\
+A mark for Shaipe, an LLM-native SVG asset workspace. The name plays on \
+\"shape\" and \"AI\".\n\nA shape that is partly drawn and partly inferred: an \
+outlined square whose lower-right quadrant has been resolved into solid \
+colour, suggesting a form being completed rather than one already \
+finished.\n\nGeometric, flat, monoline, no gradients. The icon carries no \
+text, so it reads at 16 pixels.";
+
     #[test]
-    fn the_editor_stays_on_screen_however_much_is_above_it() {
-        // The editor is given the bottom of the pane rather than flowing after
-        // the content, because the content grows without bound: the project's
-        // prompt, then why there is no agent, then every turn of a
-        // conversation. A field that scrolls out of view is one nobody can
-        // type into, and the pane would look inert rather than full.
+    fn the_editor_gets_the_whole_pane_while_editing() {
+        // It briefly shared the pane with the transcript, which left it one
+        // row and the transcript none. The transcript lives elsewhere now.
         let mut app = App::new(fixtures::project(), "blocks");
         app.engage_editor();
-        app.set_draft("STILLVISIBLE");
+        app.set_draft("EDITING HERE");
 
-        for turn in 0..40 {
-            app.transcript.push_user(format!("turn number {turn}"));
-            app.transcript
-                .apply(crate::acp::AgentUpdate::Message(format!("answer {turn}")));
-        }
+        let text = render(&mut app, 100, 30);
+        assert!(text.contains("EDITING HERE"), "{text}");
+    }
+
+    #[test]
+    fn a_long_prompt_is_read_from_the_top() {
+        // Not bottom-anchored: a prompt is a thing you wrote, not a
+        // conversation with a newest end.
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.project.metadata_mut().prompt = Some(LONG_PROMPT.to_owned());
+        app.focus = Focus::Prompt;
 
         let text = render(&mut app, 100, 30);
         assert!(
-            text.contains("STILLVISIBLE"),
-            "the editor was pushed off the pane by the transcript:\n{text}"
+            text.contains("A mark for Shaipe"),
+            "the prompt did not start at the beginning:\n{text}"
         );
     }
 
     #[test]
-    fn the_transcript_shows_its_newest_entries_rather_than_its_oldest() {
-        // A conversation scrolls the way every other conversation does.
+    fn the_log_shows_its_newest_entries_even_when_they_wrap() {
+        // The regression test for the whole business. The old one passed only
+        // because the fixture's prompt was one row long, so counting entries
+        // happened to equal counting rows. Here every entry wraps to several
+        // rows, and an offset measured in entries lands nowhere near the end.
         let mut app = App::new(fixtures::project(), "blocks");
-        app.focus = Focus::Prompt;
+        app.project.metadata_mut().prompt = Some(LONG_PROMPT.to_owned());
 
-        for turn in 0..30 {
-            app.transcript.push_user(format!("question {turn}"));
+        for turn in 0..12 {
+            app.transcript
+                .push_user(format!("{LONG_PROMPT} — asked{turn}"));
+            app.transcript
+                .apply(crate::acp::AgentUpdate::Message(format!(
+                    "{LONG_PROMPT} — answered{turn}"
+                )));
+        }
+        app.cycle_view();
+        while app.view() != crate::tui::app::View::Log {
+            app.cycle_view();
         }
 
         let text = render(&mut app, 100, 30);
+        // A single unbroken word, because the screen is rows and a phrase
+        // would be split across two of them by the wrap this test is about.
         assert!(
-            text.contains("question 29"),
+            text.contains("answered11"),
             "the newest entry is not on screen:\n{text}"
         );
+        assert!(
+            !text.contains("answered0 "),
+            "it is showing the oldest instead:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_log_says_what_to_do_when_it_is_empty() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.cycle_view();
+        while app.view() != crate::tui::app::View::Log {
+            app.cycle_view();
+        }
+
+        let text = render(&mut app, 100, 30);
+        assert!(text.contains("Nothing yet"), "{text}");
     }
 
     #[test]

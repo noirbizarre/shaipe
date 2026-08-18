@@ -284,15 +284,20 @@ Inside the prompt pane:
 | `a` | **send the prompt to the agent**, so it makes the artwork match |
 | `alt+a` | the same, without leaving the editor |
 | `e` | open the prompt in `$EDITOR` |
-| `s` | swap the right-hand column between the picture and the SVG |
+| `s` | cycle the right-hand column: preview → source → log |
+| `PageUp` / `PageDown` | scroll the source or the log |
 | `ctrl-c` | stop the turn the agent is on; again to quit |
 | `ctrl-s` | save the project |
 | `R` | re-read the project from disk, discarding what is in memory |
 
 The prompt *is* the instruction. There is no chat: you describe the artwork in
 the prompt pane and press `a`, and the agent reads the document, rewrites it and
-looks at the result. The footer shows a spinner and the tool it is running while
-it works, and the transcript records what it did.
+looks at the result.
+
+While it works the right-hand column shows the log — what it said and which
+tools it ran — and when the turn ends it goes back to the preview, which by
+then is the new artwork. The footer carries a spinner and the tool it is
+running. Pressing `s` yourself takes that choice over for the session.
 
 `a` only works from the pane — once the editor has the keyboard it owns every
 key — so `alt+a` is the one that works from inside it.

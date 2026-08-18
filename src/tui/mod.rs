@@ -352,16 +352,27 @@ async fn event_loop(
             update = updates.recv() => {
                 let Some(update) = update else { continue };
 
-                app.set_agent(match &update {
-                    AgentUpdate::Ready => AgentStatus::Ready,
-                    AgentUpdate::Failed(reason) => AgentStatus::Absent {
+                // What the update says about the agent, before it is applied.
+                let said = match &update {
+                    AgentUpdate::Ready => Some(AgentStatus::Ready),
+                    AgentUpdate::Failed(reason) => Some(AgentStatus::Absent {
                         reason: reason.clone(),
-                    },
-                    _ if app.transcript.is_busy() => AgentStatus::Busy,
-                    _ => AgentStatus::Ready,
-                });
+                    }),
+                    _ => None,
+                };
 
+                // Applied *first*, and that ordering is the whole of it.
+                // Deriving the status beforehand read a transcript that was
+                // still busy — so `Idle`, the update that ends a turn, latched
+                // `Busy` and nothing ever cleared it. The spinner span and the
+                // title read "working…" for the rest of the session.
                 app.transcript.apply(update);
+
+                app.set_agent(said.unwrap_or(if app.transcript.is_busy() {
+                    AgentStatus::Busy
+                } else {
+                    AgentStatus::Ready
+                }));
             }
 
             _ = ticks.tick() => {
@@ -650,11 +661,11 @@ fn handle(app: &mut App, key: KeyEvent) {
         // Not `ctrl-r`, which is redo inside the prompt editor and worth more
         // there than a second way to reach this.
         KeyCode::Char('R') => app.reload_from_disk(),
-        // The picture, or the SVG that produced it. Reading the document is
-        // how you tell whether an edit actually changed anything.
-        KeyCode::Char('s') => app.toggle_source(),
-        KeyCode::PageDown if app.shows_source() => app.scroll_source(10),
-        KeyCode::PageUp if app.shows_source() => app.scroll_source(-10),
+        // The picture, the SVG that produced it, or what the agent has been
+        // doing. Pressing it also stops the workspace choosing on your behalf.
+        KeyCode::Char('s') => app.cycle_view(),
+        KeyCode::PageDown if app.scrolls() => app.scroll_view(10),
+        KeyCode::PageUp if app.scrolls() => app.scroll_view(-10),
         _ => {}
     }
 }
@@ -921,16 +932,109 @@ mod tests {
         assert_eq!(app.pending_agent_request, None);
     }
 
+    /// Feed the workspace an update the way the event loop does.
+    ///
+    /// Not a helper for its own sake: the *order* of these two steps is the
+    /// bug this guards, so a test that did them in the other order would
+    /// prove nothing.
+    fn deliver(app: &mut App, update: crate::acp::AgentUpdate) {
+        let said = match &update {
+            crate::acp::AgentUpdate::Ready => Some(AgentStatus::Ready),
+            crate::acp::AgentUpdate::Failed(reason) => Some(AgentStatus::Absent {
+                reason: reason.clone(),
+            }),
+            _ => None,
+        };
+        app.transcript.apply(update);
+        app.set_agent(said.unwrap_or(if app.transcript.is_busy() {
+            AgentStatus::Busy
+        } else {
+            AgentStatus::Ready
+        }));
+    }
+
     #[test]
-    fn s_swaps_the_preview_for_the_source() {
+    fn the_agent_stops_looking_busy_when_the_turn_ends() {
+        // The status used to be derived before the update was applied, so
+        // `Idle` — the update that ends a turn — read a transcript that was
+        // still busy and latched `Busy`. Nothing ever cleared it: the spinner
+        // span and the pane title said "working…" for the rest of the session.
         let mut app = app();
-        assert!(!app.shows_source());
+        app.agent = AgentStatus::Ready;
+        app.focus = Focus::Prompt;
+
+        press(&mut app, KeyCode::Char('a'));
+        app.pending_agent_request = None;
+        deliver(&mut app, crate::acp::AgentUpdate::Idle);
+
+        assert_eq!(app.agent, AgentStatus::Ready);
+        assert!(!app.is_asking());
+        assert_eq!(app.view(), app::View::Preview);
+    }
+
+    #[test]
+    fn s_cycles_through_the_three_views() {
+        let mut app = app();
+        assert_eq!(app.view(), app::View::Preview);
 
         press(&mut app, KeyCode::Char('s'));
-        assert!(app.shows_source());
+        assert_eq!(app.view(), app::View::Source);
 
         press(&mut app, KeyCode::Char('s'));
-        assert!(!app.shows_source());
+        assert_eq!(app.view(), app::View::Log);
+
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.view(), app::View::Preview);
+    }
+
+    #[test]
+    fn the_log_appears_while_the_agent_works_and_the_preview_when_it_finishes() {
+        // Nobody should have to know to press a key to watch a turn happen.
+        let mut app = app();
+        app.agent = AgentStatus::Ready;
+        app.focus = Focus::Prompt;
+        assert_eq!(app.view(), app::View::Preview);
+
+        press(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.view(), app::View::Log, "the turn is invisible");
+
+        // The turn ends, and the thing worth looking at is the artwork.
+        app.pending_agent_request = None;
+        app.transcript.apply(crate::acp::AgentUpdate::Idle);
+        assert_eq!(app.view(), app::View::Preview);
+    }
+
+    #[test]
+    fn choosing_a_view_stops_the_workspace_choosing_for_you() {
+        // Automatic behaviour that overrides a deliberate choice is worse than
+        // none at all.
+        let mut app = app();
+        app.agent = AgentStatus::Ready;
+        app.focus = Focus::Prompt;
+
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.view(), app::View::Source);
+
+        press(&mut app, KeyCode::Char('a'));
+        assert_eq!(
+            app.view(),
+            app::View::Source,
+            "the workspace overrode a view the user had picked"
+        );
+    }
+
+    #[test]
+    fn the_first_press_moves_on_from_whatever_is_on_screen() {
+        // Otherwise pressing `s` while the log is up automatically would jump
+        // somewhere unrelated.
+        let mut app = app();
+        app.agent = AgentStatus::Ready;
+        app.focus = Focus::Prompt;
+        press(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.view(), app::View::Log);
+
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.view(), app::View::Preview);
     }
 
     #[test]

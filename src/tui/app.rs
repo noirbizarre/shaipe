@@ -237,6 +237,40 @@ fn instruct(prompt: &str) -> String {
     )
 }
 
+/// What the right-hand column is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum View {
+    /// The rendered artwork.
+    #[default]
+    Preview,
+    /// The SVG that produced it.
+    Source,
+    /// What the agent has been doing.
+    Log,
+}
+
+impl View {
+    /// What to call it, in a pane title.
+    #[must_use]
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Preview => "preview",
+            Self::Source => "source",
+            Self::Log => "log",
+        }
+    }
+
+    /// The next one round.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Preview => Self::Source,
+            Self::Source => Self::Log,
+            Self::Log => Self::Preview,
+        }
+    }
+}
+
 /// Something a keypress asked the agent to do.
 ///
 /// Recorded by the key handler and carried out by the event loop, so that key
@@ -310,10 +344,16 @@ pub struct App {
     /// Only the spinner reads it, which derives its frame from elapsed time
     /// rather than storing one.
     agent_since: Instant,
-    /// Whether the right-hand column shows the SVG rather than the picture.
-    source: bool,
-    /// How far down the source is scrolled, in lines.
-    source_scroll: u16,
+    /// Which view the user picked, if they picked one.
+    ///
+    /// `None` means the workspace decides: the log while the agent works, the
+    /// preview when it has finished, because that is when each is the thing
+    /// worth looking at. Pressing a view key fills this in and the workspace
+    /// stops deciding — automatic behaviour that overrides a deliberate
+    /// choice is worse than none at all.
+    chosen: Option<View>,
+    /// How far down the scrollable views are scrolled, in rows.
+    view_scroll: u16,
 
     /// Where each pane was drawn last frame.
     ///
@@ -385,8 +425,8 @@ impl App {
             },
             pending_agent_request: None,
             agent_since: Instant::now(),
-            source: false,
-            source_scroll: 0,
+            chosen: None,
+            view_scroll: 0,
             areas: [Rect::ZERO; Focus::COUNT],
             preview_area: Rect::ZERO,
             preview_pixels: (0, 0),
@@ -607,31 +647,59 @@ impl App {
         self.pending_agent_request = Some(AgentRequest::Prompt(instruct(&prompt)));
     }
 
-    /// Whether the right-hand column is showing the SVG rather than the
-    /// picture.
+    /// What the right-hand column is showing.
+    ///
+    /// The user's choice if they have made one, and otherwise whichever is
+    /// worth looking at: the log while a turn is running, the artwork once it
+    /// is not.
     #[must_use]
-    pub const fn shows_source(&self) -> bool {
-        self.source
+    pub fn view(&self) -> View {
+        self.chosen.unwrap_or(if self.is_asking() {
+            View::Log
+        } else {
+            View::Preview
+        })
     }
 
-    /// Swap the right-hand column between the picture and the SVG.
-    pub const fn toggle_source(&mut self) {
-        self.source = !self.source;
-        self.source_scroll = 0;
+    /// Show the next view, and stop choosing on the user's behalf.
+    pub const fn cycle_view(&mut self) {
+        self.chosen = Some(match self.chosen {
+            // The first press moves on from whatever is on screen, so it does
+            // what it looks like it will do rather than jumping somewhere
+            // unrelated.
+            None => self.view_now().next(),
+            Some(view) => view.next(),
+        });
+        self.view_scroll = 0;
     }
 
-    /// How far down the source is scrolled.
+    /// What is on screen, without borrowing the choice logic.
+    const fn view_now(&self) -> View {
+        match self.chosen {
+            Some(view) => view,
+            None if self.pending_agent_request.is_some() => View::Log,
+            None => View::Preview,
+        }
+    }
+
+    /// Whether the view is one that scrolls.
     #[must_use]
-    pub const fn source_scroll(&self) -> u16 {
-        self.source_scroll
+    pub fn scrolls(&self) -> bool {
+        matches!(self.view(), View::Source | View::Log)
     }
 
-    /// Scroll the source by a page, in whichever direction.
+    /// How far down the scrollable views are scrolled.
+    #[must_use]
+    pub const fn view_scroll(&self) -> u16 {
+        self.view_scroll
+    }
+
+    /// Scroll by a page, in whichever direction.
     ///
     /// Clamped at the top; the bottom is left to the widget, which simply
     /// draws nothing past the end.
-    pub const fn scroll_source(&mut self, lines: i16) {
-        self.source_scroll = self.source_scroll.saturating_add_signed(lines);
+    pub const fn scroll_view(&mut self, rows: i16) {
+        self.view_scroll = self.view_scroll.saturating_add_signed(rows);
     }
 
     /// The document as it now stands, for the source view.
