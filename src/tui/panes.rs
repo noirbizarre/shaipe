@@ -117,19 +117,29 @@ pub fn prompt(app: &App, height: u16) -> Paragraph<'static> {
 /// A one-line summary of the agent, for the pane's title.
 #[must_use]
 pub fn agent_title(app: &App) -> &'static str {
+    // The key named here has to be the one that works from where the user is.
+    // While the editor has the keyboard it swallows every key, so bare `a`
+    // types a letter — saying otherwise is how a whole message ends up in the
+    // project's prompt with nothing sent.
+    //
+    // Named whenever there is an agent at all, `Connecting` included. It used
+    // to appear only once the agent was `Ready` *and* the transcript was
+    // empty, which meant that during the seconds after startup — and forever
+    // if the handshake never landed — nothing on screen mentioned it.
+    let chord = if app.is_editing() && app.mode() == EditorMode::Prompt {
+        "  alt+a to ask the agent"
+    } else if app.is_editing() {
+        "  ready"
+    } else {
+        "  a to ask the agent"
+    };
+
     match app.agent {
+        // The pane's body already says why, at length and in yellow. Naming a
+        // key that would answer "no agent is connected" adds nothing.
         AgentStatus::Absent { .. } => "",
-        AgentStatus::Connecting => "  starting the agent…",
-        // The key named here has to be the one that works from where the user
-        // is. While the editor has the keyboard it swallows every key, so bare
-        // `a` types a letter — saying otherwise is how a whole message ends up
-        // in the project's prompt with nothing sent.
-        AgentStatus::Ready if app.is_editing() && app.mode() == EditorMode::Prompt => {
-            "  alt+a to ask the agent"
-        }
-        AgentStatus::Ready if app.is_editing() => "  ready",
-        AgentStatus::Ready if app.transcript.is_empty() => "  a to ask the agent",
-        AgentStatus::Ready => "  ready",
+        AgentStatus::Connecting => chord,
+        AgentStatus::Ready => chord,
         AgentStatus::Busy => "  working…",
     }
 }
@@ -259,25 +269,97 @@ pub fn renders(specs: &[RenderSpec], focused: bool) -> List<'static> {
 }
 
 /// The key hints along the bottom.
-pub fn status(app: &App) -> Paragraph<'static> {
-    let hint = |key: &str, action: &str| {
-        vec![
+/// One key hint, and how readily it is given up when the line is narrow.
+///
+/// The status line is the only place most of these keys are discoverable, so
+/// which ones survive a small terminal is a decision rather than an accident.
+/// It used to be neither: the line was exactly eighty columns, and `a` — the
+/// way to reach the agent at all — was left out to keep it that way. A hint
+/// that is not there is a key that does not exist.
+#[derive(Debug, Clone, Copy)]
+struct Hint {
+    key: &'static str,
+    action: &'static str,
+    /// Higher goes first when there is not enough room. `0` never goes.
+    expendable: u8,
+}
+
+impl Hint {
+    /// A hint that is always shown, however narrow the terminal.
+    const fn essential(key: &'static str, action: &'static str) -> Self {
+        Self {
+            key,
+            action,
+            expendable: 0,
+        }
+    }
+
+    /// A hint that is given up when the line will not fit, most eager first.
+    const fn optional(key: &'static str, action: &'static str, expendable: u8) -> Self {
+        Self {
+            key,
+            action,
+            expendable,
+        }
+    }
+
+    /// How many columns it draws in.
+    const fn width(&self) -> usize {
+        // `key`, a space, `action`, and two of separator.
+        self.key.len() + 1 + self.action.len() + 2
+    }
+
+    /// The spans it draws as.
+    fn spans(&self) -> [Span<'static>; 2] {
+        [
             Span::styled(
-                key.to_owned(),
+                self.key,
                 Style::default()
                     .fg(Color::LightMagenta)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                // Two spaces rather than three: editing and saving added keys
-                // to a line that already only just fitted eighty columns, and
-                // a hint truncated away is worth nothing.
-                format!(" {action}  "),
+                format!(" {}  ", self.action),
                 Style::default().fg(Color::DarkGray),
             ),
         ]
-    };
+    }
+}
 
+/// Drop hints until what remains fits, most expendable first.
+///
+/// Display order is preserved, so the line reads the same at every width — it
+/// just says less. Dropping from the end instead would have thrown away `quit`
+/// before `$EDITOR`, which is the wrong way round.
+fn fit(hints: &[Hint], mut room: usize) -> Vec<Hint> {
+    let mut kept: Vec<Hint> = hints.to_vec();
+
+    while kept.iter().map(Hint::width).sum::<usize>() > room {
+        // The most expendable, and the last of those, so a tie is broken in
+        // favour of the hint nearer the front.
+        let Some((index, _)) = kept
+            .iter()
+            .enumerate()
+            .filter(|(_, hint)| hint.expendable > 0)
+            .max_by_key(|(index, hint)| (hint.expendable, *index))
+        else {
+            // Only essentials left. They are shown even if they overflow: a
+            // terminal too narrow for `q quit` is one where truncation is the
+            // least of anybody's problems.
+            break;
+        };
+
+        kept.remove(index);
+        room = room.max(1);
+    }
+
+    kept
+}
+
+/// The status line: what can be pressed, and what needs attention.
+///
+/// Takes the width because it decides what fits. See [`Hint`].
+pub fn status(app: &App, width: u16) -> Paragraph<'static> {
     let mut spans = Vec::new();
 
     // The question comes before everything else and in a colour that stops the
@@ -299,56 +381,17 @@ pub fn status(app: &App) -> Paragraph<'static> {
             Style::default().fg(Color::LightGreen),
         ));
         spans.push(Span::raw("   "));
-    } else if app.is_editing() {
-        // The workspace's own hints are all wrong while the editor has the
-        // keyboard, and listing keys that do something else would be worse
-        // than listing none.
-        let waiting = app.transcript.is_busy();
-
-        spans.extend(hint("esc", "leave"));
-        // `tab` still works while a turn is in flight; it just stops being
-        // worth a hint. Mid-turn the two things anyone wants are already
-        // named, and the line is exactly full without this one.
-        if !waiting {
-            spans.extend(hint("tab", "pane"));
-        }
-        if app.mode() == EditorMode::Ask {
-            // `enter` means different things in the two modes, and a hint that
-            // said the wrong one would be worse than none.
-            spans.extend(hint("enter", "send"));
-            if waiting {
-                spans.extend(hint("ctrl-c", "stop"));
-            } else {
-                spans.extend(hint("alt+a", "prompt"));
-            }
-        } else if !waiting {
-            spans.extend(hint("alt+a", "ask"));
-        }
-        spans.extend(hint("ctrl-s", "save"));
     } else {
-        spans.extend(hint("tab", "pane"));
-        // Which keys are listed follows the focus, for room and for honesty.
-        // The prompt has no rows, so `↑↓` never moved anything there; and its
-        // own two keys are the only way either is discovered. Re-rendering is
-        // dropped from that list because a prompt is metadata — editing it
-        // cannot change what the preview shows.
-        if app.focus == Focus::Prompt {
-            spans.extend(hint("enter", "edit"));
-            // No hint for `a`. The status line is exactly full at eighty
-            // columns, and a hint dropped off the end is worth nothing —
-            // which is what `the_hints_fit_eighty_columns_even_with_unsaved_work_to_report`
-            // is for. `a` is discovered from the pane's title instead, where
-            // it appears only while there is an agent to ask, which is more
-            // honest than a permanent hint for a key that would answer "no
-            // agent is connected".
-            spans.extend(hint("e", "$EDITOR"));
-            spans.extend(hint("ctrl-s", "save"));
-        } else {
-            spans.extend(hint("↑↓", "select"));
-            spans.extend(hint("ctrl-s", "save"));
-            spans.extend(hint("r", "render"));
+        // The markers are measured first: they are not hints and are never
+        // dropped, so whatever they take is not room the hints have.
+        let markers = usize::from(app.is_stale()) * "● on disk  ".len()
+            + usize::from(app.is_dirty()) * "● unsaved  ".len();
+
+        let room = usize::from(width).saturating_sub(markers);
+
+        for hint in fit(&hints(app), room) {
+            spans.extend(hint.spans());
         }
-        spans.extend(hint("q", "quit"));
     }
 
     // Only under `-v`: the number matters when a preview feels slow, and is
@@ -383,12 +426,61 @@ pub fn status(app: &App) -> Paragraph<'static> {
         ));
     }
 
-    spans.push(Span::styled(
-        format!("preview: {}", app.backend),
-        Style::default().fg(Color::DarkGray),
-    ));
-
     Paragraph::new(Line::from(spans))
+}
+
+/// Which keys are worth naming, in the order they are read.
+///
+/// Follows the focus, for room and for honesty: the prompt pane has no rows,
+/// so `↑↓` never moved anything there, and re-rendering is not offered from it
+/// because a prompt is metadata and cannot change what the preview shows.
+fn hints(app: &App) -> Vec<Hint> {
+    if app.is_editing() {
+        // The workspace's own keys all mean something else while the editor
+        // has the keyboard, and listing those would be worse than listing none.
+        let waiting = app.transcript.is_busy();
+
+        let mut hints = vec![
+            Hint::essential("esc", "leave"),
+            Hint::optional("tab", "pane", 2),
+        ];
+
+        if app.mode() == EditorMode::Ask {
+            // `enter` means different things in the two modes, and a hint that
+            // said the wrong one would be worse than none.
+            hints.push(Hint::essential("enter", "send"));
+            if waiting {
+                hints.push(Hint::essential("ctrl-c", "stop"));
+            } else {
+                hints.push(Hint::essential("alt+a", "prompt"));
+            }
+        } else {
+            hints.push(Hint::essential("alt+a", "ask"));
+        }
+
+        hints.push(Hint::optional("ctrl-s", "save", 1));
+        return hints;
+    }
+
+    let mut hints = vec![Hint::optional("tab", "pane", 2)];
+
+    if app.focus == Focus::Prompt {
+        hints.push(Hint::essential("enter", "edit"));
+        // Essential, and this is the whole point of the type. `a` is the only
+        // way to reach the agent, and it was invisible for as long as it was
+        // the first thing dropped to make the numbers work.
+        hints.push(Hint::essential("a", "ask"));
+        hints.push(Hint::optional("e", "$EDITOR", 4));
+    } else {
+        hints.push(Hint::optional("↑↓", "select", 3));
+        hints.push(Hint::optional("r", "render", 3));
+    }
+
+    hints.push(Hint::optional("ctrl-s", "save", 1));
+    hints.push(Hint::optional("R", "reload", 5));
+    hints.push(Hint::essential("q", "quit"));
+
+    hints
 }
 
 #[cfg(test)]
@@ -488,7 +580,7 @@ mod tests {
         let mut app = App::new(fixtures::project(), "blocks");
         app.engage_editor();
 
-        let output = drawn(status(&app), 120, 1);
+        let output = drawn(status(&app, 120), 120, 1);
 
         assert!(output.contains("esc"), "{output}");
         assert!(output.contains("leave"), "{output}");
@@ -500,42 +592,120 @@ mod tests {
         let mut app = App::new(fixtures::project(), "blocks");
         app.focus = Focus::Prompt;
 
-        let output = drawn(status(&app), 120, 1);
+        let output = drawn(status(&app, 120), 120, 1);
 
         assert!(output.contains("edit"), "{output}");
         assert!(output.contains("$EDITOR"), "{output}");
     }
 
+    /// Every hint on the line, as one string.
+    fn footer(app: &App, width: u16) -> String {
+        drawn(status(app, width), width, 1)
+    }
+
     #[test]
-    fn the_hints_fit_eighty_columns_even_with_unsaved_work_to_report() {
-        // The status line is the one place every key is discoverable, and a
-        // hint truncated away is worth nothing.
+    fn the_essential_hints_survive_eighty_columns() {
+        // The test this replaces asserted that *everything* fitted, and the
+        // way to satisfy it was to stop naming `a` — the only key that reaches
+        // the agent. What matters is not that every hint fits; it is that the
+        // ones you cannot work without are never the ones dropped.
         for focus in Focus::ALL {
             let mut app = App::new(fixtures::project(), "blocks");
             app.focus = focus;
+            app.agent = AgentStatus::Ready;
             app.set_draft("unsaved");
 
-            let output = drawn(status(&app), 80, 1);
+            let line = footer(&app, 80);
+
+            assert!(line.contains("quit"), "{focus:?}: no way out\n{line}");
             assert!(
-                output.contains("preview: blocks"),
-                "{focus:?} overflows:\n{output}"
+                line.contains("unsaved"),
+                "{focus:?}: unsaved work went unreported\n{line}"
+            );
+            if focus == Focus::Prompt {
+                assert!(
+                    line.contains(" ask"),
+                    "{focus:?}: the agent is unreachable\n{line}"
+                );
+                assert!(line.contains("edit"), "{focus:?}\n{line}");
+            }
+
+            // And nothing was cut in half on its way off the end.
+            assert!(
+                !line.trim_end().ends_with(' ') || line.len() <= 80,
+                "{focus:?}: the line was truncated mid-hint\n{line}"
             );
         }
     }
 
     #[test]
-    fn the_hints_fit_eighty_columns_while_asking_an_agent_mid_turn() {
-        // The other branch of the status line, and the widest it ever gets:
-        // editing, with a turn in flight and unsaved work to report.
-        let mut app = App::new(fixtures::project(), "blocks");
-        app.set_draft("unsaved");
-        app.engage_ask();
-        app.transcript.push_user("make it blue".to_owned());
+    fn the_prompt_pane_always_offers_a_way_to_reach_the_agent() {
+        // Whatever the agent is doing, and whatever the terminal's width. The
+        // reported bug was that `a` appeared nowhere at all: not in the line,
+        // and in the title only once the agent was ready with an empty
+        // transcript.
+        for agent in [
+            AgentStatus::Connecting,
+            AgentStatus::Ready,
+            AgentStatus::Absent {
+                reason: "none".to_owned(),
+            },
+        ] {
+            let mut app = App::new(fixtures::project(), "blocks");
+            app.focus = Focus::Prompt;
+            app.agent = agent.clone();
 
-        let output = drawn(status(&app), 80, 1);
-        assert!(output.contains("preview: blocks"), "overflows:\n{output}");
-        assert!(output.contains("send"), "{output}");
-        assert!(output.contains("stop"), "{output}");
+            let line = footer(&app, 80);
+            assert!(line.contains(" ask"), "{agent:?}\n{line}");
+        }
+    }
+
+    #[test]
+    fn every_hint_fits_eighty_columns_now_that_the_backend_has_moved() {
+        // Nothing has to be given up at the width everybody has. Freeing the
+        // fifteen columns the backend was taking paid for `a` outright.
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.focus = Focus::Prompt;
+
+        let line = footer(&app, 80);
+        for expected in ["tab", "edit", "ask", "$EDITOR", "save", "reload", "quit"] {
+            assert!(line.contains(expected), "{expected} missing from\n{line}");
+        }
+    }
+
+    #[test]
+    fn a_narrow_terminal_gives_up_the_least_important_hints_first() {
+        // The point of measuring at all: `$EDITOR` and `reload` go, `ask` and
+        // `quit` stay. Nothing is lost permanently — it comes back with the
+        // room.
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.focus = Focus::Prompt;
+
+        let narrow = footer(&app, 46);
+
+        assert!(
+            narrow.contains("ask"),
+            "the agent went unreachable\n{narrow}"
+        );
+        assert!(narrow.contains("quit"), "no way out\n{narrow}");
+        assert!(
+            !narrow.contains("$EDITOR"),
+            "the least important hint outlived the most important\n{narrow}"
+        );
+
+        let wide = footer(&app, 140);
+        assert!(wide.contains("$EDITOR"), "it did not come back\n{wide}");
+    }
+
+    #[test]
+    fn a_terminal_too_narrow_for_anything_still_offers_a_way_out() {
+        // Degrades rather than disappearing. Below this width the essentials
+        // overflow, which is the least of anybody's problems.
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.focus = Focus::Prompt;
+
+        let line = footer(&app, 30);
+        assert!(line.contains("quit") || line.contains("ask"), "{line}");
     }
 
     #[test]
@@ -559,10 +729,10 @@ mod tests {
     fn the_status_line_names_the_chord_while_the_editor_has_the_keyboard() {
         let mut app = App::new(fixtures::project(), "blocks");
         app.engage_editor();
-        assert!(drawn(status(&app), 80, 1).contains("alt+a"));
+        assert!(drawn(status(&app, 80), 80, 1).contains("alt+a"));
 
         app.engage_ask();
-        assert!(drawn(status(&app), 80, 1).contains("alt+a"));
+        assert!(drawn(status(&app, 80), 80, 1).contains("alt+a"));
     }
 
     #[test]
@@ -597,14 +767,14 @@ mod tests {
         let mut app = App::new(Project::open(&path).unwrap(), "blocks");
 
         app.set_draft("mine");
-        let unsaved = drawn(status(&app), 120, 1);
+        let unsaved = drawn(status(&app, 120), 120, 1);
         assert!(unsaved.contains("unsaved"), "{unsaved}");
         assert!(!unsaved.contains("on disk"), "{unsaved}");
 
         std::fs::write(&path, fixtures::PROJECT.replace("#f05032", "#0066ff")).unwrap();
         app.poll_file();
 
-        let stale = drawn(status(&app), 120, 1);
+        let stale = drawn(status(&app, 120), 120, 1);
         assert!(stale.contains("on disk"), "{stale}");
     }
 
@@ -613,7 +783,7 @@ mod tests {
         let mut app = App::new(fixtures::project(), "blocks");
         app.set_draft("changed");
 
-        assert!(drawn(status(&app), 120, 1).contains("unsaved"));
+        assert!(drawn(status(&app, 120), 120, 1).contains("unsaved"));
     }
 
     #[test]
@@ -622,7 +792,7 @@ mod tests {
         app.set_draft("changed");
         app.request_quit();
 
-        let output = drawn(status(&app), 120, 1);
+        let output = drawn(status(&app, 120), 120, 1);
         assert!(output.contains("q again to discard"), "{output}");
     }
 
@@ -630,17 +800,19 @@ mod tests {
     fn a_notice_replaces_the_key_hints_so_it_is_actually_read() {
         let mut app = App::new(fixtures::project(), "blocks");
         app.notice = Some("wrote dist/favicon-32.png".to_owned());
-        let output = drawn(status(&app), 90, 1);
+        let output = drawn(status(&app, 90), 90, 1);
 
         assert!(output.contains("wrote dist/favicon-32.png"), "{output}");
-        assert!(output.contains("preview: blocks"), "{output}");
+        // And the hints stand aside for it entirely.
+        assert!(!output.contains("quit"), "{output}");
     }
 
     #[test]
-    fn the_status_line_names_the_preview_backend_in_use() {
-        // A preview that looks wrong is much easier to report when the user
-        // can see which backend drew it.
+    fn the_status_line_leaves_the_backend_to_the_preview_pane() {
+        // It cost fifteen columns of every row on every pane to say something
+        // about one pane — and those were the columns the prompt pane needed
+        // to name the key that reaches the agent.
         let app = App::new(fixtures::project(), "kitty");
-        assert!(drawn(status(&app), 80, 1).contains("preview: kitty"));
+        assert!(!drawn(status(&app, 120), 120, 1).contains("kitty"));
     }
 }

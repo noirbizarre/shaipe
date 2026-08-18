@@ -37,7 +37,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend) {
     app.set_preview_area(right, backend.cell_size(), backend.scale());
     draw_preview(frame, app, backend, right);
 
-    frame.render_widget(panes::status(app), status);
+    frame.render_widget(panes::status(app, status.width), status);
 }
 
 /// Rows an unfocused pane may occupy, borders included.
@@ -157,9 +157,18 @@ fn draw_left(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 
 /// Draw the preview column.
 fn draw_preview(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend, area: Rect) {
+    // The backend belongs here rather than in the status line, which was
+    // spending fifteen columns of every row on every pane to say something
+    // about this one — and those were the columns the prompt pane needed to
+    // name the key that reaches the agent.
+    //
+    // It is read when a preview looks wrong, which is when the eye is already
+    // on this pane.
     let caption = match app.preview() {
-        Preview::Ready { caption, .. } => format!(" preview — {caption} "),
-        _ => " preview ".to_owned(),
+        Preview::Ready { caption, .. } => {
+            format!(" preview ({}) — {caption} ", app.backend)
+        }
+        _ => format!(" preview ({}) ", app.backend),
     };
     // In the title rather than over the image: a render can take a noticeable
     // moment, and replacing the previous preview with a spinner would be a
