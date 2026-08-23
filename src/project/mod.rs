@@ -30,6 +30,23 @@ pub use variant::Variant;
 
 use crate::error::{Error, Result};
 
+/// The bytes of a freshly created project, before its variant is declared.
+///
+/// A self-closing placeholder `<shaipe:project>` gives
+/// [`document::replace_metadata`] a byte range to splice into — the same path
+/// every other edit takes, which is what makes a freshly initialised project
+/// round-trip identically once it is saved.
+const TEMPLATE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:shaipe="https://shaipe.dev/ns/2026" viewBox="0 0 64 64" width="64" height="64">
+  <metadata>
+    <shaipe:project version="1"/>
+  </metadata>
+  <symbol id="icon" viewBox="0 0 64 64">
+    <rect width="64" height="64" fill="currentColor"/>
+  </symbol>
+  <use href="#icon" width="64" height="64"/>
+</svg>
+"##;
+
 /// An opened Shaipe project.
 ///
 /// Holds the original bytes as well as the parsed metadata. The bytes are what
@@ -79,6 +96,24 @@ impl Project {
             source,
             metadata,
         })
+    }
+
+    /// Create a fresh project in memory: a placeholder icon, declared as the
+    /// primary variant.
+    ///
+    /// Nothing is written to disk — this only produces the in-memory value
+    /// that `shaipe init`, or a workspace opened on a path that does not yet
+    /// exist, would go on to [`Project::save`].
+    ///
+    /// # Errors
+    ///
+    /// Only if the fixed template ever stopped parsing, which a unit test
+    /// guards against; it should never happen in practice.
+    pub fn init(path: impl Into<PathBuf>) -> Result<Self> {
+        let mut project = Self::from_source(path, TEMPLATE.to_owned())?;
+        project.metadata.primary = Some("icon".to_owned());
+        project.metadata.variants.push(Variant::new("icon"));
+        Ok(project)
     }
 
     /// Where the project file lives.
@@ -240,5 +275,30 @@ mod tests {
             project.resolve(Path::new("fonts/Inter.ttf")),
             Path::new("assets/brand/fonts/Inter.ttf")
         );
+    }
+
+    #[test]
+    fn initialising_a_project_declares_one_primary_variant() {
+        let project = Project::init("logo.svg").unwrap();
+        assert_eq!(project.metadata().primary.as_deref(), Some("icon"));
+        assert_eq!(project.metadata().variant_names(), ["icon"]);
+    }
+
+    #[test]
+    fn saving_a_freshly_initialised_project_then_saving_it_again_changes_nothing() {
+        // The same guarantee `saving_an_untouched_project_would_not_change_a_byte`
+        // makes for an existing project, extended to one that never existed
+        // before: once it has been saved once, saving it again must be a no-op.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+
+        let mut project = Project::init(&path).unwrap();
+        project.save().unwrap();
+        let once = std::fs::read_to_string(&path).unwrap();
+
+        project.save().unwrap();
+        let twice = std::fs::read_to_string(&path).unwrap();
+
+        assert_eq!(once, twice);
     }
 }

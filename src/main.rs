@@ -35,6 +35,7 @@ async fn main() -> ExitCode {
         }
         Some(Command::Tui(args)) => cli::tui::run(args, preview, scale, args_verbose).await,
         Some(Command::Mcp(args)) => cli::mcp::run(args).await,
+        Some(Command::Init(args)) => write_lines(|out| cli::init::run(args, out)),
         // Bare `shaipe` opens the workspace on the conventional project, which
         // is the thing a person in a project directory almost always wants.
         None => cli::tui::run(&TuiArgs::defaults(), preview, scale, args_verbose).await,

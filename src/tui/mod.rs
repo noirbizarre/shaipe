@@ -86,6 +86,11 @@ const BUSY_TICK: Duration = Duration::from_millis(80);
 /// than one that simply fails.
 pub async fn run(
     project: Project,
+    // Decided by the caller, which already had to ask whether `project`'s
+    // path existed in order to choose between `Project::open` and
+    // `Project::init` — asking the filesystem again here would be redundant
+    // and, in a process that has changed its working directory since, wrong.
+    new_project: bool,
     backend: Backend,
     scale: Option<Scale>,
     verbose: u8,
@@ -106,6 +111,9 @@ pub async fn run(
     }
     let mut app = App::new(project, preview.name());
     app.verbose = verbose;
+    if new_project {
+        app.mark_as_new_project();
+    }
 
     // A session the agent can reach, and the agent itself. Neither is fatal:
     // an agent that will not start must not stop someone from reading their

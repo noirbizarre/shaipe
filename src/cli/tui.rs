@@ -21,7 +21,15 @@ pub async fn run(
     scale: Option<Scale>,
     verbose: u8,
 ) -> Result<()> {
-    let project = Project::open(&args.input)?;
+    // A path that does not exist yet behaves as if `shaipe init` had been run
+    // on it: the workspace opens on a fresh, unsaved project rather than
+    // failing. Nothing is written until the project is saved.
+    let existed = args.input.exists();
+    let project = if existed {
+        Project::open(&args.input)?
+    } else {
+        Project::init(&args.input)?
+    };
 
     // Resolved here, and a failure to resolve is *not* fatal: the reason
     // travels into the workspace and is shown in the prompt pane, where the
@@ -39,5 +47,5 @@ pub async fn run(
         }
     };
 
-    shaipe::tui::run(project, preview, scale, verbose, agent).await
+    shaipe::tui::run(project, !existed, preview, scale, verbose, agent).await
 }

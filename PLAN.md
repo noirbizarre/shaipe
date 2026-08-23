@@ -69,7 +69,7 @@ Local, deterministic, no model.
 - [x] `shaipe doctor` — terminal, tmux, detected protocol, cell size, failure
 - [x] Typed, actionable diagnostics that name what does exist
 - [ ] `shaipe palette` — read and edit the palette without the TUI
-- [ ] `shaipe init` — create a project from nothing
+- [x] `shaipe init` — create a project from nothing
 - [ ] Shell completions and a man page
 
 ## Workspace

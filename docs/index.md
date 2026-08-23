@@ -55,6 +55,18 @@ Shaipe writes metadata back by replacing exactly the bytes that element
 occupied, so opening a project and saving it changes nothing else — not the
 artwork, not the comments, not the indentation.
 
+## Init
+
+```bash
+shaipe init
+```
+
+Creates a minimal project — one variant, `icon`, drawn as the primary — so
+there is something to open, render or hand to an agent. Refuses to overwrite
+a file that is already there unless `--force` is given; `--prompt "…"` seeds
+the prompt. `shaipe tui` and bare `shaipe` do the same automatically for a
+path that does not exist yet, in memory, until `ctrl-s` writes it.
+
 ## Rendering
 
 ```bash

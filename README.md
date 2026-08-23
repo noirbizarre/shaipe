@@ -87,6 +87,21 @@ Or download a binary for your platform from the
 
 ## Usage
 
+### Init
+
+```console
+$ shaipe init
+created logo.svg
+```
+
+Creates a minimal project: one variant, `icon`, drawn as the primary so the
+file is a viewable SVG from the first byte. Refuses to overwrite an existing
+file unless `--force` is given, and `--prompt "…"` seeds the prompt a
+workspace or an agent would otherwise be asked to fill in.
+
+`shaipe tui` and bare `shaipe` do this automatically for a path that does not
+exist yet — nothing is written until `ctrl-s`.
+
 ### Render
 
 With no other flags, `render` produces every asset the project declares:
@@ -405,8 +420,9 @@ Early, but real. Nothing described above is a mock.
 - The project format: metadata, palette, fonts, variants, references, render
   specifications, with a versioned schema and byte-preserving writes.
 - Deterministic rendering to PNG and SVG, at any size, with backgrounds.
-- `shaipe render`, `shaipe inspect`, and a CI workflow that regenerates this
-  repository's own artwork from `logo.svg` and fails if it drifted.
+- `shaipe render`, `shaipe inspect`, `shaipe init`, and a CI workflow that
+  regenerates this repository's own artwork from `logo.svg` and fails if it
+  drifted.
 - The terminal workspace, with Kitty, Sixel, iTerm2 and half-block previews.
 - Seven tools, over MCP: `shaipe mcp` serves any MCP client, and the workspace
   serves a session-scoped server to an agent it drives over ACP. Verified

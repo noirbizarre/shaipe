@@ -731,6 +731,23 @@ impl App {
         self.dirty = true;
     }
 
+    /// Note that the project this app holds has never been saved to disk.
+    ///
+    /// Called once, right after construction, by `shaipe::tui::run` when it
+    /// was handed a path that did not exist — see `Project::init`. Kept
+    /// separate from [`Self::new`] rather than folded into it, so every
+    /// existing call site building an app for a project that really is on
+    /// disk stays exactly as it was: unaffected, and not reaching the
+    /// filesystem a second time to ask a question its caller already
+    /// answered.
+    pub fn mark_as_new_project(&mut self) {
+        self.dirty = true;
+        self.notice = Some(Notice::info(format!(
+            "new project — ctrl-s to save {}",
+            self.project.path().display()
+        )));
+    }
+
     /// Re-read the prompt from the project into the editor.
     ///
     /// After something other than the editor changed it — an agent calling
@@ -2009,6 +2026,23 @@ mod tests {
     /// Replace the editor's buffer, as `$EDITOR` returning would.
     fn set_buffer(app: &mut App, text: &str) {
         app.set_draft(text);
+    }
+
+    #[test]
+    fn marking_a_project_as_new_makes_it_dirty_and_raises_a_notice() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("new.svg");
+
+        let mut app = App::new(
+            Project::init(&path).expect("the template is a valid project"),
+            "blocks",
+        );
+        assert!(!app.is_dirty(), "App::new alone must not decide this");
+
+        app.mark_as_new_project();
+
+        assert!(app.is_dirty());
+        assert!(app.notice.is_some());
     }
 
     #[test]

@@ -73,6 +73,17 @@ pub enum Error {
         path: PathBuf,
     },
 
+    /// `shaipe init` was asked to create a project where one already exists.
+    #[error("`{}` already exists", path.display())]
+    #[diagnostic(
+        code(shaipe::project::already_exists),
+        help("Open it directly, or pass `--force` to overwrite it.")
+    )]
+    ProjectExists {
+        /// The file already there.
+        path: PathBuf,
+    },
+
     /// The metadata declares a schema version this build does not understand.
     #[error("`{}` uses Shaipe metadata schema version {found}", path.display())]
     #[diagnostic(
