@@ -109,9 +109,10 @@ every state the workspace is in and lets you click it.
 The variants and the render specifications are the preview's tabs: `←` and `→`
 move between them and `m` swaps which of the two they list. `s` swaps the
 picture for the SVG that produced it, `t` swaps the prompt for the transcript,
-and `x` opens the render specifications editor. Each of the four is a toolbar
-button too, labelled with what pressing it will do rather than with the state
-it is in.
+and `x` opens the editor for whichever the tabs currently list — variants or
+render specifications, each a table that adds, removes and reorders its rows.
+Each of the four is a toolbar button too, labelled with what pressing it will
+do rather than with the state it is in.
 
 `tab` and `↑` `↓` move between the prompt and the palette, `enter` hands the
 keyboard to whichever has it and `esc` gives it back; both are edited in place and

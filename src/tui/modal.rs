@@ -18,19 +18,24 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
-use crate::project::{Background, Format, Hsl, Project, RenderSpec, Rgba};
+use crate::project::{Background, Format, Hsl, Project, RenderSpec, Rgba, Variant};
 
 /// What is covering the workspace.
 ///
-/// Two variants, for the same reason: a render specification has six fields
-/// and a colour has three sliders, and neither fits a list row. A *full*
-/// palette editor — adding, removing and renaming colours — was considered
-/// once and rejected for exactly that pane-row reason, and still is: the
-/// palette stays a pane, edited in place, for name and role. What earns a
-/// colour a modal is narrower — the value of the row already selected, with
-/// room to turn hue, saturation and lightness independently.
+/// Three variants, for the same reason: a render specification has six
+/// fields, a variant has two, and a colour has three sliders — none of them
+/// fit a list row. A *full* palette editor — adding, removing and renaming
+/// colours — was considered once and rejected for exactly that pane-row
+/// reason, and still is: the palette stays a pane, edited in place, for name
+/// and role. What earns a colour a modal is narrower — the value of the row
+/// already selected, with room to turn hue, saturation and lightness
+/// independently. Variants and render specifications earn one for the
+/// opposite reason: adding, removing and reordering them needs a table, the
+/// same table the tabs above the preview already read from.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Modal {
+    /// The variants editor.
+    Variants(VariantsEditor),
     /// The render specifications editor.
     Renders(RendersEditor),
     /// The colour picker.
@@ -225,8 +230,9 @@ impl RendersEditor {
     ///
     /// The arrows walk the table and every one of them commits first, so
     /// leaving a cell is as good as finishing it. `ctrl-n` and `ctrl-d` add and
-    /// remove a row: chords rather than `+` and `-`, which are characters
-    /// somebody typing a size would expect to reach the buffer.
+    /// remove a row, and `ctrl+↑`/`ctrl+↓` move one: chords rather than `+`,
+    /// `-` or plain arrows, all of which are characters or motions somebody
+    /// typing a size or picking a row would otherwise reach instead.
     pub fn key(&mut self, key: KeyEvent, project: &mut Project) -> bool {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
 
@@ -243,6 +249,8 @@ impl RendersEditor {
                 return true;
             }
             KeyCode::Char('d') if control => return self.remove(project),
+            KeyCode::Up if control => return self.move_row(-1, project),
+            KeyCode::Down if control => return self.move_row(1, project),
             KeyCode::Up => {
                 let mutated = self.commit(project);
                 self.row = self.row.saturating_sub(1);
@@ -307,6 +315,277 @@ impl RendersEditor {
         }
         specs.remove(self.row);
         self.row = self.row.min(specs.len().saturating_sub(1));
+        self.load(project);
+        true
+    }
+
+    /// Commit the cell, then swap the selected row with its neighbour.
+    ///
+    /// Does nothing at either end: there is no neighbour to swap with there,
+    /// and wrapping — which the tab strip does — would be a row silently
+    /// appearing to jump to the opposite end of a table instead of moving
+    /// one step, which is confusing in a way it never is for tabs.
+    fn move_row(&mut self, delta: isize, project: &mut Project) -> bool {
+        let mutated = self.commit(project);
+        let len = project.metadata().renders.len();
+        let target = if delta.is_negative() {
+            self.row.checked_sub(1)
+        } else {
+            (self.row + 1 < len).then_some(self.row + 1)
+        };
+        let Some(target) = target else {
+            return mutated;
+        };
+        project.metadata_mut().renders.swap(self.row, target);
+        self.row = target;
+        self.load(project);
+        true
+    }
+}
+
+/// One column of the variants table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VariantField {
+    /// The stable name render specifications refer to.
+    Name,
+    /// The id of the element in the document that draws it.
+    Element,
+}
+
+impl VariantField {
+    /// Every column, left to right.
+    const ALL: [Self; 2] = [Self::Name, Self::Element];
+
+    /// The column's heading.
+    const fn title(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Element => "element",
+        }
+    }
+
+    /// How wide it is drawn, in characters.
+    const fn width(self) -> u16 {
+        16
+    }
+
+    /// Its position, for moving between columns.
+    fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|candidate| *candidate == self)
+            .unwrap_or_default()
+    }
+
+    /// The next column round.
+    fn next(self) -> Self {
+        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+    }
+
+    /// The previous column round.
+    fn previous(self) -> Self {
+        Self::ALL[(self.index() + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+
+    /// What a variant currently says for this column.
+    fn read(self, variant: &Variant) -> String {
+        match self {
+            Self::Name => variant.name.clone(),
+            Self::Element => variant.element.clone(),
+        }
+    }
+
+    /// Write `text` back, reporting whether it said anything usable.
+    ///
+    /// Both columns refuse an empty string: a nameless variant cannot be
+    /// referred to, and an elementless one names nothing in the document.
+    fn write(self, variant: &mut Variant, text: &str) -> bool {
+        let text = text.trim();
+        if text.is_empty() {
+            return false;
+        }
+        match self {
+            Self::Name => variant.name = text.to_owned(),
+            Self::Element => variant.element = text.to_owned(),
+        }
+        true
+    }
+}
+
+/// The variants editor.
+///
+/// The same shape as [`RendersEditor`], for the same reason: a table wants
+/// the width of the screen, and everything else the workspace does still
+/// happens in place — the tab strip browses variants, this is what adds,
+/// removes and reorders them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariantsEditor {
+    row: usize,
+    field: VariantField,
+    /// What has been typed into the current cell.
+    buffer: String,
+    closed: bool,
+}
+
+impl VariantsEditor {
+    /// Open the editor on a row.
+    #[must_use]
+    pub fn new(row: usize, project: &Project) -> Self {
+        let mut editor = Self {
+            row,
+            field: VariantField::Name,
+            buffer: String::new(),
+            closed: false,
+        };
+        editor.load(project);
+        editor
+    }
+
+    /// Which row is being edited.
+    #[must_use]
+    pub const fn row(&self) -> usize {
+        self.row
+    }
+
+    /// Whether the editor has been asked to close.
+    #[must_use]
+    pub const fn closed(&self) -> bool {
+        self.closed
+    }
+
+    /// Fill the buffer from the cell now selected.
+    fn load(&mut self, project: &Project) {
+        self.buffer = project
+            .metadata()
+            .variants
+            .get(self.row)
+            .map(|variant| self.field.read(variant))
+            .unwrap_or_default();
+    }
+
+    /// Write the buffer back, reporting whether the project changed.
+    fn commit(&self, project: &mut Project) -> bool {
+        let buffer = self.buffer.clone();
+        let Some(variant) = project.metadata_mut().variants.get_mut(self.row) else {
+            return false;
+        };
+        let before = variant.clone();
+        self.field.write(variant, &buffer);
+        *variant != before
+    }
+
+    /// Apply a keypress, reporting whether the project changed.
+    ///
+    /// The key map is [`RendersEditor::key`]'s exactly: the arrows commit
+    /// before moving, `ctrl-n`/`ctrl-d` add and remove a row, and
+    /// `ctrl+↑`/`ctrl+↓` move one.
+    pub fn key(&mut self, key: KeyEvent, project: &mut Project) -> bool {
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+
+        match key.code {
+            KeyCode::Esc => {
+                let mutated = self.commit(project);
+                self.closed = true;
+                return mutated;
+            }
+            KeyCode::Char('n') if control => {
+                self.commit(project);
+                self.add(project);
+                return true;
+            }
+            KeyCode::Char('d') if control => return self.remove(project),
+            KeyCode::Up if control => return self.move_row(-1, project),
+            KeyCode::Down if control => return self.move_row(1, project),
+            KeyCode::Up => {
+                let mutated = self.commit(project);
+                self.row = self.row.saturating_sub(1);
+                self.load(project);
+                return mutated;
+            }
+            KeyCode::Down => {
+                let mutated = self.commit(project);
+                let last = project.metadata().variants.len().saturating_sub(1);
+                self.row = self.row.saturating_add(1).min(last);
+                self.load(project);
+                return mutated;
+            }
+            KeyCode::Left | KeyCode::BackTab => {
+                let mutated = self.commit(project);
+                self.field = self.field.previous();
+                self.load(project);
+                return mutated;
+            }
+            KeyCode::Right | KeyCode::Tab | KeyCode::Enter => {
+                let mutated = self.commit(project);
+                self.field = self.field.next();
+                self.load(project);
+                return mutated;
+            }
+            KeyCode::Backspace => {
+                self.buffer.pop();
+            }
+            KeyCode::Char(character) => self.buffer.push(character),
+            _ => return false,
+        }
+
+        self.commit(project)
+    }
+
+    /// Add a variant below the one selected.
+    ///
+    /// Its element defaults to the selected variant's own — an alias, not a
+    /// new drawing — so the row the renderer sees is one it already knows
+    /// how to draw, the same guarantee [`RendersEditor::add`] gives by
+    /// defaulting its `variant` field to one that already exists. The TUI
+    /// cannot draw new geometry; only `write_svg` or an agent can, and this
+    /// leaves the id free to be retyped onto whichever element they add.
+    fn add(&mut self, project: &mut Project) {
+        // Named after its position rather than left blank: an unnamed
+        // variant cannot be referred to by a render specification.
+        let name = format!("variant-{}", project.metadata().variants.len() + 1);
+        let element = project
+            .metadata()
+            .variants
+            .get(self.row)
+            .map_or_else(|| name.clone(), |variant| variant.element.clone());
+
+        let variants = &mut project.metadata_mut().variants;
+        let at = (self.row + 1).min(variants.len());
+        variants.insert(at, Variant::with_element(name, element));
+
+        self.row = at;
+        self.field = VariantField::Name;
+        self.load(project);
+    }
+
+    /// Remove the selected variant.
+    fn remove(&mut self, project: &mut Project) -> bool {
+        let variants = &mut project.metadata_mut().variants;
+        if self.row >= variants.len() {
+            return false;
+        }
+        variants.remove(self.row);
+        self.row = self.row.min(variants.len().saturating_sub(1));
+        self.load(project);
+        true
+    }
+
+    /// Commit the cell, then swap the selected row with its neighbour.
+    ///
+    /// See [`RendersEditor::move_row`] — the same rule, the same reason.
+    fn move_row(&mut self, delta: isize, project: &mut Project) -> bool {
+        let mutated = self.commit(project);
+        let len = project.metadata().variants.len();
+        let target = if delta.is_negative() {
+            self.row.checked_sub(1)
+        } else {
+            (self.row + 1 < len).then_some(self.row + 1)
+        };
+        let Some(target) = target else {
+            return mutated;
+        };
+        project.metadata_mut().variants.swap(self.row, target);
+        self.row = target;
         self.load(project);
         true
     }
@@ -850,7 +1129,103 @@ pub fn draw_renders(frame: &mut Frame<'_>, editor: &RendersEditor, project: &Pro
 
     lines.push(Line::raw(""));
     lines.push(Line::styled(
-        "↑↓ row   ←→ field   ctrl-n add   ctrl-d remove   esc close",
+        "↑↓ row   ←→ field   ctrl-n add   ctrl-d remove   ctrl+↑↓ move   esc close",
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Draw the variants editor over the workspace.
+pub fn draw_variants(
+    frame: &mut Frame<'_>,
+    editor: &VariantsEditor,
+    project: &Project,
+    area: Rect,
+) {
+    let variants = &project.metadata().variants;
+    let width: u16 = VariantField::ALL
+        .iter()
+        .map(|field| field.width() + 1)
+        .sum();
+    // Heading, a row each, and the two borders — plus one for the key hints,
+    // which are the only place `ctrl-n` is discoverable.
+    let height = u16::try_from(variants.len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(5);
+    let area = centred(area, width + 4, height);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::LightGreen))
+        .title(Span::styled(
+            " variants ",
+            Style::default()
+                .fg(Color::LightGreen)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    // Everything underneath is cleared: a modal drawn over live cells reads as
+    // corruption rather than as a dialogue.
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
+
+    let mut lines = vec![Line::from(
+        VariantField::ALL
+            .iter()
+            .map(|field| {
+                Span::styled(
+                    pad(field.title(), field.width()),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD),
+                )
+            })
+            .collect::<Vec<_>>(),
+    )];
+
+    for (row, variant) in variants.iter().enumerate() {
+        let spans = VariantField::ALL
+            .iter()
+            .map(|field| {
+                let here = row == editor.row && *field == editor.field;
+                // The buffer, not the variant, in the cell being typed into —
+                // otherwise the keystrokes would be invisible until they
+                // happened to parse.
+                let text = if here {
+                    editor.buffer.clone()
+                } else {
+                    field.read(variant)
+                };
+                Span::styled(
+                    pad(&text, field.width()),
+                    if here {
+                        Style::default().fg(Color::Black).bg(Color::LightGreen)
+                    } else if row == editor.row {
+                        Style::default().fg(Color::White)
+                    } else {
+                        Style::default().fg(Color::Gray)
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        lines.push(Line::from(spans));
+    }
+
+    if variants.is_empty() {
+        lines.push(Line::styled(
+            "none declared — ctrl-n adds one",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        "↑↓ row   ←→ field   ctrl-n add   ctrl-d remove   ctrl+↑↓ move   esc close",
         Style::default().fg(Color::DarkGray),
     ));
 
@@ -956,6 +1331,41 @@ mod tests {
     }
 
     #[test]
+    fn a_specification_can_be_moved_up_and_down() {
+        let mut project = fixtures::project();
+        let mut editor = RendersEditor::new(0, &project);
+        let first = project.metadata().renders[0].name.clone();
+        let second = project.metadata().renders[1].name.clone();
+
+        assert!(chord(&mut editor, &mut project, KeyCode::Down));
+        assert_eq!(editor.row(), 1);
+        assert_eq!(project.metadata().renders[0].name, second);
+        assert_eq!(project.metadata().renders[1].name, first);
+
+        assert!(chord(&mut editor, &mut project, KeyCode::Up));
+        assert_eq!(editor.row(), 0);
+        assert_eq!(project.metadata().renders[0].name, first);
+        assert_eq!(project.metadata().renders[1].name, second);
+    }
+
+    #[test]
+    fn moving_the_top_row_up_or_the_bottom_row_down_does_nothing() {
+        // Wrapping, the way the tab strip does, would make a row appear to
+        // jump to the opposite end of the table instead of moving one step.
+        let mut project = fixtures::project();
+        let before = project.metadata().renders.clone();
+
+        let mut top = RendersEditor::new(0, &project);
+        assert!(!chord(&mut top, &mut project, KeyCode::Up));
+        assert_eq!(project.metadata().renders, before);
+
+        let last = before.len() - 1;
+        let mut bottom = RendersEditor::new(last, &project);
+        assert!(!chord(&mut bottom, &mut project, KeyCode::Down));
+        assert_eq!(project.metadata().renders, before);
+    }
+
+    #[test]
     fn removing_the_last_specification_leaves_the_cursor_somewhere_real() {
         // An index past the end panics on draw, which takes the terminal down
         // with it.
@@ -988,6 +1398,129 @@ mod tests {
             let inner = centred(area, 80, 20);
             assert!(inner.width <= width && inner.height <= height);
         }
+    }
+
+    fn press_variant(editor: &mut VariantsEditor, project: &mut Project, code: KeyCode) -> bool {
+        editor.key(KeyEvent::new(code, KeyModifiers::NONE), project)
+    }
+
+    fn chord_variant(editor: &mut VariantsEditor, project: &mut Project, code: KeyCode) -> bool {
+        editor.key(KeyEvent::new(code, KeyModifiers::CONTROL), project)
+    }
+
+    fn type_text_variant(editor: &mut VariantsEditor, project: &mut Project, text: &str) {
+        for character in text.chars() {
+            press_variant(editor, project, KeyCode::Char(character));
+        }
+    }
+
+    #[test]
+    fn retyping_a_variant_cell_changes_it() {
+        let mut project = fixtures::project();
+        let mut editor = VariantsEditor::new(0, &project);
+
+        for _ in 0..editor.buffer.len() {
+            press_variant(&mut editor, &mut project, KeyCode::Backspace);
+        }
+        type_text_variant(&mut editor, &mut project, "mark");
+
+        assert_eq!(project.metadata().variants[0].name, "mark");
+    }
+
+    #[test]
+    fn an_emptied_variant_name_is_not_committed_as_empty() {
+        // The cell commits as it is typed, so "icon" backspaced down to "i"
+        // really is a variant named "i" — that is the point of editing in
+        // place. What must not happen is the last backspace, to nothing at
+        // all, reaching the project: a nameless variant cannot be referred
+        // to by any render specification.
+        let mut project = fixtures::project();
+        let mut editor = VariantsEditor::new(0, &project);
+
+        for _ in 0..editor.buffer.len() {
+            press_variant(&mut editor, &mut project, KeyCode::Backspace);
+        }
+
+        assert_eq!(project.metadata().variants[0].name, "i");
+    }
+
+    #[test]
+    fn a_variant_can_be_added_and_removed() {
+        let mut project = fixtures::project();
+        let before = project.metadata().variants.len();
+        let mut editor = VariantsEditor::new(0, &project);
+
+        assert!(chord_variant(&mut editor, &mut project, KeyCode::Char('n')));
+        assert_eq!(project.metadata().variants.len(), before + 1);
+        // Added below the selection and selected, so it can be retyped at once.
+        assert_eq!(editor.row(), 1);
+        // Aliases the element of the row it was added from, so the renderer
+        // already knows how to draw it.
+        assert_eq!(
+            project.metadata().variants[1].element,
+            project.metadata().variants[0].element
+        );
+
+        assert!(chord_variant(&mut editor, &mut project, KeyCode::Char('d')));
+        assert_eq!(project.metadata().variants.len(), before);
+    }
+
+    #[test]
+    fn an_added_variant_is_one_the_renderer_will_accept() {
+        // A row that cannot render is worse than no row: it fails as soon as
+        // anything asks for its preview.
+        let mut project = fixtures::project();
+        let mut editor = VariantsEditor::new(0, &project);
+        chord_variant(&mut editor, &mut project, KeyCode::Char('n'));
+
+        let variant = project.metadata().variants[1].clone();
+        let renderer =
+            crate::render::Renderer::new(&project, crate::render::RenderOptions::default())
+                .expect("the fixture renders");
+        let spec = RenderSpec::square(&variant.name, &variant.name, 64);
+        assert!(renderer.render(&spec).is_ok(), "{spec:?}");
+    }
+
+    #[test]
+    fn a_variant_can_be_moved_up_and_down() {
+        let mut project = fixtures::project();
+        let mut editor = VariantsEditor::new(0, &project);
+        let first = project.metadata().variants[0].name.clone();
+        let second = project.metadata().variants[1].name.clone();
+
+        assert!(chord_variant(&mut editor, &mut project, KeyCode::Down));
+        assert_eq!(editor.row(), 1);
+        assert_eq!(project.metadata().variants[0].name, second);
+        assert_eq!(project.metadata().variants[1].name, first);
+
+        assert!(chord_variant(&mut editor, &mut project, KeyCode::Up));
+        assert_eq!(editor.row(), 0);
+        assert_eq!(project.metadata().variants[0].name, first);
+        assert_eq!(project.metadata().variants[1].name, second);
+    }
+
+    #[test]
+    fn removing_the_last_variant_leaves_the_cursor_somewhere_real() {
+        // An index past the end panics on draw, which takes the terminal
+        // down with it.
+        let mut project = fixtures::project();
+        let mut editor = VariantsEditor::new(0, &project);
+
+        while !project.metadata().variants.is_empty() {
+            chord_variant(&mut editor, &mut project, KeyCode::Char('d'));
+        }
+
+        assert_eq!(editor.row(), 0);
+        assert!(!editor.closed());
+    }
+
+    #[test]
+    fn escape_closes_the_variants_editor() {
+        let mut project = fixtures::project();
+        let mut editor = VariantsEditor::new(0, &project);
+
+        press_variant(&mut editor, &mut project, KeyCode::Esc);
+        assert!(editor.closed());
     }
 
     fn press_picker(picker: &mut ColourPicker, project: &mut Project, code: KeyCode) -> bool {

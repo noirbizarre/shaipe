@@ -187,7 +187,8 @@ keyboard to whichever has it and `esc` gives it back. Both panes are edited in
 place: the prompt is prose, and a palette colour is its name and its value,
 committed as you type. Every button says what pressing it will do, so the
 toolbar reads `Source` while the preview is up and `Preview` while it is not.
-`r` re-renders, `x` opens the render specifications editor, `q` quits.
+`r` re-renders, `x` opens the editor for whichever the tabs list — variants or
+render specifications — `q` quits.
 The mouse works: click a toolbar button or a tab, click a pane to focus it,
 double-click to edit it, wheel to scroll, drag the divider to resize, and
 double-click a specification's tab to write it to `dist/`.
@@ -322,7 +323,7 @@ The keys:
 | `m` | swap the variants for the render specifications |
 | `s` | swap the preview for the SVG that produced it |
 | `t` | swap the prompt for the transcript |
-| `x` | open the render specifications editor |
+| `x` | open the editor for whichever the tabs list |
 | `PageUp` / `PageDown` | scroll the source, or the transcript |
 | `ctrl-c` | stop the turn the agent is on; again to quit |
 | `ctrl-s` | save the project |
@@ -343,10 +344,15 @@ at, so the agent rewriting the wordmark leaves the icon on screen alone.
 `a` only works where the prompt actually is — once the editor has the keyboard
 it owns every key — so `alt+a` is the one that works from inside it.
 
-The render specifications editor is a table: `↑↓` picks a row, `←→` a field,
-`ctrl-n` adds a specification, `ctrl-d` removes one and `esc` closes it. Chords
-for adding and removing, because `+` and `-` are characters somebody typing a
-size expects to reach the field.
+Both editors are tables: `↑↓` picks a row, `←→` a field, `ctrl-n` adds a row,
+`ctrl-d` removes one, `ctrl+↑`/`ctrl+↓` moves one, and `esc` closes it. Chords
+throughout, because `+`, `-` and plain arrows are characters and motions
+somebody retyping a field would otherwise expect to reach it. The render
+specifications editor has six columns — name, variant, width, height, format,
+background; the variants editor has two — name and the id of the element in
+the document it draws. Adding a variant aliases the element the selected row
+already points at, so the new row renders immediately; retype its element to
+point it at something else once one exists.
 
 ### What the agent may and may not do
 

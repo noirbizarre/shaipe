@@ -586,7 +586,7 @@ fn hints(app: &App) -> Vec<Hint> {
         },
         6,
     ));
-    hints.push(Hint::optional("x", "renders", 8));
+    hints.push(Hint::optional("x", app.mode().title(), 8));
     hints.push(Hint::optional("r", "render", 4));
     hints.push(Hint::optional("ctrl-s", "save", 1));
     hints.push(Hint::optional("R", "reload", 7));

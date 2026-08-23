@@ -30,8 +30,8 @@ pub enum Button {
     View,
     /// Swap the variants for the render specifications.
     Mode,
-    /// Open the render specifications editor.
-    Renders,
+    /// Open the editor for whichever the tabs currently list.
+    Editor,
     /// Swap the prompt for the transcript.
     Transcript,
 }
@@ -78,8 +78,11 @@ fn segments(app: &App) -> Vec<Segment> {
             label: label(app.mode().other().title()),
         },
         Segment {
-            button: Button::Renders,
-            label: label("edit renders"),
+            button: Button::Editor,
+            // Named after the tabs it edits, current not other: unlike the
+            // three toggles above, pressing this does not swap the mode, so
+            // labelling it with what it does *to* would say the wrong thing.
+            label: label(&format!("edit {}", app.mode().title())),
         },
     ]
 }
@@ -173,9 +176,29 @@ mod tests {
         let line = drawn(&mut app, 80);
 
         assert!(line.contains("Shaipe"), "{line}");
-        for expected in ["Transcript", "Source", "Renders", "Edit renders"] {
+        // A fresh app defaults to `Mode::Variants`, so the mode button reads
+        // "Renders" (what it switches *to*) and the editor button reads
+        // "Edit variants" (what it edits *now*) — the two read differently on
+        // purpose; see `segments`.
+        for expected in ["Transcript", "Source", "Renders", "Edit variants"] {
             assert!(line.contains(expected), "{expected} missing from\n{line}");
         }
+    }
+
+    #[test]
+    fn the_editor_button_is_named_after_the_current_mode_not_the_other_one() {
+        // Unlike `Mode`, `View` and `LeftView`'s buttons, this one does not
+        // switch anything, so it cannot be labelled with what pressing it
+        // will change to.
+        let mut app = app();
+        let line = drawn(&mut app, 80);
+        assert!(line.contains("Edit variants"), "{line}");
+        assert!(!line.contains("Edit renders"), "{line}");
+
+        app.toggle_mode();
+        let line = drawn(&mut app, 80);
+        assert!(line.contains("Edit renders"), "{line}");
+        assert!(!line.contains("Edit variants"), "{line}");
     }
 
     #[test]
@@ -240,7 +263,7 @@ mod tests {
         for expected in [
             Button::View,
             Button::Mode,
-            Button::Renders,
+            Button::Editor,
             Button::Transcript,
         ] {
             let area = app

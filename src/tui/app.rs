@@ -19,7 +19,7 @@ use ratatui_textarea::{TextArea, WrapMode};
 use crate::preview::{Image, Scale};
 use crate::project::{Format, Project, RenderSpec, Rgba};
 use crate::render::{RenderOptions, Renderer};
-use crate::tui::modal::{ColourPicker, Modal, RendersEditor};
+use crate::tui::modal::{ColourPicker, Modal, RendersEditor, VariantsEditor};
 use crate::tui::render_worker::{Rendered, Worker};
 use crate::tui::toolbar::Button;
 use crate::tui::transcript::Transcript;
@@ -1863,8 +1863,8 @@ impl App {
 
     /// Open the render specifications editor.
     ///
-    /// The one operation on the project that is neither a keystroke into a
-    /// field nor an agent's doing: adding, removing and retyping a
+    /// One of two operations on the project that is neither a keystroke into
+    /// a field nor an agent's doing: adding, removing and retyping a
     /// specification needs a table, and a table needs the whole screen.
     pub fn open_renders_editor(&mut self) {
         // The editor opens on what is on screen, so the row under the cursor
@@ -1875,6 +1875,30 @@ impl App {
             0
         };
         self.modal = Some(Modal::Renders(RendersEditor::new(row, &self.project)));
+    }
+
+    /// Open the variants editor.
+    ///
+    /// [`Self::open_renders_editor`]'s counterpart, for the tabs' other mode.
+    pub fn open_variants_editor(&mut self) {
+        let row = if self.mode == Mode::Variants {
+            self.tab()
+        } else {
+            0
+        };
+        self.modal = Some(Modal::Variants(VariantsEditor::new(row, &self.project)));
+    }
+
+    /// Open the editor for whichever the tabs currently list.
+    ///
+    /// The single entry point `x` and its toolbar button both reach —
+    /// neither has to know which mode the tabs are in, only that there is
+    /// always exactly one editor that matches it.
+    pub fn open_editor(&mut self) {
+        match self.mode {
+            Mode::Variants => self.open_variants_editor(),
+            Mode::Renders => self.open_renders_editor(),
+        }
     }
 
     /// Open the colour picker on the palette's selected row.
@@ -1898,6 +1922,14 @@ impl App {
     /// Apply a keypress to the modal, which owns every key while it is open.
     pub fn modal_key(&mut self, key: KeyEvent) {
         match self.modal.take() {
+            Some(Modal::Variants(mut editor)) => {
+                if editor.key(key, &mut self.project) {
+                    self.dirty = true;
+                }
+                if !editor.closed() {
+                    self.modal = Some(Modal::Variants(editor));
+                }
+            }
             Some(Modal::Renders(mut editor)) => {
                 if editor.key(key, &mut self.project) {
                     self.dirty = true;

@@ -1,7 +1,7 @@
 //! The interactive workspace.
 //!
 //! ```text
-//! ┌ Shaipe  [Transcript] [Source] [Renders] [Edit renders] ────────────────┐
+//! ┌ Shaipe  [Transcript] [Source] [Renders] [Edit variants] ───────────────┐
 //! ├───────────────────────┬────────────────────────────────────────────────┤
 //! │ prompt or transcript  │ ‹ icon │ wordmark ›                            │
 //! │                       │                                                │
@@ -702,7 +702,7 @@ fn handle(app: &mut App, key: KeyEvent) {
         KeyCode::Char('s') => app.toggle_view(),
         KeyCode::Char('m') => app.toggle_mode(),
         KeyCode::Char('t') => app.toggle_left_view(),
-        KeyCode::Char('x') => app.open_renders_editor(),
+        KeyCode::Char('x') => app.open_editor(),
         // Only from the palette: elsewhere there is no selected colour for it
         // to open on.
         KeyCode::Char('p') if app.focus == Focus::Palette => app.open_colour_picker(),
@@ -823,7 +823,7 @@ fn press(app: &mut App, button: Button) {
     match button {
         Button::View => app.toggle_view(),
         Button::Mode => app.toggle_mode(),
-        Button::Renders => app.open_renders_editor(),
+        Button::Editor => app.open_editor(),
         Button::Transcript => app.toggle_left_view(),
     }
 }
@@ -1083,7 +1083,24 @@ mod tests {
         assert_eq!(app.mode(), app::Mode::Renders);
 
         press(&mut app, KeyCode::Char('x'));
-        assert!(app.modal().is_some());
+        assert!(
+            matches!(app.modal(), Some(crate::tui::modal::Modal::Renders(_))),
+            "{:?}",
+            app.modal()
+        );
+    }
+
+    #[test]
+    fn x_opens_the_variants_editor_when_the_tabs_list_variants() {
+        let mut app = app();
+        assert_eq!(app.mode(), app::Mode::Variants);
+
+        press(&mut app, KeyCode::Char('x'));
+        assert!(
+            matches!(app.modal(), Some(crate::tui::modal::Modal::Variants(_))),
+            "{:?}",
+            app.modal()
+        );
     }
 
     #[test]
@@ -1541,14 +1558,14 @@ mod tests {
                 Button::Transcript,
                 Box::new(|app: &App| app.left_view() == app::LeftView::Transcript),
             ),
-            (Button::Renders, Box::new(|app: &App| app.modal().is_some())),
+            (Button::Editor, Box::new(|app: &App| app.modal().is_some())),
         ] {
             let area = app.button_area(button).expect("it was drawn");
             click(&mut app, area.x, area.y);
             assert!(moved(&app), "{button:?} did nothing");
             // Back the way it was, so the next button starts from the same
             // workspace. The dialogue is the one that does not toggle.
-            if button == Button::Renders {
+            if button == Button::Editor {
                 app.close_modal();
             } else {
                 click(&mut app, area.x, area.y);

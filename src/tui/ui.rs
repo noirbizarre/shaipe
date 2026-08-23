@@ -1,7 +1,7 @@
 //! Where the panes go.
 //!
 //! ```text
-//! ┌ Shaipe  [Transcript] [Source] [Renders] [Edit renders] ─────────────────┐
+//! ┌ Shaipe  [Transcript] [Source] [Renders] [Edit variants] ────────────────┐
 //! ├──────────── left, half ─────────┬──────────────── right ────────────────┤
 //! │ prompt, or the transcript  2/3  │ ‹ icon │ wordmark ›                   │
 //! │                                 │                                       │
@@ -58,6 +58,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend) {
     // Last, and over everything: a modal that drew under a pane would be a
     // dialogue nobody could read.
     match app.modal() {
+        Some(Modal::Variants(editor)) => modal::draw_variants(frame, editor, &app.project, body),
         Some(Modal::Renders(editor)) => modal::draw_renders(frame, editor, &app.project, body),
         Some(Modal::ColourPicker(picker)) => {
             modal::draw_colour_picker(frame, picker, &app.project, body);
@@ -625,6 +626,21 @@ text, so it reads at 16 pixels.";
             0,
             "the picture was drawn through the dialogue"
         );
+    }
+
+    #[test]
+    fn the_variants_editor_covers_the_workspace() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.refresh_preview();
+        app.open_variants_editor();
+
+        let text = render(&mut app, 100, 30);
+
+        assert!(text.contains("variants"), "{text}");
+        assert!(text.contains("element"), "the table's columns\n{text}");
+        // The fixture's own variants, both on the table at once.
+        assert!(text.contains("icon"), "{text}");
+        assert!(text.contains("wordmark"), "{text}");
     }
 
     #[test]

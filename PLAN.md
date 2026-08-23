@@ -112,7 +112,7 @@ The interactive TUI.
 - [x] Save the project from the workspace, with a dirty marker and a guard on
       quitting with unsaved changes
 - [x] A colour picker for the palette pane
-- [ ] Add, remove and reorder variants and render specifications
+- [x] Add, remove and reorder variants and render specifications
 - [ ] Export all assets from the workspace
 - [x] A toolbar naming every state the workspace is in, and clickable
 - [x] The left column is half the width, prompt over palette at 2:1, and no
