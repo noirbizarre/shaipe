@@ -703,6 +703,9 @@ fn handle(app: &mut App, key: KeyEvent) {
         KeyCode::Char('m') => app.toggle_mode(),
         KeyCode::Char('t') => app.toggle_left_view(),
         KeyCode::Char('x') => app.open_renders_editor(),
+        // Only from the palette: elsewhere there is no selected colour for it
+        // to open on.
+        KeyCode::Char('p') if app.focus == Focus::Palette => app.open_colour_picker(),
         KeyCode::PageDown if app.scrolls() => app.scroll_view(10),
         KeyCode::PageUp if app.scrolls() => app.scroll_view(-10),
         _ => {}
@@ -1081,6 +1084,37 @@ mod tests {
 
         press(&mut app, KeyCode::Char('x'));
         assert!(app.modal().is_some());
+    }
+
+    #[test]
+    fn p_opens_the_colour_picker_only_from_the_palette() {
+        let mut app = app();
+        app.focus = Focus::Prompt;
+
+        press(&mut app, KeyCode::Char('p'));
+        assert!(
+            app.modal().is_none(),
+            "a colour picker opened with no colour to open it on"
+        );
+
+        app.focus = Focus::Palette;
+        press(&mut app, KeyCode::Char('p'));
+        assert!(app.modal().is_some());
+    }
+
+    #[test]
+    fn p_types_into_the_field_being_edited_instead_of_opening_the_picker() {
+        // The in-place editor owns every printable key once it is engaged —
+        // `p` is a letter someone might type into a colour's name, not a
+        // request to open the picker on top of what they are already doing.
+        let mut app = app();
+        app.focus = Focus::Palette;
+        press(&mut app, KeyCode::Enter);
+        assert!(app.is_editing());
+
+        press(&mut app, KeyCode::Char('p'));
+
+        assert!(app.modal().is_none());
     }
 
     #[test]

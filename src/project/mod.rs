@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 pub use document::SVG_NAMESPACE;
 pub use font::Font;
 pub use metadata::{Generation, Metadata};
-pub use palette::{Colour, Palette, Rgba, Role};
+pub use palette::{Colour, Hsl, Palette, Rgba, Role};
 pub use reference::{Reference, ReferenceKind};
 pub use spec::{Background, Format, RenderSpec};
 pub use variant::Variant;

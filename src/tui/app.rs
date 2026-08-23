@@ -19,7 +19,7 @@ use ratatui_textarea::{TextArea, WrapMode};
 use crate::preview::{Image, Scale};
 use crate::project::{Format, Project, RenderSpec, Rgba};
 use crate::render::{RenderOptions, Renderer};
-use crate::tui::modal::{Modal, RendersEditor};
+use crate::tui::modal::{ColourPicker, Modal, RendersEditor};
 use crate::tui::render_worker::{Rendered, Worker};
 use crate::tui::toolbar::Button;
 use crate::tui::transcript::Transcript;
@@ -1877,24 +1877,44 @@ impl App {
         self.modal = Some(Modal::Renders(RendersEditor::new(row, &self.project)));
     }
 
+    /// Open the colour picker on the palette's selected row.
+    ///
+    /// A no-op with no row selected — an empty palette, or a selection past
+    /// its end, either of which would otherwise open a picker with nothing
+    /// to pick.
+    pub fn open_colour_picker(&mut self) {
+        let row = self.selection(Focus::Palette);
+        if self.project.metadata().palette.colours().get(row).is_none() {
+            return;
+        }
+        self.modal = Some(Modal::ColourPicker(ColourPicker::new(row, &self.project)));
+    }
+
     /// Close whatever modal is open.
     pub fn close_modal(&mut self) {
         self.modal = None;
     }
 
     /// Apply a keypress to the modal, which owns every key while it is open.
-    ///
-    /// Returns whether the modal is still open afterwards, so the caller does
-    /// not have to ask twice.
     pub fn modal_key(&mut self, key: KeyEvent) {
-        let Some(Modal::Renders(mut editor)) = self.modal.take() else {
-            return;
-        };
-        if editor.key(key, &mut self.project) {
-            self.dirty = true;
-        }
-        if !editor.closed() {
-            self.modal = Some(Modal::Renders(editor));
+        match self.modal.take() {
+            Some(Modal::Renders(mut editor)) => {
+                if editor.key(key, &mut self.project) {
+                    self.dirty = true;
+                }
+                if !editor.closed() {
+                    self.modal = Some(Modal::Renders(editor));
+                }
+            }
+            Some(Modal::ColourPicker(mut picker)) => {
+                if picker.key(key, &mut self.project) {
+                    self.dirty = true;
+                }
+                if !picker.closed() {
+                    self.modal = Some(Modal::ColourPicker(picker));
+                }
+            }
+            None => {}
         }
     }
 

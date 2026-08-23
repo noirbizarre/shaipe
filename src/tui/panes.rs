@@ -560,6 +560,10 @@ fn hints(app: &App) -> Vec<Hint> {
         hints.push(Hint::optional("e", "$EDITOR", 3));
     }
 
+    if app.focus == Focus::Palette {
+        hints.push(Hint::optional("p", "picker", 8));
+    }
+
     // The ordering of what is given up first, most eager last in this list.
     // There are far more keys than columns now, so this is where the line
     // decides what a narrow terminal is for: the toggles that have a visible

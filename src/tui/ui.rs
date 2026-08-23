@@ -57,8 +57,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend) {
 
     // Last, and over everything: a modal that drew under a pane would be a
     // dialogue nobody could read.
-    if let Some(Modal::Renders(editor)) = app.modal() {
-        modal::draw(frame, editor, &app.project, body);
+    match app.modal() {
+        Some(Modal::Renders(editor)) => modal::draw_renders(frame, editor, &app.project, body),
+        Some(Modal::ColourPicker(picker)) => {
+            modal::draw_colour_picker(frame, picker, &app.project, body);
+        }
+        None => {}
     }
 }
 
@@ -621,6 +625,24 @@ text, so it reads at 16 pixels.";
             0,
             "the picture was drawn through the dialogue"
         );
+    }
+
+    #[test]
+    fn the_colour_picker_shows_the_selected_colours_name_and_its_controls() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.focus = Focus::Palette;
+        app.open_colour_picker();
+        assert!(app.modal().is_some());
+
+        let text = render(&mut app, 100, 30);
+
+        // The fixture's first colour, and the sliders a value is turned with.
+        assert!(text.contains("accent"), "{text}");
+        assert!(text.contains("hue"), "{text}");
+        assert!(text.contains("saturation"), "{text}");
+        assert!(text.contains("lightness"), "{text}");
+        assert!(text.contains("alpha"), "{text}");
+        assert!(text.contains("hex"), "{text}");
     }
 
     #[test]

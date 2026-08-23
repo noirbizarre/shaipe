@@ -18,16 +18,23 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
-use crate::project::{Background, Format, Project, RenderSpec};
+use crate::project::{Background, Format, Hsl, Project, RenderSpec, Rgba};
 
 /// What is covering the workspace.
 ///
-/// An enum with one variant, because the second — a palette editor — was
-/// considered and rejected: the palette is a pane and is edited in place.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Two variants, for the same reason: a render specification has six fields
+/// and a colour has three sliders, and neither fits a list row. A *full*
+/// palette editor — adding, removing and renaming colours — was considered
+/// once and rejected for exactly that pane-row reason, and still is: the
+/// palette stays a pane, edited in place, for name and role. What earns a
+/// colour a modal is narrower — the value of the row already selected, with
+/// room to turn hue, saturation and lightness independently.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Modal {
     /// The render specifications editor.
     Renders(RendersEditor),
+    /// The colour picker.
+    ColourPicker(ColourPicker),
 }
 
 /// One column of the specifications table.
@@ -305,6 +312,436 @@ impl RendersEditor {
     }
 }
 
+/// How far one press of an arrow key moves a slider.
+///
+/// Plain arrows nudge by the smallest unit each control has; `shift` jumps
+/// further, the way scrubbing a real slider does. Hue moves in degrees, so
+/// its step is naturally larger than a fraction's.
+const HUE_STEP: f32 = 1.0;
+/// `shift+←`/`shift+→` on hue.
+const HUE_STEP_LARGE: f32 = 15.0;
+/// A plain step on saturation or lightness, one percentage point.
+const FRACTION_STEP: f32 = 0.01;
+/// `shift+←`/`shift+→` on saturation or lightness, ten points.
+const FRACTION_STEP_LARGE: f32 = 0.10;
+/// A plain step on alpha, out of 255.
+const ALPHA_STEP: i32 = 1;
+/// `shift+←`/`shift+→` on alpha.
+const ALPHA_STEP_LARGE: i32 = 16;
+
+/// How wide a slider's bar is drawn, in characters.
+const BAR_WIDTH: u16 = 20;
+
+/// Which control the colour picker's keys are pointed at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PickerField {
+    /// Degrees around the colour wheel.
+    Hue,
+    /// Grey to fully saturated.
+    Saturation,
+    /// Black to white.
+    Lightness,
+    /// Transparent to opaque.
+    Alpha,
+    /// The raw hex text, typed rather than stepped.
+    Hex,
+}
+
+impl PickerField {
+    /// Every control, in the order the picker lists them.
+    const ALL: [Self; 5] = [
+        Self::Hue,
+        Self::Saturation,
+        Self::Lightness,
+        Self::Alpha,
+        Self::Hex,
+    ];
+
+    /// The control's label.
+    const fn title(self) -> &'static str {
+        match self {
+            Self::Hue => "hue",
+            Self::Saturation => "saturation",
+            Self::Lightness => "lightness",
+            Self::Alpha => "alpha",
+            Self::Hex => "hex",
+        }
+    }
+
+    /// Its position, for moving between controls.
+    fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|candidate| *candidate == self)
+            .unwrap_or_default()
+    }
+
+    /// The next control down.
+    fn next(self) -> Self {
+        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+    }
+
+    /// The previous control up.
+    fn previous(self) -> Self {
+        Self::ALL[(self.index() + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+}
+
+/// The colour picker.
+///
+/// Works in HSL rather than the project's own `Rgba`: hue, saturation and
+/// lightness are the three knobs an eye actually turns, and stepping raw
+/// red/green/blue moves a colour sideways more often than it moves it where
+/// intended. `Rgba` — with its own alpha, which HSL says nothing about — is
+/// only where the result is stored, in [`Palette::colour_mut`] and, if the
+/// artwork binds to this name, in the document itself via
+/// [`Project::restyle`].
+///
+/// [`Palette::colour_mut`]: crate::project::Palette::colour_mut
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColourPicker {
+    row: usize,
+    hsl: Hsl,
+    alpha: u8,
+    field: PickerField,
+    /// What has been typed into the hex field.
+    ///
+    /// Only meaningful while `field` is [`PickerField::Hex`] — the sliders
+    /// have no text of their own to buffer, only a number to step, and step
+    /// straight into `hsl`/`alpha` instead.
+    hex_buffer: String,
+    closed: bool,
+}
+
+impl ColourPicker {
+    /// Open the picker on a palette row.
+    #[must_use]
+    pub fn new(row: usize, project: &Project) -> Self {
+        let value = project
+            .metadata()
+            .palette
+            .colours()
+            .get(row)
+            .map_or(Rgba::new(0, 0, 0, u8::MAX), |colour| colour.value);
+        Self {
+            row,
+            hsl: Hsl::from(value),
+            alpha: value.a,
+            field: PickerField::Hue,
+            hex_buffer: value.to_string(),
+            closed: false,
+        }
+    }
+
+    /// Which row is being edited.
+    #[must_use]
+    pub const fn row(&self) -> usize {
+        self.row
+    }
+
+    /// Whether the picker has been asked to close.
+    #[must_use]
+    pub const fn closed(&self) -> bool {
+        self.closed
+    }
+
+    /// The colour the sliders currently describe.
+    fn value(&self) -> Rgba {
+        let (r, g, b) = self.hsl.to_rgb();
+        Rgba::new(r, g, b, self.alpha)
+    }
+
+    /// Write a colour to the palette row, restyling bound artwork if it
+    /// changed, and reporting whether it did.
+    ///
+    /// Takes the colour explicitly rather than always reading [`Self::value`]:
+    /// a hex value just typed is written exactly as parsed, not rounded
+    /// through [`Hsl`] and back first, which is what would otherwise make the
+    /// last character of a typed hex code look like it never quite took.
+    fn commit(&mut self, value: Rgba, project: &mut Project) -> bool {
+        // Read before anything is mutated, for the same reason
+        // `commit_palette_field` does: a value change restyles whatever the
+        // artwork already binds under the name the colour has *now*.
+        let Some(name) = project
+            .metadata()
+            .palette
+            .colours()
+            .get(self.row)
+            .map(|colour| colour.name.clone())
+        else {
+            return false;
+        };
+
+        let changed = {
+            let Some(colour) = project.metadata_mut().palette.colour_mut(self.row) else {
+                return false;
+            };
+            if colour.value == value {
+                false
+            } else {
+                colour.value = value;
+                true
+            }
+        };
+
+        if changed {
+            project
+                .restyle(&name, value)
+                .expect("the project's own document already parsed; only bound attributes change");
+        }
+        // The hex buffer is deliberately left alone here: it only needs to
+        // agree with the stored value when the hex field is entered (see
+        // `enter_field`), and rewriting it after every slider step or every
+        // partial parse while a hex code is still being typed would stomp on
+        // keystrokes the buffer has not seen yet — the same trap
+        // `commit_palette_field` avoids by never touching its own buffer.
+        changed
+    }
+
+    /// Step the field currently selected, reporting whether the project
+    /// changed.
+    ///
+    /// A no-op on [`PickerField::Hex`], which the caller already excludes —
+    /// arrows step a number, and hex is typed, not stepped.
+    fn step(&mut self, positive: bool, big: bool, project: &mut Project) -> bool {
+        let sign = if positive { 1.0 } else { -1.0 };
+        match self.field {
+            PickerField::Hue => {
+                let step = if big { HUE_STEP_LARGE } else { HUE_STEP };
+                // Wraps rather than clamps: hue is a wheel, and 359° plus one
+                // more step is 0°, not stuck at the edge.
+                self.hsl.h = (self.hsl.h + sign * step).rem_euclid(360.0);
+            }
+            PickerField::Saturation => {
+                let step = if big {
+                    FRACTION_STEP_LARGE
+                } else {
+                    FRACTION_STEP
+                };
+                self.hsl.s = (self.hsl.s + sign * step).clamp(0.0, 1.0);
+            }
+            PickerField::Lightness => {
+                let step = if big {
+                    FRACTION_STEP_LARGE
+                } else {
+                    FRACTION_STEP
+                };
+                self.hsl.l = (self.hsl.l + sign * step).clamp(0.0, 1.0);
+            }
+            PickerField::Alpha => {
+                let step = if big { ALPHA_STEP_LARGE } else { ALPHA_STEP };
+                let delta = if positive { step } else { -step };
+                let stepped = i32::from(self.alpha) + delta;
+                self.alpha = stepped.clamp(0, i32::from(u8::MAX)) as u8;
+            }
+            PickerField::Hex => return false,
+        }
+        let value = self.value();
+        self.commit(value, project)
+    }
+
+    /// Commit the hex buffer on leaving the hex field, reporting whether the
+    /// project changed.
+    ///
+    /// Every other field already committed itself on every keystroke; the
+    /// buffer only exists because typing is not stepping.
+    fn leave_field(&mut self, project: &mut Project) -> bool {
+        if self.field == PickerField::Hex {
+            self.try_apply_hex(project)
+        } else {
+            false
+        }
+    }
+
+    /// Reload state for the field just entered.
+    ///
+    /// Only [`PickerField::Hex`] needs it: the sliders read straight from
+    /// `hsl`/`alpha`, always current, but the hex buffer is free text and
+    /// would otherwise still say whatever was last typed towards some
+    /// earlier value.
+    fn enter_field(&mut self) {
+        if self.field == PickerField::Hex {
+            self.hex_buffer = self.value().to_string();
+        }
+    }
+
+    /// Parse the hex buffer and write it to the project if it parses.
+    ///
+    /// An unparsable buffer is kept and shown, never written — `#f0` is what
+    /// every colour looks like halfway through being typed, and refusing the
+    /// keystroke would make the field impossible to use. Mirrors
+    /// `commit_palette_field`'s rule for the pane's own hex field exactly.
+    fn try_apply_hex(&mut self, project: &mut Project) -> bool {
+        let Ok(parsed) = self.hex_buffer.trim().parse::<Rgba>() else {
+            return false;
+        };
+        self.hsl = Hsl::from(parsed);
+        self.alpha = parsed.a;
+        self.commit(parsed, project)
+    }
+
+    /// Apply a keypress, reporting whether the project changed.
+    ///
+    /// Up and down move between the picker's five controls — four sliders and
+    /// the hex field — and commit on the way, the same "leaving a field is as
+    /// good as finishing it" rule `RendersEditor` and the palette's own
+    /// in-place editor already follow. Left and right step whichever slider
+    /// is selected; backspace and typing belong to the hex field alone, the
+    /// only one with text to hold.
+    pub fn key(&mut self, key: KeyEvent, project: &mut Project) -> bool {
+        let big = key.modifiers.contains(KeyModifiers::SHIFT);
+
+        match key.code {
+            // Nothing left to write here: every valid change already reached
+            // the project as it was made, in `commit`.
+            KeyCode::Esc | KeyCode::Enter => {
+                self.closed = true;
+                false
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                let changed = self.leave_field(project);
+                self.field = self.field.next();
+                self.enter_field();
+                changed
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                let changed = self.leave_field(project);
+                self.field = self.field.previous();
+                self.enter_field();
+                changed
+            }
+            KeyCode::Left if self.field != PickerField::Hex => self.step(false, big, project),
+            KeyCode::Right if self.field != PickerField::Hex => self.step(true, big, project),
+            KeyCode::Backspace if self.field == PickerField::Hex => {
+                self.hex_buffer.pop();
+                self.try_apply_hex(project)
+            }
+            KeyCode::Char(character) if self.field == PickerField::Hex => {
+                self.hex_buffer.push(character);
+                self.try_apply_hex(project)
+            }
+            _ => false,
+        }
+    }
+}
+
+/// A slider's bar, `width` characters wide and filled in proportion to
+/// `fraction`.
+fn bar(fraction: f32, width: u16) -> String {
+    let width = usize::from(width);
+    let filled = ((fraction.clamp(0.0, 1.0) * width as f32).round() as usize).min(width);
+    let mut drawn = String::with_capacity(width);
+    for position in 0..width {
+        drawn.push(if position < filled { '█' } else { '·' });
+    }
+    drawn
+}
+
+/// Draw the colour picker over the workspace.
+pub fn draw_colour_picker(
+    frame: &mut Frame<'_>,
+    picker: &ColourPicker,
+    project: &Project,
+    area: Rect,
+) {
+    let name = project
+        .metadata()
+        .palette
+        .colours()
+        .get(picker.row)
+        .map_or("", |colour| colour.name.as_str());
+
+    let width = BAR_WIDTH + 22;
+    // One row per control, the swatch, a blank line, the key hints, and the
+    // two borders.
+    let height = u16::try_from(PickerField::ALL.len())
+        .unwrap_or(5)
+        .saturating_add(7);
+    let area = centred(area, width, height);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::LightCyan))
+        .title(Span::styled(
+            format!(" {name} "),
+            Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    // Everything underneath is cleared: a modal drawn over live cells reads
+    // as corruption rather than as a dialogue.
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
+
+    let value = picker.value();
+    let [swatch_area, rest] = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .areas(inner);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(Color::Rgb(value.r, value.g, value.b))),
+        swatch_area,
+    );
+
+    let mut lines = Vec::new();
+    for field in PickerField::ALL {
+        let selected = field == picker.field;
+        let label_style = if selected {
+            Style::default().fg(Color::Black).bg(Color::LightCyan)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        let mut spans = vec![Span::styled(pad(field.title(), 12), label_style)];
+
+        if field == PickerField::Hex {
+            // Shown, not refused, exactly as the palette pane's own hex field
+            // behaves: it is on its way to being a colour, and nothing has
+            // reached the document until it parses.
+            let valid = picker.hex_buffer.trim().parse::<Rgba>().is_ok();
+            let text_style = match (selected, valid) {
+                (false, _) => Style::default().fg(Color::DarkGray),
+                (true, true) => Style::default().fg(Color::Black).bg(Color::LightCyan),
+                (true, false) => Style::default().fg(Color::Black).bg(Color::LightRed),
+            };
+            spans.push(Span::styled(picker.hex_buffer.clone(), text_style));
+        } else {
+            let (fraction, reading) = match field {
+                PickerField::Hue => (picker.hsl.h / 360.0, format!("{:>3.0}°", picker.hsl.h)),
+                PickerField::Saturation => {
+                    (picker.hsl.s, format!("{:>3.0}%", picker.hsl.s * 100.0))
+                }
+                PickerField::Lightness => (picker.hsl.l, format!("{:>3.0}%", picker.hsl.l * 100.0)),
+                PickerField::Alpha => (
+                    f32::from(picker.alpha) / 255.0,
+                    format!("{:>3}", picker.alpha),
+                ),
+                PickerField::Hex => unreachable!("handled above"),
+            };
+            spans.push(Span::styled(
+                bar(fraction, BAR_WIDTH),
+                Style::default().fg(Color::LightCyan),
+            ));
+            spans.push(Span::raw(" "));
+            spans.push(Span::raw(reading));
+        }
+
+        lines.push(Line::from(spans));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        "↑↓ field   ←→ adjust   shift ×10   type hex   esc close",
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    frame.render_widget(Paragraph::new(lines), rest);
+}
+
 /// A rectangle in the middle of `area`, at most `width` by `height`.
 ///
 /// Clamped rather than assumed: terminals get dragged to absurd sizes, and a
@@ -333,7 +770,7 @@ pub fn centred(area: Rect, width: u16, height: u16) -> Rect {
 }
 
 /// Draw the render specifications editor over the workspace.
-pub fn draw(frame: &mut Frame<'_>, editor: &RendersEditor, project: &Project, area: Rect) {
+pub fn draw_renders(frame: &mut Frame<'_>, editor: &RendersEditor, project: &Project, area: Rect) {
     let specs = &project.metadata().renders;
     let width: u16 = Field::ALL.iter().map(|field| field.width() + 1).sum();
     // Heading, a row each, and the two borders — plus one for the key hints,
@@ -551,5 +988,205 @@ mod tests {
             let inner = centred(area, 80, 20);
             assert!(inner.width <= width && inner.height <= height);
         }
+    }
+
+    fn press_picker(picker: &mut ColourPicker, project: &mut Project, code: KeyCode) -> bool {
+        picker.key(KeyEvent::new(code, KeyModifiers::NONE), project)
+    }
+
+    fn press_picker_shift(picker: &mut ColourPicker, project: &mut Project, code: KeyCode) -> bool {
+        picker.key(KeyEvent::new(code, KeyModifiers::SHIFT), project)
+    }
+
+    fn type_hex(picker: &mut ColourPicker, project: &mut Project, text: &str) {
+        for character in text.chars() {
+            press_picker(picker, project, KeyCode::Char(character));
+        }
+    }
+
+    /// Move the picker onto the hex field, from the hue field it opens on.
+    fn go_to_hex(picker: &mut ColourPicker, project: &mut Project) {
+        for _ in 0..PickerField::ALL.len() - 1 {
+            press_picker(picker, project, KeyCode::Down);
+        }
+    }
+
+    #[test]
+    fn the_right_arrow_steps_the_selected_slider() {
+        let mut project = fixtures::project();
+        let mut picker = ColourPicker::new(0, &project);
+        let before = picker.hsl.h;
+
+        assert!(press_picker(&mut picker, &mut project, KeyCode::Right));
+
+        assert_eq!(picker.hsl.h, (before + HUE_STEP).rem_euclid(360.0));
+        assert_eq!(
+            project.metadata().palette.colours()[0].value,
+            picker.value()
+        );
+    }
+
+    #[test]
+    fn shift_takes_a_bigger_step_than_a_plain_arrow() {
+        let mut project = fixtures::project();
+        let mut picker = ColourPicker::new(0, &project);
+        let before = picker.hsl.h;
+
+        press_picker_shift(&mut picker, &mut project, KeyCode::Right);
+
+        assert_eq!(picker.hsl.h, (before + HUE_STEP_LARGE).rem_euclid(360.0));
+    }
+
+    #[test]
+    fn hue_wraps_at_the_ends_of_the_wheel_instead_of_clamping() {
+        let mut project = fixtures::project();
+        let mut picker = ColourPicker::new(0, &project);
+        picker.hsl.h = 359.0;
+
+        press_picker(&mut picker, &mut project, KeyCode::Right);
+
+        assert_eq!(picker.hsl.h, 0.0);
+    }
+
+    #[test]
+    fn arrows_do_nothing_on_the_hex_field() {
+        let mut project = fixtures::project();
+        let mut picker = ColourPicker::new(0, &project);
+        go_to_hex(&mut picker, &mut project);
+        assert_eq!(picker.field, PickerField::Hex);
+
+        let before = project.metadata().palette.colours()[0].value;
+        assert!(!press_picker(&mut picker, &mut project, KeyCode::Right));
+        assert_eq!(project.metadata().palette.colours()[0].value, before);
+    }
+
+    #[test]
+    fn typing_a_full_hex_value_commits_it_and_updates_the_sliders() {
+        let mut project = fixtures::project();
+        let mut picker = ColourPicker::new(0, &project);
+        go_to_hex(&mut picker, &mut project);
+        for _ in 0..picker.hex_buffer.len() {
+            press_picker(&mut picker, &mut project, KeyCode::Backspace);
+        }
+        type_hex(&mut picker, &mut project, "#0066ff");
+
+        assert_eq!(
+            project.metadata().palette.colours()[0].value,
+            Rgba::new(0x00, 0x66, 0xff, 0xff)
+        );
+        // The sliders agree with what was typed, not just the stored value.
+        assert!((picker.hsl.h - 216.0).abs() < 1.0, "{}", picker.hsl.h);
+    }
+
+    #[test]
+    fn an_unparsable_hex_value_is_kept_and_shown_but_never_committed() {
+        // `#f0` is what every hex colour looks like halfway through being
+        // typed. Refusing the keystroke would make the field impossible to
+        // use, so it is shown and simply never reaches the project. Typed in
+        // deliberately rather than reached by backspacing a real colour down:
+        // some of *that* colour's own prefixes are themselves valid short
+        // forms, which would commit on the way and defeat the point of the
+        // test.
+        let mut project = fixtures::project();
+        let mut picker = ColourPicker::new(0, &project);
+        go_to_hex(&mut picker, &mut project);
+        while !picker.hex_buffer.is_empty() {
+            press_picker(&mut picker, &mut project, KeyCode::Backspace);
+        }
+        let before = project.metadata().palette.colours()[0].value;
+
+        type_hex(&mut picker, &mut project, "#f0");
+
+        assert_eq!(picker.hex_buffer, "#f0");
+        assert_eq!(project.metadata().palette.colours()[0].value, before);
+    }
+
+    #[test]
+    fn leaving_an_invalid_hex_value_discards_it_without_writing_anything() {
+        let mut project = fixtures::project();
+        let mut picker = ColourPicker::new(0, &project);
+        go_to_hex(&mut picker, &mut project);
+        while !picker.hex_buffer.is_empty() {
+            press_picker(&mut picker, &mut project, KeyCode::Backspace);
+        }
+        let before = project.metadata().palette.colours()[0].value;
+
+        type_hex(&mut picker, &mut project, "#f0");
+        assert_eq!(picker.hex_buffer, "#f0");
+
+        // Leave, then come back: the half-typed text is gone, replaced by
+        // whatever the colour still is.
+        press_picker(&mut picker, &mut project, KeyCode::Up);
+        press_picker(&mut picker, &mut project, KeyCode::Down);
+
+        assert_eq!(picker.hex_buffer, before.to_string());
+        assert_eq!(project.metadata().palette.colours()[0].value, before);
+    }
+
+    #[test]
+    fn adjusting_the_colour_restyles_bound_artwork() {
+        // The same proof `editing_a_palette_colours_value_in_the_tui_restyles_bound_artwork`
+        // gives the in-place editor: an element bound to the colour by name
+        // is restyled the moment the picker writes a new value, not only on
+        // close.
+        const BOUND: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:shaipe="https://shaipe.dev/ns/2026" viewBox="0 0 64 64">
+  <metadata>
+    <shaipe:project version="1" primary="icon">
+      <shaipe:palette>
+        <shaipe:color name="accent" value="#f05032" role="accent"/>
+      </shaipe:palette>
+      <shaipe:variants>
+        <shaipe:variant name="icon"/>
+      </shaipe:variants>
+    </shaipe:project>
+  </metadata>
+  <symbol id="icon" viewBox="0 0 64 64"><rect width="64" height="64" fill="#f05032" shaipe:fill="accent"/></symbol>
+  <use href="#icon" width="64" height="64"/>
+</svg>
+"##;
+        let mut project = Project::from_source("logo.svg", BOUND.to_owned()).unwrap();
+        let mut picker = ColourPicker::new(0, &project);
+        go_to_hex(&mut picker, &mut project);
+        for _ in 0..picker.hex_buffer.len() {
+            press_picker(&mut picker, &mut project, KeyCode::Backspace);
+        }
+        type_hex(&mut picker, &mut project, "#0066ff");
+
+        assert!(project.source().contains(r##"fill="#0066ff""##));
+        assert!(!project.source().contains(r##"fill="#f05032""##));
+    }
+
+    #[test]
+    fn escape_and_enter_both_close_the_picker() {
+        let mut project = fixtures::project();
+
+        let mut picker = ColourPicker::new(0, &project);
+        press_picker(&mut picker, &mut project, KeyCode::Esc);
+        assert!(picker.closed());
+
+        let mut picker = ColourPicker::new(0, &project);
+        press_picker(&mut picker, &mut project, KeyCode::Enter);
+        assert!(picker.closed());
+    }
+
+    #[test]
+    fn up_and_down_cycle_through_every_control_and_wrap() {
+        let mut project = fixtures::project();
+        let mut picker = ColourPicker::new(0, &project);
+        assert_eq!(picker.field, PickerField::Hue);
+
+        for expected in [
+            PickerField::Saturation,
+            PickerField::Lightness,
+            PickerField::Alpha,
+            PickerField::Hex,
+            PickerField::Hue,
+        ] {
+            press_picker(&mut picker, &mut project, KeyCode::Down);
+            assert_eq!(picker.field, expected);
+        }
+
+        press_picker(&mut picker, &mut project, KeyCode::Up);
+        assert_eq!(picker.field, PickerField::Hex);
     }
 }

@@ -111,7 +111,7 @@ The interactive TUI.
 - [x] `e` on the prompt pane suspends the workspace and opens `$EDITOR` on it
 - [x] Save the project from the workspace, with a dirty marker and a guard on
       quitting with unsaved changes
-- [ ] A colour picker for the palette pane
+- [x] A colour picker for the palette pane
 - [ ] Add, remove and reorder variants and render specifications
 - [ ] Export all assets from the workspace
 - [x] A toolbar naming every state the workspace is in, and clickable

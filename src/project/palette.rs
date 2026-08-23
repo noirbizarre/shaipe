@@ -120,6 +120,88 @@ impl FromStr for Rgba {
     }
 }
 
+/// A colour in hue/saturation/lightness form, for editing.
+///
+/// `Rgba` is the value every part of a project stores, parses and writes back
+/// — hex is what a designer *names* a colour by. Nobody adjusts one by typing
+/// hex digits, though: hue, saturation and lightness are the three knobs an
+/// eye actually turns, so the workspace's colour picker keeps its working
+/// state here and converts to and from `Rgba` only at the edges, where a
+/// value needs storing or a stored value needs sliders. No alpha: it is not
+/// part of hue, saturation or lightness, and a caller that needs it keeps it
+/// alongside, the way [`Rgba`] keeps `a` alongside `r`/`g`/`b`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Hsl {
+    /// Degrees around the colour wheel, `0.0..360.0`.
+    pub h: f32,
+    /// `0.0..=1.0`, grey to fully saturated.
+    pub s: f32,
+    /// `0.0..=1.0`, black to white.
+    pub l: f32,
+}
+
+impl From<Rgba> for Hsl {
+    /// The standard conversion, ignoring alpha.
+    fn from(colour: Rgba) -> Self {
+        let r = f32::from(colour.r) / 255.0;
+        let g = f32::from(colour.g) / 255.0;
+        let b = f32::from(colour.b) / 255.0;
+
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let delta = max - min;
+        let l = f32::midpoint(max, min);
+
+        // Grey has no hue and no saturation: `delta` is zero and every branch
+        // below would divide by it.
+        if delta == 0.0 {
+            return Self { h: 0.0, s: 0.0, l };
+        }
+
+        let s = delta / (1.0 - (2.0 * l - 1.0).abs());
+        let h = 60.0
+            * if max == r {
+                ((g - b) / delta).rem_euclid(6.0)
+            } else if max == g {
+                (b - r) / delta + 2.0
+            } else {
+                (r - g) / delta + 4.0
+            };
+
+        Self { h, s, l }
+    }
+}
+
+impl Hsl {
+    /// The 8-bit RGB components this colour rounds to.
+    ///
+    /// Alpha is not this type's business — see the struct's own doc comment
+    /// — so a caller combines this with whatever alpha it is keeping
+    /// alongside, typically via [`Rgba::new`].
+    #[must_use]
+    pub fn to_rgb(self) -> (u8, u8, u8) {
+        // The standard HSL-to-RGB construction: `c` is the chroma, `x` the
+        // second-largest component, and `m` the offset that lands the
+        // largest component's floor at zero rather than at `m`.
+        let c = (1.0 - (2.0 * self.l - 1.0).abs()) * self.s;
+        let h_prime = self.h.rem_euclid(360.0) / 60.0;
+        let x = c * (1.0 - (h_prime.rem_euclid(2.0) - 1.0).abs());
+        let m = self.l - c / 2.0;
+
+        let (r1, g1, b1) = match h_prime as u32 {
+            0 => (c, x, 0.0),
+            1 => (x, c, 0.0),
+            2 => (0.0, c, x),
+            3 => (0.0, x, c),
+            4 => (x, 0.0, c),
+            _ => (c, 0.0, x),
+        };
+
+        let channel = |value: f32| (((value + m) * 255.0).round().clamp(0.0, 255.0)) as u8;
+        (channel(r1), channel(g1), channel(b1))
+    }
+}
+
 /// What a colour is *for*, as opposed to what it looks like.
 ///
 /// An open set: `Role::Other` keeps a project that names a role this build has
@@ -306,6 +388,42 @@ mod tests {
         // one, or the schema version is doing no work.
         assert_eq!(Role::from("hyperlink"), Role::Other("hyperlink".to_owned()));
         assert_eq!(Role::from("hyperlink").to_string(), "hyperlink");
+    }
+
+    #[rstest]
+    // Pure red, green and blue: exact, because none of these divisions land
+    // on a value a `f32` cannot represent precisely.
+    #[case(Rgba::new(0xff, 0x00, 0x00, 0xff), Hsl { h: 0.0, s: 1.0, l: 0.5 })]
+    #[case(Rgba::new(0x00, 0xff, 0x00, 0xff), Hsl { h: 120.0, s: 1.0, l: 0.5 })]
+    #[case(Rgba::new(0x00, 0x00, 0xff, 0xff), Hsl { h: 240.0, s: 1.0, l: 0.5 })]
+    // Black and white: no hue, no saturation, and lightness at either end.
+    #[case(Rgba::new(0x00, 0x00, 0x00, 0xff), Hsl { h: 0.0, s: 0.0, l: 0.0 })]
+    #[case(Rgba::new(0xff, 0xff, 0xff, 0xff), Hsl { h: 0.0, s: 0.0, l: 1.0 })]
+    fn converting_a_known_colour_to_hsl_matches_the_textbook_values(
+        #[case] rgba: Rgba,
+        #[case] expected: Hsl,
+    ) {
+        let hsl = Hsl::from(rgba);
+        assert!((hsl.h - expected.h).abs() < 0.01, "{hsl:?}");
+        assert!((hsl.s - expected.s).abs() < 0.01, "{hsl:?}");
+        assert!((hsl.l - expected.l).abs() < 0.01, "{hsl:?}");
+    }
+
+    #[rstest]
+    #[case(Rgba::new(0xf0, 0x50, 0x32, 0xff))] // the fixture's own accent
+    #[case(Rgba::new(0x18, 0x18, 0x1b, 0xff))]
+    #[case(Rgba::new(0x00, 0x00, 0x00, 0xff))]
+    #[case(Rgba::new(0xff, 0xff, 0xff, 0xff))]
+    #[case(Rgba::new(0x7f, 0x3c, 0xa1, 0xff))]
+    fn a_colour_survives_a_round_trip_through_hsl(#[case] rgba: Rgba) {
+        // Off by a shade is float rounding, not a bug: an eight-bit channel
+        // does not always land on a value `f32` arithmetic can hit exactly
+        // going the other way. A whole point of difference would be a
+        // visible shift and is what this guards against.
+        let (r, g, b) = Hsl::from(rgba).to_rgb();
+        assert!(r.abs_diff(rgba.r) <= 1, "red drifted: {rgba:?} -> {r}");
+        assert!(g.abs_diff(rgba.g) <= 1, "green drifted: {rgba:?} -> {g}");
+        assert!(b.abs_diff(rgba.b) <= 1, "blue drifted: {rgba:?} -> {b}");
     }
 
     #[test]
