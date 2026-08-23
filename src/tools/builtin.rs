@@ -11,11 +11,13 @@
 
 use serde_json::{Value, json};
 
+use std::path::PathBuf;
+
 use crate::error::Result;
 use crate::inspect::Report;
 use crate::project::document;
 use crate::project::palette::{Colour, Role};
-use crate::project::{Background, Format, Project, RenderSpec, Rgba};
+use crate::project::{Background, Format, Project, Reference, ReferenceKind, RenderSpec, Rgba};
 use crate::render::{RenderOptions, Renderer};
 use crate::tools::{
     Tool, ToolImage, ToolOutput, integer, integers, object, optional_u32, required_str, string,
@@ -27,12 +29,14 @@ pub fn all() -> Vec<Box<dyn Tool>> {
         Box::new(GetProject),
         Box::new(GetVariants),
         Box::new(GetPalette),
+        Box::new(GetReferences),
         Box::new(GetSvg),
         Box::new(RenderSvg),
         Box::new(RenderGrid),
         Box::new(WriteSvg),
         Box::new(WriteVariant),
         Box::new(SetPaletteColour),
+        Box::new(SetReference),
         Box::new(SetGeneration),
     ]
 }
@@ -140,6 +144,46 @@ impl Tool for GetPalette {
                         "name": colour.name,
                         "value": colour.value.to_string(),
                         "role": colour.role.as_ref().map(ToString::to_string),
+                    })
+                })
+                .collect(),
+        )))
+    }
+}
+
+/// Read the attached references.
+struct GetReferences;
+
+impl Tool for GetReferences {
+    fn name(&self) -> &'static str {
+        "get_references"
+    }
+
+    fn description(&self) -> &'static str {
+        "List the files attached to the project for context: images or \
+         documents recorded as a source to reproduce, inspiration to take \
+         cues from, or a baseline rendering to compare against. Each entry \
+         reports whether the file actually exists."
+    }
+
+    fn input_schema(&self) -> Value {
+        object(&[], &[])
+    }
+
+    fn call(&self, project: &mut Project, _input: &Value) -> Result<ToolOutput> {
+        Ok(ToolOutput::json(Value::Array(
+            project
+                .metadata()
+                .references
+                .iter()
+                .map(|reference| {
+                    let resolved = project.resolve(&reference.src);
+                    json!({
+                        "src": reference.src.display().to_string(),
+                        "resolved": resolved.display().to_string(),
+                        "kind": reference.kind.to_string(),
+                        "note": reference.note,
+                        "present": resolved.exists(),
                     })
                 })
                 .collect(),
@@ -684,6 +728,110 @@ impl Tool for SetPaletteColour {
     }
 }
 
+/// Attach a file for context, or update one already attached.
+struct SetReference;
+
+impl Tool for SetReference {
+    fn name(&self) -> &'static str {
+        "set_reference"
+    }
+
+    fn description(&self) -> &'static str {
+        "Attach a file to the project for context, or update one already \
+         attached by matching `src` exactly. A new reference defaults to \
+         `inspiration` when `kind` is not given. Only the fields given are \
+         changed on an existing reference — give an empty `note` to clear \
+         it. The file does not need to exist yet; the response's `present` \
+         says whether it currently does."
+    }
+
+    fn input_schema(&self) -> Value {
+        object(
+            &[
+                (
+                    "src",
+                    string(
+                        "Where the file lives, relative to the project or \
+                         absolute. One of the paths from `get_references`, \
+                         matched exactly, or a new one to attach.",
+                    ),
+                ),
+                (
+                    "kind",
+                    string(
+                        "Why it is attached: `source` (the thing being \
+                         reproduced), `inspiration` (cues, not to copy), \
+                         `baseline` (a rendering of this project, for \
+                         comparison), or any other label. Defaults to \
+                         `inspiration` when attaching a new file; omit it to \
+                         leave an existing reference's kind unchanged.",
+                    ),
+                ),
+                (
+                    "note",
+                    string(
+                        "What the file is, in your own words. Omit it to \
+                         leave an existing note unchanged; give an empty \
+                         string to clear it.",
+                    ),
+                ),
+            ],
+            &["src"],
+        )
+    }
+
+    fn mutates(&self) -> bool {
+        true
+    }
+
+    fn call(&self, project: &mut Project, input: &Value) -> Result<ToolOutput> {
+        let src = required_str(self.name(), input, "src")?;
+        let src = PathBuf::from(src);
+        let kind = input.get("kind").and_then(Value::as_str);
+        let note = input.get("note").and_then(Value::as_str);
+
+        let references = &mut project.metadata_mut().references;
+        let created = match references.iter_mut().find(|reference| reference.src == src) {
+            Some(reference) => {
+                if let Some(kind) = kind {
+                    reference.kind = ReferenceKind::from(kind);
+                }
+                if let Some(note) = note {
+                    reference.note = (!note.is_empty()).then(|| note.to_owned());
+                }
+                false
+            }
+            None => {
+                references.push(Reference {
+                    src: src.clone(),
+                    kind: kind
+                        .map(ReferenceKind::from)
+                        .unwrap_or(ReferenceKind::Inspiration),
+                    note: note.filter(|note| !note.is_empty()).map(str::to_owned),
+                });
+                true
+            }
+        };
+
+        let reference = project
+            .metadata()
+            .references
+            .iter()
+            .find(|reference| reference.src == src)
+            .expect("just inserted or already present");
+        let resolved = project.resolve(&reference.src);
+
+        Ok(ToolOutput::json(json!({
+            "src": reference.src.display().to_string(),
+            "resolved": resolved.display().to_string(),
+            "kind": reference.kind.to_string(),
+            "note": reference.note,
+            "present": resolved.exists(),
+            "created": created,
+        })))
+    }
+}
+
 /// Record how the project's current state was produced.
 struct SetGeneration;
 
@@ -765,6 +913,8 @@ impl Tool for SetGeneration {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -802,6 +952,42 @@ mod tests {
         assert_eq!(value[0]["value"], "#f05032");
         assert_eq!(value[0]["role"], "accent");
         assert_eq!(value[1]["role"], Value::Null);
+    }
+
+    #[test]
+    fn get_references_lists_every_attached_reference_with_its_presence() {
+        // A real file next to a real project, and a reference that points at
+        // nothing — `present` has to tell the two apart.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        std::fs::write(directory.path().join("mockup.png"), b"not a real png").unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        project.metadata_mut().references.push(Reference {
+            src: PathBuf::from("mockup.png"),
+            kind: ReferenceKind::Source,
+            note: Some("hand sketch".to_owned()),
+        });
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("missing.png", ReferenceKind::Inspiration));
+
+        let value = Registry::new()
+            .call("get_references", &mut project, &Value::Null)
+            .unwrap()
+            .value;
+
+        assert_eq!(value[0]["src"], "mockup.png");
+        assert_eq!(value[0]["kind"], "source");
+        assert_eq!(value[0]["note"], "hand sketch");
+        assert_eq!(value[0]["present"], true);
+
+        assert_eq!(value[1]["src"], "missing.png");
+        assert_eq!(value[1]["kind"], "inspiration");
+        assert_eq!(value[1]["note"], Value::Null);
+        assert_eq!(value[1]["present"], false);
     }
 
     #[test]
@@ -862,6 +1048,7 @@ mod tests {
             [
                 "set_generation",
                 "set_palette_colour",
+                "set_reference",
                 "write_svg",
                 "write_variant"
             ]
@@ -1296,6 +1483,112 @@ mod tests {
         let rendered = error.to_string();
         assert!(rendered.contains("value"), "{rendered}");
         assert!(rendered.contains("octarine"), "{rendered}");
+    }
+
+    #[test]
+    fn set_reference_attaches_a_new_file_defaulting_to_inspiration() {
+        let mut project = fixtures::project();
+
+        let output = Registry::new()
+            .call(
+                "set_reference",
+                &mut project,
+                &json!({ "src": "mockup.png", "note": "hand sketch" }),
+            )
+            .unwrap();
+
+        assert_eq!(output.value["created"], true);
+        assert_eq!(output.value["kind"], "inspiration");
+        assert_eq!(output.value["note"], "hand sketch");
+        assert_eq!(output.value["present"], false);
+
+        let reference = project
+            .metadata()
+            .references
+            .iter()
+            .find(|reference| reference.src == Path::new("mockup.png"))
+            .unwrap();
+        assert_eq!(reference.kind, ReferenceKind::Inspiration);
+        assert_eq!(reference.note.as_deref(), Some("hand sketch"));
+    }
+
+    #[test]
+    fn set_reference_updates_an_existing_references_kind_and_keeps_its_note() {
+        let mut project = fixtures::project();
+        project.metadata_mut().references.push(Reference {
+            src: PathBuf::from("mockup.png"),
+            kind: ReferenceKind::Inspiration,
+            note: Some("hand sketch".to_owned()),
+        });
+
+        let output = Registry::new()
+            .call(
+                "set_reference",
+                &mut project,
+                &json!({ "src": "mockup.png", "kind": "source" }),
+            )
+            .unwrap();
+
+        assert_eq!(output.value["created"], false);
+        assert_eq!(output.value["kind"], "source");
+        // Not given, so unchanged.
+        assert_eq!(output.value["note"], "hand sketch");
+    }
+
+    #[test]
+    fn set_reference_can_clear_an_existing_note_with_an_empty_string() {
+        let mut project = fixtures::project();
+        project.metadata_mut().references.push(Reference {
+            src: PathBuf::from("mockup.png"),
+            kind: ReferenceKind::Inspiration,
+            note: Some("hand sketch".to_owned()),
+        });
+
+        Registry::new()
+            .call(
+                "set_reference",
+                &mut project,
+                &json!({ "src": "mockup.png", "note": "" }),
+            )
+            .unwrap();
+
+        let reference = project
+            .metadata()
+            .references
+            .iter()
+            .find(|reference| reference.src == Path::new("mockup.png"))
+            .unwrap();
+        assert_eq!(reference.note, None);
+    }
+
+    #[test]
+    fn set_reference_calling_it_again_for_the_same_src_with_nothing_else_is_a_no_op() {
+        let mut project = fixtures::project();
+        project.metadata_mut().references.push(Reference {
+            src: PathBuf::from("mockup.png"),
+            kind: ReferenceKind::Source,
+            note: Some("hand sketch".to_owned()),
+        });
+
+        let output = Registry::new()
+            .call(
+                "set_reference",
+                &mut project,
+                &json!({ "src": "mockup.png" }),
+            )
+            .unwrap();
+
+        assert_eq!(output.value["created"], false);
+        assert_eq!(output.value["kind"], "source");
+        assert_eq!(output.value["note"], "hand sketch");
+        assert_eq!(project.metadata().references.len(), 1);
+    }
+
+    #[test]
+    fn set_reference_without_a_src_says_which_argument_is_missing() {
+        let error = call("set_reference", json!({ "kind": "source" })).unwrap_err();
+        let rendered = error.to_string();
+        assert!(rendered.contains("src"), "{rendered}");
     }
 
     #[test]

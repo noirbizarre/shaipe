@@ -329,12 +329,14 @@ mod tests {
             [
                 "get_palette",
                 "get_project",
+                "get_references",
                 "get_svg",
                 "get_variants",
                 "render_grid",
                 "render_svg",
                 "set_generation",
                 "set_palette_colour",
+                "set_reference",
                 "write_svg",
                 "write_variant",
             ]

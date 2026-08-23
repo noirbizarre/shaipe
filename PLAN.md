@@ -157,7 +157,7 @@ see `docs/adr/004-tools-not-a-model.md`.
       unproven
 - [x] A transport for the registry — MCP over stdio is the obvious one
 - [x] Mutating tools: set a palette colour, write a variant, record generation
-- [ ] Tools for attaching and inspecting references
+- [x] Tools for attaching and inspecting references
 - [ ] Raster to vector: hand a PNG to an agent and get an SVG back
 - [x] Tool inputs described by JSON Schema rather than a parameter list — ADR-008
 - [x] Tools renamed to `verb_noun`, pinned by a test — ADR-007
