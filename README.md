@@ -246,13 +246,17 @@ model answered. Your agent is configured and authenticated in your agent. See
 | `render_svg` | Draw one variant and **look at it** |
 | `render_grid` | Draw one variant at several sizes, to check it still reads small |
 | `write_svg` | Replace the document, validated first |
+| `write_variant` | Replace one variant's element, without resending the whole document |
+| `set_palette_colour` | Set a colour's value or role by name, or declare a new one |
+| `set_generation` | Record which agent and model produced the current state, and when |
 
 The names are a public interface; renaming one is a breaking change
 ([ADR-007](docs/adr/007-tool-names.md)). `render_svg` and `render_grid` return
 real images as MCP image content, which is the entire point — a model that can
 only read the SVG cannot tell you the mark is illegible at 16 pixels.
 
-`write_svg` changes the project **in memory**. It never writes to your working
+`write_svg`, `write_variant`, `set_palette_colour` and `set_generation` all
+change the project **in memory** only. None of them write to your working
 tree; that takes a `Ctrl-S`, or `shaipe mcp --write` if the agent is the only
 one using the project.
 

@@ -87,6 +87,46 @@ pub fn replace_metadata(source: &str, metadata: &Metadata, path: &Path) -> Resul
     Ok(output)
 }
 
+/// Produce the bytes of `source` with the element carrying `id` replaced.
+///
+/// Splices by byte range, the same technique [`replace_metadata`] uses for
+/// `<shaipe:project>`: only the target element's own bytes change, so a
+/// sibling's hand-authored formatting, comments and unrelated definitions
+/// survive untouched.
+///
+/// `variant` names the caller's variant for [`Error::UnknownElement`] only;
+/// nothing here reads the metadata, so it cannot resolve a variant to an
+/// element id itself — that is the caller's job.
+///
+/// # Errors
+///
+/// Returns [`Error::MalformedXml`] or [`Error::NotSvg`] if `source` does not
+/// parse, and [`Error::UnknownElement`] if nothing in the document carries
+/// `id`.
+pub fn replace_element(
+    source: &str,
+    variant: &str,
+    id: &str,
+    replacement: &str,
+    path: &Path,
+) -> Result<String> {
+    let document = parse(source, path)?;
+    let element = document
+        .descendants()
+        .find(|node| node.attribute("id") == Some(id))
+        .ok_or_else(|| Error::UnknownElement {
+            variant: variant.to_owned(),
+            element: id.to_owned(),
+        })?;
+    let range = element.range();
+
+    let mut output = String::with_capacity(source.len() + replacement.len());
+    output.push_str(&source[..range.start]);
+    output.push_str(replacement);
+    output.push_str(&source[range.end..]);
+    Ok(output)
+}
+
 /// Escape the five characters XML will not accept as text or in an attribute.
 fn escape(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
@@ -356,5 +396,38 @@ mod tests {
         let once = replace_metadata(MINIMAL, &metadata, Path::new("test.svg")).unwrap();
         let twice = replace_metadata(&once, &metadata, Path::new("test.svg")).unwrap();
         assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn replacing_an_element_by_id_leaves_the_rest_of_the_document_byte_identical() {
+        // The same guarantee `replace_metadata` gives the `<shaipe:project>`
+        // block, extended to an arbitrary element: only the target's own
+        // bytes change.
+        let updated = replace_element(
+            MINIMAL,
+            "icon",
+            "icon",
+            r#"<symbol id="icon" viewBox="0 0 16 16"><circle r="8" cx="8" cy="8"/></symbol>"#,
+            Path::new("test.svg"),
+        )
+        .unwrap();
+
+        assert!(updated.contains("<!-- a comment the author cares about -->"));
+        assert!(updated.contains(r#"<circle r="8" cx="8" cy="8"/>"#));
+        assert!(!updated.contains(r#"<rect width="16" height="16"/>"#));
+        // Everything outside the replaced element, including the metadata,
+        // is untouched.
+        assert!(updated.contains(r#"<shaipe:project xmlns:shaipe="https://shaipe.dev/ns/2026" version="1" primary="icon">"#));
+    }
+
+    #[test]
+    fn replacing_an_element_that_does_not_exist_names_the_variant_and_the_id() {
+        let error = replace_element(MINIMAL, "ghost", "nowhere", "<g/>", Path::new("test.svg"))
+            .unwrap_err();
+
+        assert!(matches!(error, Error::UnknownElement { .. }));
+        let rendered = error.to_string();
+        assert!(rendered.contains("ghost"), "{rendered}");
+        assert!(rendered.contains("nowhere"), "{rendered}");
     }
 }

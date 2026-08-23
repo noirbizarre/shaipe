@@ -1,20 +1,21 @@
 //! The tools Shaipe implements.
 //!
-//! All read-only, and all thin: each one is a name and a shape over an
-//! operation the library already performs. That is the intended proportion —
-//! a tool that contained logic of its own would be logic the CLI and the TUI
-//! could not reach.
+//! All thin: each one is a name and a shape over an operation the library
+//! already performs. That is the intended proportion — a tool that contained
+//! logic of its own would be logic the CLI and the TUI could not reach.
 //!
-//! The obvious gap is anything that *changes* the project. Those are the next
-//! set, not a missing part of this one: writing a tool that mutates an SVG
-//! before there is a way to review what it did would be building the wrong
-//! half first.
+//! Most are read-only. The mutating ones — `write_svg`, `write_variant`,
+//! `set_palette_colour`, `set_generation` — validate before anything is
+//! replaced and change the project only in memory; see [`Tool::mutates`] for
+//! what that means to a caller.
 
 use serde_json::{Value, json};
 
 use crate::error::Result;
 use crate::inspect::Report;
-use crate::project::{Background, Format, Project, RenderSpec};
+use crate::project::document;
+use crate::project::palette::{Colour, Role};
+use crate::project::{Background, Format, Project, RenderSpec, Rgba};
 use crate::render::{RenderOptions, Renderer};
 use crate::tools::{
     Tool, ToolImage, ToolOutput, integer, integers, object, optional_u32, required_str, string,
@@ -30,6 +31,9 @@ pub fn all() -> Vec<Box<dyn Tool>> {
         Box::new(RenderSvg),
         Box::new(RenderGrid),
         Box::new(WriteSvg),
+        Box::new(WriteVariant),
+        Box::new(SetPaletteColour),
+        Box::new(SetGeneration),
     ]
 }
 
@@ -476,6 +480,289 @@ impl Tool for WriteSvg {
     }
 }
 
+/// Replace one variant's element, without resending the whole document.
+struct WriteVariant;
+
+impl Tool for WriteVariant {
+    fn name(&self) -> &'static str {
+        "write_variant"
+    }
+
+    fn description(&self) -> &'static str {
+        "Replace one variant's element in the document, without resending the \
+         whole project. Send the complete replacement for that element — its \
+         opening tag, attributes and closing tag, with the same `id` it \
+         already has — from `get_svg`. The result is validated by rendering \
+         the variant before anything is replaced, so a fragment that does not \
+         parse, that drops the element's `id`, or that leaves the variant \
+         unrenderable is rejected and the project is left exactly as it was. \
+         This only replaces an already-declared variant — use `write_svg` to \
+         add a new one, or to change more than one element at once. This \
+         changes the project in memory; it does not write to disk."
+    }
+
+    fn input_schema(&self) -> Value {
+        object(
+            &[
+                (
+                    "variant",
+                    string("Which variant to replace. One of the names from `get_variants`."),
+                ),
+                (
+                    "svg",
+                    string(
+                        "The complete replacement markup for the variant's \
+                         element, from its opening tag to its closing tag, \
+                         keeping the same `id`.",
+                    ),
+                ),
+            ],
+            &["variant", "svg"],
+        )
+    }
+
+    fn mutates(&self) -> bool {
+        true
+    }
+
+    fn call(&self, project: &mut Project, input: &Value) -> Result<ToolOutput> {
+        let name = required_str(self.name(), input, "variant")?;
+        let svg = required_str(self.name(), input, "svg")?;
+
+        // Resolved before the document is touched, so an unknown name is
+        // reported without ever attempting to splice anything.
+        let element = project.metadata().resolve_variant(name)?.element.clone();
+
+        let invalid = |error: crate::Error| crate::Error::InvalidSvgFromTool {
+            tool: self.name().to_owned(),
+            source: Box::new(error),
+        };
+
+        let updated =
+            document::replace_element(project.source(), name, &element, svg, project.path())
+                .map_err(invalid)?;
+
+        let candidate = Project::from_source(project.path(), updated).map_err(invalid)?;
+
+        // The touched variant must still isolate and parse as SVG — this
+        // catches a dropped or renamed `id`, and a fragment `usvg` refuses.
+        // `Format::Svg` because isolation is what this needs to prove; there
+        // is nothing to gain from rasterising it too.
+        let probe = RenderSpec {
+            format: Format::Svg,
+            ..RenderSpec::square(name, name, 64)
+        };
+        Renderer::new(&candidate, RenderOptions::default())
+            .and_then(|renderer| renderer.render(&probe))
+            .map_err(invalid)?;
+
+        *project = candidate;
+
+        Ok(ToolOutput::json(json!({
+            "variant": name,
+            "bytes": svg.len(),
+            "saved": false,
+            "note": "The project has changed in memory. Nothing has been written to disk.",
+        })))
+    }
+}
+
+/// Set one colour in the palette, by name.
+struct SetPaletteColour;
+
+impl Tool for SetPaletteColour {
+    fn name(&self) -> &'static str {
+        "set_palette_colour"
+    }
+
+    fn description(&self) -> &'static str {
+        "Set a colour in the project's palette: update an existing entry's \
+         value or role by name, or declare a new one if the name is not yet \
+         in the palette, in which case `value` is required. Only the fields \
+         given are changed — omitting `role` when editing an existing colour \
+         leaves its role as it was. Palette entries are declarative only for \
+         now: the renderer does not consult them, so this changes what the \
+         project records about a colour, not how the artwork renders. Edit \
+         the artwork itself with `write_variant` or `write_svg` to actually \
+         restyle it."
+    }
+
+    fn input_schema(&self) -> Value {
+        object(
+            &[
+                (
+                    "name",
+                    string(
+                        "How the project refers to this colour, for example \
+                         `accent`. One of the names from `get_palette`, or a \
+                         new one to declare.",
+                    ),
+                ),
+                (
+                    "value",
+                    string(
+                        "The colour's new value, as a CSS hex colour such as \
+                         `#f05032`. Required when `name` does not already \
+                         exist in the palette.",
+                    ),
+                ),
+                (
+                    "role",
+                    string(
+                        "What the colour is for, for example `accent`, \
+                         `primary`, `secondary`, `background` or \
+                         `foreground`. Omit it to leave an existing colour's \
+                         role unchanged.",
+                    ),
+                ),
+            ],
+            &["name"],
+        )
+    }
+
+    fn mutates(&self) -> bool {
+        true
+    }
+
+    fn call(&self, project: &mut Project, input: &Value) -> Result<ToolOutput> {
+        let name = required_str(self.name(), input, "name")?;
+        let value = input.get("value").and_then(Value::as_str);
+        let role = input.get("role").and_then(Value::as_str);
+
+        let refuse = |reason: String| crate::Error::InvalidToolInput {
+            tool: self.name().to_owned(),
+            reason,
+        };
+
+        if value.is_none() && role.is_none() {
+            return Err(refuse("`value` or `role` is required".to_owned()));
+        }
+
+        let value = value
+            .map(str::parse::<Rgba>)
+            .transpose()
+            .map_err(|error| refuse(format!("`value`: {error}")))?;
+
+        let palette = &mut project.metadata_mut().palette;
+        let created = match palette.get_mut(name) {
+            Some(colour) => {
+                if let Some(value) = value {
+                    colour.value = value;
+                }
+                if let Some(role) = role {
+                    colour.role = Some(Role::from(role));
+                }
+                false
+            }
+            None => {
+                let Some(value) = value else {
+                    return Err(refuse(format!(
+                        "`{name}` is not yet in the palette, and needs a `value` to declare it"
+                    )));
+                };
+                palette.push(Colour {
+                    name: name.to_owned(),
+                    value,
+                    role: role.map(Role::from),
+                });
+                true
+            }
+        };
+
+        let colour = project
+            .metadata()
+            .palette
+            .get(name)
+            .expect("just inserted or already present");
+
+        Ok(ToolOutput::json(json!({
+            "name": colour.name,
+            "value": colour.value.to_string(),
+            "role": colour.role.as_ref().map(ToString::to_string),
+            "created": created,
+        })))
+    }
+}
+
+/// Record how the project's current state was produced.
+struct SetGeneration;
+
+impl Tool for SetGeneration {
+    fn name(&self) -> &'static str {
+        "set_generation"
+    }
+
+    fn description(&self) -> &'static str {
+        "Record how the project's current state was produced: the agent, the \
+         model, and when, as an RFC 3339 timestamp such as \
+         `2026-08-23T10:00:00Z`. Call this after you have actually changed \
+         the artwork, describing what happened rather than what is about to. \
+         Only the fields given are changed; the others keep whatever was \
+         recorded before. Nothing here is invented by Shaipe — if you do not \
+         know one of these, leave it out rather than guessing."
+    }
+
+    fn input_schema(&self) -> Value {
+        object(
+            &[
+                (
+                    "agent",
+                    string(
+                        "The agent that produced the current state, for \
+                         example `opencode`.",
+                    ),
+                ),
+                (
+                    "model",
+                    string("The model it used, for example `claude-sonnet-5`."),
+                ),
+                (
+                    "at",
+                    string(
+                        "When, as an RFC 3339 timestamp, for example \
+                         `2026-08-23T10:00:00Z`.",
+                    ),
+                ),
+            ],
+            &[],
+        )
+    }
+
+    fn mutates(&self) -> bool {
+        true
+    }
+
+    fn call(&self, project: &mut Project, input: &Value) -> Result<ToolOutput> {
+        let agent = input.get("agent").and_then(Value::as_str);
+        let model = input.get("model").and_then(Value::as_str);
+        let at = input.get("at").and_then(Value::as_str);
+
+        if agent.is_none() && model.is_none() && at.is_none() {
+            return Err(crate::Error::InvalidToolInput {
+                tool: self.name().to_owned(),
+                reason: "at least one of `agent`, `model` or `at` is required".to_owned(),
+            });
+        }
+
+        let generation = &mut project.metadata_mut().generation;
+        if let Some(agent) = agent {
+            generation.agent = Some(agent.to_owned());
+        }
+        if let Some(model) = model {
+            generation.model = Some(model.to_owned());
+        }
+        if let Some(at) = at {
+            generation.at = Some(at.to_owned());
+        }
+
+        Ok(ToolOutput::json(json!({
+            "agent": generation.agent,
+            "model": generation.model,
+            "at": generation.at,
+        })))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
@@ -561,7 +848,7 @@ mod tests {
     }
 
     #[test]
-    fn only_write_svg_declares_that_it_mutates() {
+    fn only_the_writing_and_setting_tools_declare_that_they_mutate() {
         // `get_` and `render_` promise no mutation in ADR 007, and
         // `Tool::mutates` says the same thing in code. This is what stops the
         // two from disagreeing.
@@ -570,7 +857,15 @@ mod tests {
             .filter(|tool| tool.mutates())
             .map(Tool::name)
             .collect();
-        assert_eq!(mutating, ["write_svg"]);
+        assert_eq!(
+            mutating,
+            [
+                "set_generation",
+                "set_palette_colour",
+                "write_svg",
+                "write_variant"
+            ]
+        );
     }
 
     #[test]
@@ -808,5 +1103,246 @@ mod tests {
             .unwrap();
 
         assert_eq!(output.value["saved"], false);
+    }
+
+    #[test]
+    fn write_variant_replaces_only_the_named_elements_bytes() {
+        let mut project = fixtures::project();
+
+        let output = Registry::new()
+            .call(
+                "write_variant",
+                &mut project,
+                &json!({
+                    "variant": "icon",
+                    "svg": r##"<symbol id="icon" viewBox="0 0 64 64"><circle r="32" cx="32" cy="32" fill="#f05032"/></symbol>"##,
+                }),
+            )
+            .unwrap();
+
+        assert_eq!(output.value["variant"], "icon");
+        assert_eq!(output.value["saved"], false);
+
+        assert!(
+            project
+                .source()
+                .contains(r#"<circle r="32" cx="32" cy="32""#)
+        );
+        assert!(!project.source().contains(r#"<rect width="64" height="64""#));
+        // The other variant, and the metadata, are untouched.
+        assert!(project.source().contains(r#"id="mark-wide""#));
+        assert!(project.source().contains("A square and a bar."));
+    }
+
+    #[test]
+    fn write_variant_of_an_undeclared_variant_lists_the_ones_that_exist() {
+        let error = call(
+            "write_variant",
+            json!({ "variant": "watermark", "svg": "<g/>" }),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, crate::Error::UnknownVariant { .. }));
+        let rendered = format!("{:?}", miette::Report::new(error));
+        assert!(rendered.contains("icon"), "{rendered}");
+        assert!(rendered.contains("wordmark"), "{rendered}");
+    }
+
+    #[test]
+    fn write_variant_rejects_a_fragment_that_is_not_well_formed_and_changes_nothing() {
+        let mut project = fixtures::project();
+        let error = Registry::new()
+            .call(
+                "write_variant",
+                &mut project,
+                &json!({ "variant": "icon", "svg": "<symbol id=\"icon\"" }),
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, crate::Error::InvalidSvgFromTool { .. }));
+        assert_eq!(project.source(), fixtures::PROJECT);
+    }
+
+    #[test]
+    fn write_variant_rejects_a_replacement_that_drops_the_elements_id() {
+        // The realistic failure: a model rewrites the geometry and loses the
+        // `id` the variant's metadata still points at. Left unchecked, the
+        // variant would silently stop rendering.
+        let mut project = fixtures::project();
+        let error = Registry::new()
+            .call(
+                "write_variant",
+                &mut project,
+                &json!({
+                    "variant": "icon",
+                    "svg": r#"<symbol viewBox="0 0 64 64"><rect width="64" height="64"/></symbol>"#,
+                }),
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, crate::Error::InvalidSvgFromTool { .. }));
+        assert_eq!(project.source(), fixtures::PROJECT);
+    }
+
+    #[test]
+    fn write_variant_does_not_touch_the_file_on_disk() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        Registry::new()
+            .call(
+                "write_variant",
+                &mut project,
+                &json!({
+                    "variant": "icon",
+                    "svg": r#"<symbol id="icon" viewBox="0 0 64 64"><circle r="32" cx="32" cy="32"/></symbol>"#,
+                }),
+            )
+            .unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), fixtures::PROJECT);
+    }
+
+    #[test]
+    fn set_palette_colour_updates_an_existing_colours_value_and_keeps_its_role() {
+        let mut project = fixtures::project();
+
+        let output = Registry::new()
+            .call(
+                "set_palette_colour",
+                &mut project,
+                &json!({ "name": "accent", "value": "#0066ff" }),
+            )
+            .unwrap();
+
+        assert_eq!(output.value["created"], false);
+        assert_eq!(output.value["value"], "#0066ff");
+        assert_eq!(output.value["role"], "accent");
+
+        let colour = project.metadata().palette.get("accent").unwrap();
+        assert_eq!(colour.value.to_string(), "#0066ff");
+        assert_eq!(colour.role.as_ref().unwrap().to_string(), "accent");
+    }
+
+    #[test]
+    fn set_palette_colour_can_set_only_the_role_leaving_the_value_alone() {
+        let mut project = fixtures::project();
+
+        Registry::new()
+            .call(
+                "set_palette_colour",
+                &mut project,
+                &json!({ "name": "ink", "role": "foreground" }),
+            )
+            .unwrap();
+
+        let colour = project.metadata().palette.get("ink").unwrap();
+        assert_eq!(colour.value.to_string(), "#18181b");
+        assert_eq!(colour.role.as_ref().unwrap().to_string(), "foreground");
+    }
+
+    #[test]
+    fn set_palette_colour_declares_a_new_colour_when_the_name_is_unknown() {
+        let mut project = fixtures::project();
+
+        let output = Registry::new()
+            .call(
+                "set_palette_colour",
+                &mut project,
+                &json!({ "name": "highlight", "value": "#ffcc00", "role": "secondary" }),
+            )
+            .unwrap();
+
+        assert_eq!(output.value["created"], true);
+        assert_eq!(project.metadata().palette.len(), 3);
+        let colour = project.metadata().palette.get("highlight").unwrap();
+        assert_eq!(colour.value.to_string(), "#ffcc00");
+        assert_eq!(colour.role.as_ref().unwrap().to_string(), "secondary");
+    }
+
+    #[test]
+    fn set_palette_colour_refuses_a_new_name_without_a_value() {
+        let error = call(
+            "set_palette_colour",
+            json!({ "name": "highlight", "role": "secondary" }),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, crate::Error::InvalidToolInput { .. }));
+        let rendered = error.to_string();
+        assert!(rendered.contains("highlight"), "{rendered}");
+    }
+
+    #[test]
+    fn set_palette_colour_refuses_neither_value_nor_role() {
+        let error = call("set_palette_colour", json!({ "name": "accent" })).unwrap_err();
+
+        assert!(matches!(error, crate::Error::InvalidToolInput { .. }));
+        let rendered = error.to_string();
+        assert!(rendered.contains("value"), "{rendered}");
+        assert!(rendered.contains("role"), "{rendered}");
+    }
+
+    #[test]
+    fn set_palette_colour_names_the_argument_a_bad_value_came_from() {
+        let error = call(
+            "set_palette_colour",
+            json!({ "name": "accent", "value": "octarine" }),
+        )
+        .unwrap_err();
+
+        let rendered = error.to_string();
+        assert!(rendered.contains("value"), "{rendered}");
+        assert!(rendered.contains("octarine"), "{rendered}");
+    }
+
+    #[test]
+    fn set_generation_records_every_field_given() {
+        let mut project = fixtures::project();
+
+        let output = Registry::new()
+            .call(
+                "set_generation",
+                &mut project,
+                &json!({ "agent": "opencode", "model": "claude-sonnet-5", "at": "2026-08-23T10:00:00Z" }),
+            )
+            .unwrap();
+
+        assert_eq!(output.value["agent"], "opencode");
+        let generation = &project.metadata().generation;
+        assert_eq!(generation.agent.as_deref(), Some("opencode"));
+        assert_eq!(generation.model.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(generation.at.as_deref(), Some("2026-08-23T10:00:00Z"));
+    }
+
+    #[test]
+    fn set_generation_patches_a_single_field_and_leaves_the_others_recorded() {
+        let mut project = fixtures::project();
+        project.metadata_mut().generation = crate::project::Generation {
+            agent: Some("opencode".to_owned()),
+            model: Some("claude-sonnet-5".to_owned()),
+            at: Some("2026-08-23T10:00:00Z".to_owned()),
+        };
+
+        Registry::new()
+            .call(
+                "set_generation",
+                &mut project,
+                &json!({ "at": "2026-08-23T11:30:00Z" }),
+            )
+            .unwrap();
+
+        let generation = &project.metadata().generation;
+        assert_eq!(generation.agent.as_deref(), Some("opencode"));
+        assert_eq!(generation.model.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(generation.at.as_deref(), Some("2026-08-23T11:30:00Z"));
+    }
+
+    #[test]
+    fn set_generation_refuses_a_call_with_no_fields_at_all() {
+        let error = call("set_generation", json!({})).unwrap_err();
+        assert!(matches!(error, crate::Error::InvalidToolInput { .. }));
     }
 }

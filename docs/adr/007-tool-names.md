@@ -41,7 +41,8 @@ Every tool is named `verb_noun`, with the verb drawn from a closed set:
 |---|---|
 | `get_` | Reads something and returns it. Never changes the project. |
 | `render_` | Rasterises. Returns images to look at. Never changes the project. |
-| `write_` | Replaces something. Changes the project in memory. |
+| `write_` | Replaces raw document markup. Changes the project in memory. |
+| `set_` | Sets a metadata field to an explicit value. Never touches document markup. Changes the project in memory. |
 
 The renames:
 
@@ -53,6 +54,18 @@ The renames:
 | `render` | `render_svg` |
 
 `get_svg`, `write_svg` and `render_grid` are added under the same rule.
+
+**Amendment.** `set_` was anticipated but not used when this ADR was accepted
+— the closing paragraph named `set_palette_colour` as the example of a tool
+that would need it. It now exists, alongside `set_generation`, and this ADR is
+edited in place to record it rather than superseded, for the same reason the
+original renames were made directly: the crate remains unpublished, so there
+is still no config file and no conversation history a verb change could break.
+`write_variant` needed no amendment; it replaces one element's markup, which
+is exactly what `write_` already meant — `write_svg` replaces all of it,
+`write_variant` replaces one element by `id`, spliced the same way
+[`replace_metadata`](../../src/project/document.rs) already splices
+`<shaipe:project>`.
 
 The names are pinned by `the_tool_names_are_the_ones_the_adr_records` in
 `src/tools/mod.rs`, which asserts the exact list. Changing a name means editing
@@ -87,8 +100,9 @@ actually sees, the noun is doing the work of saying whose `render` this is.
 - `render_svg` and `render_grid` share a verb, which correctly says they do the
   same kind of thing at different scales.
 - The verb set is closed, so adding a tool means either fitting it or extending
-  this ADR. A future `set_palette_colour` fits `set_`, which would be a fourth
-  verb and a small amendment; that is the intended way to grow it.
+  this ADR — `set_palette_colour` and `set_generation` are the fourth verb,
+  `set_`, added by amendment above; that is the intended way to grow it.
 - `get_` promises no mutation, and `Tool::mutates()` says the same thing in
-  code. They can disagree. `only_write_svg_declares_that_it_mutates` in
+  code. They can disagree.
+  `only_the_writing_and_setting_tools_declare_that_they_mutate` in
   `src/tools/builtin.rs` is what stops them.

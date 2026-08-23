@@ -33,7 +33,12 @@ through `write_svg`. Do not edit the project file with a text editor or a \
 shell, even though you are able to: a workspace is holding this same document \
 open, `write_svg` is what validates your SVG before it replaces anything, and \
 writing around it means your change is neither checked nor visible to the \
-person watching it.";
+person watching it.
+
+For a change contained to one variant, prefer `write_variant` over `write_svg`: \
+it replaces just that element and is validated the same way, without \
+resending the whole document. `set_palette_colour` and `set_generation` edit \
+the project's metadata directly and need no document at all.";
 
 /// An MCP server over one Shaipe session.
 ///
@@ -288,15 +293,23 @@ mod tests {
     #[tokio::test]
     async fn the_read_only_tools_say_so_in_their_annotations() {
         // What lets an agent call `render_svg` without stopping to ask.
+        // Checked against the registry's own `mutates()`, not a hardcoded
+        // name, so this keeps catching a disagreement as the mutating set
+        // grows rather than only while `write_svg` was the sole one.
+        let registry = Registry::new();
         let client = client().await;
         for tool in client.list_all_tools().await.unwrap() {
             let read_only = tool
                 .annotations
                 .as_ref()
                 .and_then(|annotations| annotations.read_only_hint);
+            let mutates = registry
+                .get(&tool.name)
+                .unwrap_or_else(|| panic!("`{}` is not in the registry", tool.name))
+                .mutates();
             assert_eq!(
                 read_only,
-                Some(tool.name != "write_svg"),
+                Some(!mutates),
                 "`{}` has the wrong read-only hint",
                 tool.name
             );

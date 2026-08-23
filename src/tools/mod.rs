@@ -333,7 +333,10 @@ mod tests {
                 "get_variants",
                 "render_grid",
                 "render_svg",
+                "set_generation",
+                "set_palette_colour",
                 "write_svg",
+                "write_variant",
             ]
         );
     }

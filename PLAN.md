@@ -36,7 +36,7 @@ The project SVG and its metadata.
 - [ ] Palette *binding* — artwork references palette entries, so editing a
       colour restyles the mark
 - [ ] Import and export standard palette formats
-- [ ] Record `<shaipe:generation>` when an agent actually produces artwork
+- [x] Record `<shaipe:generation>` when an agent actually produces artwork
 
 ## Renderer
 
@@ -156,7 +156,7 @@ see `docs/adr/004-tools-not-a-model.md`.
       opens the PNG. Until this is done and written up, the premise is
       unproven
 - [x] A transport for the registry — MCP over stdio is the obvious one
-- [ ] Mutating tools: set a palette colour, write a variant, record generation
+- [x] Mutating tools: set a palette colour, write a variant, record generation
 - [ ] Tools for attaching and inspecting references
 - [ ] Raster to vector: hand a PNG to an agent and get an SVG back
 - [x] Tool inputs described by JSON Schema rather than a parameter list — ADR-008
