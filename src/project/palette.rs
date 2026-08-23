@@ -1,11 +1,15 @@
 //! The project palette.
 //!
-//! Declarative for now: Shaipe records the palette and reports on it, but the
-//! renderer never consults it. Binding artwork to palette entries needs either
-//! CSS custom properties, which `resvg` does not implement, or a Shaipe-owned
-//! `<style>` block; both are deliberately deferred. The data model here is the
-//! one a colour picker and an import/export layer will need, so that adding
-//! them later is additive rather than a rewrite.
+//! Artwork binds to a palette entry with a `shaipe:fill`/`shaipe:stroke`
+//! attribute naming a [`Colour`] by its `name`, read alongside the element's
+//! ordinary `fill`/`stroke` rather than instead of it — `resvg` does not
+//! implement CSS custom properties, and this way the document stays a correct,
+//! ordinary SVG whether or not anything ever resolves the binding. Editing a
+//! colour's value (`Project::restyle`, called by `set_palette_colour` and by
+//! the workspace's own palette pane) finds every element bound to that name
+//! and splices its literal attribute to match, immediately — there is no
+//! render-time substitution step, and nothing in [`crate::render`] needs to
+//! know the palette exists.
 
 use std::fmt;
 use std::str::FromStr;

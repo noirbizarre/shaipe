@@ -176,6 +176,23 @@ impl Project {
         }
     }
 
+    /// Restyle every element bound to a palette colour, to a given value.
+    ///
+    /// Binding is `shaipe:fill`/`shaipe:stroke` naming a colour by its
+    /// palette `name`; see [`document::apply_binding`]. This only touches the
+    /// artwork — the palette's own record of the colour is a separate field
+    /// on [`Metadata`], and updating it is the caller's job, the same way
+    /// `set_palette_colour` and the workspace's palette pane both do.
+    ///
+    /// # Errors
+    ///
+    /// As [`document::apply_binding`] — unreachable in practice, since this
+    /// project's own source already parsed once, when it was opened.
+    pub fn restyle(&mut self, name: &str, value: Rgba) -> Result<()> {
+        self.source = document::apply_binding(&self.source, name, value, &self.path)?;
+        Ok(())
+    }
+
     /// The bytes this project would be written as.
     ///
     /// Identical to [`Project::source`] apart from the metadata element, and
@@ -282,6 +299,37 @@ mod tests {
         let project = Project::init("logo.svg").unwrap();
         assert_eq!(project.metadata().primary.as_deref(), Some("icon"));
         assert_eq!(project.metadata().variant_names(), ["icon"]);
+    }
+
+    #[test]
+    fn restyling_a_bound_colour_changes_the_source_but_not_the_palettes_own_record() {
+        // The two are kept independent on purpose: a tool or the workspace
+        // decides when to update each, and this method only ever does the
+        // first.
+        const BOUND: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:shaipe="https://shaipe.dev/ns/2026" viewBox="0 0 16 16">
+  <metadata>
+    <shaipe:project version="1" primary="icon">
+      <shaipe:palette>
+        <shaipe:color name="accent" value="#f05032"/>
+      </shaipe:palette>
+      <shaipe:variants>
+        <shaipe:variant name="icon"/>
+      </shaipe:variants>
+    </shaipe:project>
+  </metadata>
+  <symbol id="icon" viewBox="0 0 16 16"><rect width="16" height="16" fill="#f05032" shaipe:fill="accent"/></symbol>
+  <use href="#icon"/>
+</svg>
+"##;
+
+        let mut project = Project::from_source("logo.svg", BOUND.to_owned()).unwrap();
+        project.restyle("accent", Rgba::new(0, 0, 0, 0xff)).unwrap();
+
+        assert!(project.source().contains(r##"fill="#000000""##));
+        assert_eq!(
+            project.metadata().palette.get("accent").unwrap().value,
+            Rgba::new(0xf0, 0x50, 0x32, 0xff)
+        );
     }
 
     #[test]

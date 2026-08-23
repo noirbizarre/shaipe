@@ -624,11 +624,13 @@ impl Tool for SetPaletteColour {
          value or role by name, or declare a new one if the name is not yet \
          in the palette, in which case `value` is required. Only the fields \
          given are changed — omitting `role` when editing an existing colour \
-         leaves its role as it was. Palette entries are declarative only for \
-         now: the renderer does not consult them, so this changes what the \
-         project records about a colour, not how the artwork renders. Edit \
-         the artwork itself with `write_variant` or `write_svg` to actually \
-         restyle it."
+         leaves its role as it was. Setting `value` also restyles the \
+         artwork: any element already bound to this colour with \
+         `shaipe:fill=\"name\"` or `shaipe:stroke=\"name\"`, alongside its \
+         ordinary `fill`/`stroke`, has that attribute rewritten to the new \
+         value. Bind an element yourself with `write_variant` or `write_svg` \
+         by adding that attribute next to its `fill`/`stroke`; nothing \
+         restyles until an element names a colour this way."
     }
 
     fn input_schema(&self) -> Value {
@@ -686,6 +688,14 @@ impl Tool for SetPaletteColour {
             .map(str::parse::<Rgba>)
             .transpose()
             .map_err(|error| refuse(format!("`value`: {error}")))?;
+
+        // Restyled before the palette records the new value, so a failure
+        // here — unreachable in practice, see `Project::restyle` — leaves the
+        // document and the palette in their old, matching state rather than
+        // updating one and not the other.
+        if let Some(value) = value {
+            project.restyle(name, value)?;
+        }
 
         let palette = &mut project.metadata_mut().palette;
         let created = match palette.get_mut(name) {
@@ -1483,6 +1493,57 @@ mod tests {
         let rendered = error.to_string();
         assert!(rendered.contains("value"), "{rendered}");
         assert!(rendered.contains("octarine"), "{rendered}");
+    }
+
+    /// A project with one element bound to `accent` via `shaipe:fill`,
+    /// alongside its literal `fill` — the artwork half of the fixture
+    /// `set_palette_colour`'s restyling tests need, which the shared
+    /// [`fixtures::PROJECT`] does not declare any binding for.
+    const BOUND_PROJECT: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:shaipe="https://shaipe.dev/ns/2026" viewBox="0 0 64 64">
+  <metadata>
+    <shaipe:project version="1" primary="icon">
+      <shaipe:palette>
+        <shaipe:color name="accent" value="#f05032" role="accent"/>
+      </shaipe:palette>
+      <shaipe:variants>
+        <shaipe:variant name="icon"/>
+      </shaipe:variants>
+    </shaipe:project>
+  </metadata>
+  <symbol id="icon" viewBox="0 0 64 64"><rect width="64" height="64" fill="#f05032" shaipe:fill="accent"/></symbol>
+  <use href="#icon" width="64" height="64"/>
+</svg>
+"##;
+
+    #[test]
+    fn set_palette_colour_restyles_every_element_bound_to_it() {
+        let mut project = Project::from_source("logo.svg", BOUND_PROJECT.to_owned()).unwrap();
+
+        Registry::new()
+            .call(
+                "set_palette_colour",
+                &mut project,
+                &json!({ "name": "accent", "value": "#0066ff" }),
+            )
+            .unwrap();
+
+        assert!(project.source().contains(r##"fill="#0066ff""##));
+        assert!(!project.source().contains(r##"fill="#f05032""##));
+    }
+
+    #[test]
+    fn set_palette_colour_setting_only_the_role_does_not_touch_bound_artwork() {
+        let mut project = Project::from_source("logo.svg", BOUND_PROJECT.to_owned()).unwrap();
+
+        Registry::new()
+            .call(
+                "set_palette_colour",
+                &mut project,
+                &json!({ "name": "accent", "role": "primary" }),
+            )
+            .unwrap();
+
+        assert!(project.source().contains(r##"fill="#f05032""##));
     }
 
     #[test]

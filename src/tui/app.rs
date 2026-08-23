@@ -905,24 +905,46 @@ impl App {
         };
         let Some(edit) = value else { return };
 
-        let palette = &mut self.project.metadata_mut().palette;
-        let Some(colour) = palette.colour_mut(row) else {
+        // Read before anything is mutated: a value change restyles whatever
+        // the artwork already binds under the name the colour has *now*, not
+        // whatever it is about to be renamed to.
+        let Some(name) = self
+            .project
+            .metadata()
+            .palette
+            .colours()
+            .get(row)
+            .map(|colour| colour.name.clone())
+        else {
             return;
         };
 
-        let changed = match edit {
-            Edit::Name(name) if colour.name != name => {
-                colour.name = name;
-                true
+        let changed = {
+            let palette = &mut self.project.metadata_mut().palette;
+            let Some(colour) = palette.colour_mut(row) else {
+                return;
+            };
+
+            match &edit {
+                Edit::Name(new_name) if colour.name != *new_name => {
+                    colour.name = new_name.clone();
+                    true
+                }
+                Edit::Value(rgba) if colour.value != *rgba => {
+                    colour.value = *rgba;
+                    true
+                }
+                _ => false,
             }
-            Edit::Value(rgba) if colour.value != rgba => {
-                colour.value = rgba;
-                true
-            }
-            _ => false,
         };
 
         if changed {
+            if let Edit::Value(rgba) = edit {
+                self.project.restyle(&name, rgba).expect(
+                    "the project's own document already parsed; only bound \
+                     attributes change",
+                );
+            }
             self.dirty = true;
         }
     }
@@ -2564,6 +2586,45 @@ mod tests {
         );
         assert!(app.is_dirty());
         assert!(app.project.to_svg().unwrap().contains("#0066ff"));
+    }
+
+    #[test]
+    fn editing_a_palette_colours_value_in_the_tui_restyles_bound_artwork() {
+        // The same keystroke path as above, this time on a project where an
+        // element is actually bound to the colour being typed — proving the
+        // workspace's own editor restyles the mark, not only the tool does.
+        const BOUND: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:shaipe="https://shaipe.dev/ns/2026" viewBox="0 0 64 64">
+  <metadata>
+    <shaipe:project version="1" primary="icon">
+      <shaipe:palette>
+        <shaipe:color name="accent" value="#f05032" role="accent"/>
+      </shaipe:palette>
+      <shaipe:variants>
+        <shaipe:variant name="icon"/>
+      </shaipe:variants>
+    </shaipe:project>
+  </metadata>
+  <symbol id="icon" viewBox="0 0 64 64"><rect width="64" height="64" fill="#f05032" shaipe:fill="accent"/></symbol>
+  <use href="#icon" width="64" height="64"/>
+</svg>
+"##;
+
+        let mut app = App::new(
+            Project::from_source("logo.svg", BOUND.to_owned()).unwrap(),
+            "blocks",
+        );
+        app.focus = Focus::Palette;
+        app.engage_editor();
+
+        for _ in 0..7 {
+            app.edit_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        }
+        for character in "#0066ff".chars() {
+            app.edit_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+
+        assert!(app.project.source().contains(r##"fill="#0066ff""##));
+        assert!(!app.project.source().contains(r##"fill="#f05032""##));
     }
 
     #[test]

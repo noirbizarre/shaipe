@@ -12,12 +12,14 @@
 //! things it generates, that is the wrong trade.
 
 use std::fmt::Write as _;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use roxmltree::Document;
+use roxmltree::{Document, Node};
 
 use crate::error::{Error, Result};
 use crate::project::metadata::{Metadata, NAMESPACE, SCHEMA_VERSION};
+use crate::project::palette::Rgba;
 use crate::project::spec::{Background, Format};
 
 /// The SVG namespace a project document's root must be in.
@@ -124,6 +126,88 @@ pub fn replace_element(
     output.push_str(&source[..range.start]);
     output.push_str(replacement);
     output.push_str(&source[range.end..]);
+    Ok(output)
+}
+
+/// Restyle every element bound to a palette colour, wherever it is.
+///
+/// Binding is a `shaipe:fill`/`shaipe:stroke` attribute naming a colour by its
+/// palette name, read alongside the element's own `fill`/`stroke` rather than
+/// instead of it — so the document stays an ordinary SVG whether or not
+/// anything ever calls this. Only the plain attribute's value changes; the
+/// binding attribute is left exactly as it was, and so is everything else in
+/// the document, splice by splice, the same technique [`replace_element`]
+/// uses for a single element.
+///
+/// A colour with nothing bound to it is the common case, and costs one copy
+/// of `source` with nothing changed.
+///
+/// # Errors
+///
+/// Returns [`Error::MalformedXml`] or [`Error::NotSvg`] if `source` does not
+/// parse — unreachable for a project that already opened, since this is
+/// always called on a document Shaipe itself just read.
+pub fn apply_binding(source: &str, name: &str, value: Rgba, path: &Path) -> Result<String> {
+    let document = parse(source, path)?;
+    let value = value.to_string();
+
+    // Collected before anything is written, and keyed by byte range rather
+    // than by node, so elements bound more than once in the document (an icon
+    // and its inverse, say) are all found in one pass over the tree.
+    let mut edits: Vec<(Range<usize>, String)> = Vec::new();
+
+    for node in document.descendants().filter(Node::is_element) {
+        for attribute in ["fill", "stroke"] {
+            let Some(binding) = node.attribute((NAMESPACE, attribute)) else {
+                continue;
+            };
+            if binding != name {
+                continue;
+            }
+
+            // `Node::attribute_node` matches by local name alone once no
+            // namespace is asked for, which would find `shaipe:fill` itself
+            // when there is no plain `fill` to find — the two share a local
+            // name and differ only by prefix. The unnamespaced attribute has
+            // to be found explicitly instead.
+            let plain = node
+                .attributes()
+                .find(|candidate| candidate.name() == attribute && candidate.namespace().is_none());
+
+            match plain {
+                // The common case: the element already carries a literal
+                // colour, and only its value needs to change.
+                Some(existing) => edits.push((existing.range_value(), value.clone())),
+                // Bound but with nothing to fall back on yet — an attribute is
+                // inserted right after the binding, so the element still
+                // renders correctly wherever `shaipe:fill` itself is not
+                // understood.
+                None => {
+                    let binding_attribute = node
+                        .attribute_node((NAMESPACE, attribute))
+                        .expect("just matched its value");
+                    let at = binding_attribute.range().end;
+                    edits.push((at..at, format!(r#" {attribute}="{value}""#)));
+                }
+            }
+        }
+    }
+
+    if edits.is_empty() {
+        return Ok(source.to_owned());
+    }
+
+    edits.sort_by_key(|(range, _)| range.start);
+
+    let mut output = String::with_capacity(source.len());
+    let mut cursor = 0;
+    for (range, replacement) in edits {
+        output.push_str(&source[cursor..range.start]);
+        output.push_str(&replacement);
+        cursor = range.end;
+    }
+    output.push_str(&source[cursor..]);
+
     Ok(output)
 }
 
@@ -429,5 +513,116 @@ mod tests {
         let rendered = error.to_string();
         assert!(rendered.contains("ghost"), "{rendered}");
         assert!(rendered.contains("nowhere"), "{rendered}");
+    }
+
+    /// Two elements bound to `accent` — one with a literal `fill` already,
+    /// one without — and a third bound to a different colour entirely, so a
+    /// test can tell "restyled" apart from "untouched".
+    const BOUND: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:shaipe="https://shaipe.dev/ns/2026" viewBox="0 0 16 16">
+  <metadata>
+    <shaipe:project version="1" primary="icon">
+      <shaipe:palette>
+        <shaipe:color name="accent" value="#f05032"/>
+        <shaipe:color name="ink" value="#18181b"/>
+      </shaipe:palette>
+      <shaipe:variants>
+        <shaipe:variant name="icon"/>
+      </shaipe:variants>
+    </shaipe:project>
+  </metadata>
+  <!-- a comment the author cares about -->
+  <symbol id="icon" viewBox="0 0 16 16">
+    <rect width="16" height="16" fill="#f05032" shaipe:fill="accent"/>
+    <circle r="4" cx="8" cy="8" shaipe:fill="accent"/>
+    <path d="M0 0 L16 16" stroke="#18181b" shaipe:stroke="ink"/>
+  </symbol>
+  <use href="#icon"/>
+</svg>
+"##;
+
+    #[test]
+    fn binding_rewrites_an_existing_literal_attribute_in_place() {
+        let updated = apply_binding(
+            BOUND,
+            "accent",
+            Rgba::new(0, 0, 0, 0xff),
+            Path::new("t.svg"),
+        )
+        .unwrap();
+
+        assert!(
+            updated.contains(
+                r##"<rect width="16" height="16" fill="#000000" shaipe:fill="accent"/>"##
+            ),
+            "{updated}"
+        );
+        // The palette's own record of the colour is untouched — restyling
+        // artwork and updating the palette are two separate steps, and this
+        // one only does the first.
+        assert!(
+            updated.contains(r##"<shaipe:color name="accent" value="#f05032"/>"##),
+            "{updated}"
+        );
+    }
+
+    #[test]
+    fn binding_inserts_a_literal_attribute_when_the_element_has_none() {
+        let updated = apply_binding(
+            BOUND,
+            "accent",
+            Rgba::new(0, 0, 0, 0xff),
+            Path::new("t.svg"),
+        )
+        .unwrap();
+
+        assert!(
+            updated
+                .contains(r##"<circle r="4" cx="8" cy="8" shaipe:fill="accent" fill="#000000"/>"##),
+            "{updated}"
+        );
+    }
+
+    #[test]
+    fn binding_touches_only_elements_bound_to_the_edited_name() {
+        let updated = apply_binding(
+            BOUND,
+            "accent",
+            Rgba::new(0, 0, 0, 0xff),
+            Path::new("t.svg"),
+        )
+        .unwrap();
+
+        // `ink` was not the colour being edited, so its own binding is left
+        // exactly as it read.
+        assert!(
+            updated.contains(r##"<path d="M0 0 L16 16" stroke="#18181b" shaipe:stroke="ink"/>"##),
+            "{updated}"
+        );
+    }
+
+    #[test]
+    fn binding_leaves_the_rest_of_the_document_byte_identical() {
+        let updated = apply_binding(
+            BOUND,
+            "accent",
+            Rgba::new(0, 0, 0, 0xff),
+            Path::new("t.svg"),
+        )
+        .unwrap();
+
+        assert!(updated.contains("<!-- a comment the author cares about -->"));
+        assert!(updated.contains(r##"<shaipe:color name="accent" value="#f05032"/>"##));
+    }
+
+    #[test]
+    fn binding_a_colour_nothing_references_leaves_the_document_unchanged() {
+        let updated = apply_binding(
+            BOUND,
+            "unused",
+            Rgba::new(0, 0, 0, 0xff),
+            Path::new("t.svg"),
+        )
+        .unwrap();
+        assert_eq!(updated, BOUND);
     }
 }

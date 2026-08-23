@@ -33,7 +33,7 @@ The project SVG and its metadata.
 - [x] Metadata written by splicing its own byte range, artwork untouched
 - [x] Defaults omitted on write, so opening and saving changes nothing
 - [x] Variants as `<symbol>`, root `<use>` keeps the file viewable
-- [ ] Palette *binding* — artwork references palette entries, so editing a
+- [x] Palette *binding* — artwork references palette entries, so editing a
       colour restyles the mark
 - [ ] Import and export standard palette formats
 - [x] Record `<shaipe:generation>` when an agent actually produces artwork
