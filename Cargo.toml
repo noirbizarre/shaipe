@@ -188,6 +188,17 @@ futures = "0.3"
 # no dev entry for it.
 tempfile = "3"
 
+# Markdown in the transcript. An agent writes CommonMark and, until now, the
+# characters were shown literally — `**bold**` rather than bold. Regex-based
+# emphasis/list detection is the "obvious API that doesn't do what you'd
+# think" trap (escaped markers, nesting, asterisks inside code spans), so this
+# is a real parser rather than one written by hand.
+#
+# Default features off: they pull in `getopts` (its CLI example) and an
+# `html` renderer this crate never uses — Shaipe turns events into `ratatui`
+# spans directly, never into a string of HTML.
+pulldown-cmark = { version = "0.13", default-features = false }
+
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"

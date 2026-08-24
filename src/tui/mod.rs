@@ -24,6 +24,7 @@
 //! rather than panes, and `m` swaps which of the two the tabs list.
 
 pub mod app;
+mod markdown;
 pub mod modal;
 pub mod panes;
 pub mod render_worker;

@@ -136,7 +136,7 @@ The interactive TUI.
       panes until one of them is being edited
 - [ ] Scroll back through the transcript: it is anchored to its newest entry,
       and nothing but `PageUp` reaches the rest of it
-- [ ] Render the transcript's Markdown — bold, italics and real bullets —
+- [x] Render the transcript's Markdown — bold, italics and real bullets —
       rather than showing the characters a model wrote
 - [ ] A variant's preview takes the whole pane, rendered to fit the space it
       has, where a render specification keeps being drawn at the size it

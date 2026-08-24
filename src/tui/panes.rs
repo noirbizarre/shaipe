@@ -14,6 +14,7 @@ use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wr
 use crate::project::{Palette, Rgba};
 
 use super::app::{AgentStatus, App, Focus, LeftView, PaletteEdit, PaletteField, View};
+use super::markdown;
 use super::transcript::Entry;
 use crate::acp::ToolStatus;
 
@@ -236,22 +237,26 @@ fn transcript(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
-/// One `Line` per paragraph, with a gutter on the first.
+/// One `Line` per rendered markdown row, with a gutter on the first.
 ///
-/// An agent's message contains newlines, and a `Span` holding one is a single
-/// `Line` that draws as several rows — which is how anything measured in lines
-/// ends up short. Splitting here keeps the count and the drawing in agreement,
-/// and it is the same mistake the prompt pane made with the project's prompt.
+/// `markdown::render` is what turns an agent's `**bold**` and `- item` into
+/// actual emphasis and a real bullet; this function's own job is only the
+/// gutter — the same one it always did. An agent's message contains
+/// newlines, and a `Span` holding one is a single `Line` that draws as
+/// several rows — which is how anything measured in lines ends up short.
+/// Splitting here keeps the count and the drawing in agreement, and it is the
+/// same mistake the prompt pane made with the project's prompt.
 fn paragraphs(
     text: &str,
     gutter: &'static str,
     gutter_style: Style,
     style: Style,
 ) -> Vec<Line<'static>> {
-    text.lines()
+    markdown::render(text, style)
+        .into_iter()
         .enumerate()
         .map(|(index, line)| {
-            Line::from(vec![
+            let mut spans = vec![
                 // The gutter only on the first, so a wrapped paragraph is not
                 // mistaken for several entries.
                 Span::styled(
@@ -262,8 +267,9 @@ fn paragraphs(
                         Style::default()
                     },
                 ),
-                Span::styled(line.to_owned(), style),
-            ])
+            ];
+            spans.extend(line.spans);
+            Line::from(spans)
         })
         .collect()
 }
@@ -619,6 +625,37 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn an_agents_bold_text_is_drawn_without_its_asterisks() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.transcript.apply(crate::acp::AgentUpdate::Message(
+            "This is **bold** text.".to_owned(),
+        ));
+
+        let output = drawn(Paragraph::new(transcript_lines(&app)), 60, 4);
+
+        assert!(output.contains("This is bold text."), "{output}");
+        assert!(
+            !output.contains("**"),
+            "the asterisks leaked through:\n{output}"
+        );
+    }
+
+    #[test]
+    fn a_bulleted_list_in_the_transcript_shows_a_real_bullet() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.transcript
+            .apply(crate::acp::AgentUpdate::Message("- one\n- two".to_owned()));
+
+        let output = drawn(Paragraph::new(transcript_lines(&app)), 60, 4);
+
+        assert!(output.contains('\u{2022}'), "{output}");
+        assert!(
+            !output.contains("- one") && !output.contains("- two"),
+            "the source dash leaked through:\n{output}"
+        );
     }
 
     #[test]
