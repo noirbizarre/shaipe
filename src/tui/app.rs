@@ -17,7 +17,7 @@ use ratatui::widgets::ListState;
 use ratatui_textarea::{TextArea, WrapMode};
 
 use crate::preview::{Image, Scale};
-use crate::project::{Format, Project, RenderSpec, Rgba};
+use crate::project::{Background, Format, Project, RenderSpec, Rgba};
 use crate::render::{RenderOptions, Renderer};
 use crate::tui::modal::{ColourPicker, Modal, RendersEditor, VariantsEditor};
 use crate::tui::render_worker::{Rendered, Worker};
@@ -37,10 +37,12 @@ pub const MIN_PREVIEW: u16 = 12;
 /// How close together two clicks count as one double-click.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
-/// The largest a preview is rasterised, before it is fitted to the pane.
+/// The square a variant's preview falls back to before the pane's own size
+/// is known — the first frame, when nothing has been drawn yet to fill.
 const PREVIEW_SIZE: u32 = 512;
 
-/// The smallest a preview is allowed to shrink to.
+/// The smallest a variant's preview is allowed to be, however small the pane
+/// gets.
 ///
 /// Below this a logo stops being recognisable, and the rasterising is cheap
 /// enough that shrinking further buys nothing.
@@ -1434,14 +1436,19 @@ impl App {
 
     /// What the preview should be showing.
     ///
-    /// A render specification is the more specific statement: it names a
-    /// variant *and* a size and background, so in that mode it is obeyed
-    /// exactly. A variant on its own is previewed at a default size.
+    /// A render specification names a variant *and* a size and background, so
+    /// it is honoured exactly: rasterised at the size it declares regardless
+    /// of the pane, the same way `shaipe render` would produce it —
+    /// ratatui-image fits the result onto the pane's cells for display, the
+    /// same as it does for every other image handed to it.
+    ///
+    /// A variant on its own declares no size. The pane is the only one on
+    /// offer, so its preview fills it.
     #[must_use]
     pub fn preview_spec(&self) -> Option<RenderSpec> {
         let metadata = self.project.metadata();
 
-        let mut spec = match self.mode {
+        let spec = match self.mode {
             Mode::Renders => {
                 let mut spec = metadata.renders.get(self.tab())?.clone();
                 // A preview is pixels on a screen, so an SVG specification is
@@ -1453,41 +1460,42 @@ impl App {
             }
             Mode::Variants => {
                 let variant = metadata.variants.get(self.tab())?;
-                RenderSpec::square(&variant.name, &variant.name, PREVIEW_SIZE)
+                let (width, height) = self.pane_pixels();
+                RenderSpec {
+                    name: variant.name.clone(),
+                    variant: variant.name.clone(),
+                    width,
+                    height,
+                    format: Format::Png,
+                    background: Background::Transparent,
+                }
             }
         };
 
-        self.fit_to_pane(&mut spec);
         Some(spec)
     }
 
-    /// Shrink a specification to something the pane can actually show.
+    /// The pixel box a variant's preview fills.
     ///
-    /// Previewing `social` at its declared 1280x640 rasterises 819 000 pixels
-    /// to be drawn in a pane holding a few thousand — which is where the
-    /// workspace's stutter came from.
+    /// A variant declares no size of its own, so the pane's own size is the
+    /// only one worth asking for — enlarging past [`PREVIEW_SIZE`] as readily
+    /// as shrinking below it, unlike a render specification, which keeps the
+    /// size it declares regardless of the pane.
     ///
-    /// Halving, rather than scaling to fit exactly, for three reasons: the
-    /// aspect ratio stays exact, so nothing letterboxes that would not have;
-    /// the size changes in a handful of steps, so dragging the divider does
-    /// not re-render on every mouse event; and a power-of-two reduction is the
-    /// one resamplers are kindest to.
-    ///
-    /// Never enlarges. A preview must not invent detail the asset lacks.
-    fn fit_to_pane(&self, spec: &mut RenderSpec) {
+    /// Floored at [`MIN_PREVIEW_SIZE`] so a sliver of a pane does not
+    /// rasterise something unrecognisable. Before the first frame,
+    /// `preview_pixels` is `(0, 0)` — nothing has been drawn yet to fill — so
+    /// this falls back to a [`PREVIEW_SIZE`] square rather than reading that
+    /// as "shrink to nothing".
+    fn pane_pixels(&self) -> (u32, u32) {
         let (box_width, box_height) = self.preview_pixels;
         if box_width == 0 || box_height == 0 {
-            return;
+            return (PREVIEW_SIZE, PREVIEW_SIZE);
         }
-
-        while spec.width > box_width || spec.height > box_height {
-            let (half_width, half_height) = (spec.width / 2, spec.height / 2);
-            if half_width < MIN_PREVIEW_SIZE || half_height < MIN_PREVIEW_SIZE {
-                break;
-            }
-            spec.width = half_width;
-            spec.height = half_height;
-        }
+        (
+            box_width.max(MIN_PREVIEW_SIZE),
+            box_height.max(MIN_PREVIEW_SIZE),
+        )
     }
 
     /// Throw the current preview away and render it again.
@@ -2329,10 +2337,11 @@ mod tests {
     }
 
     #[test]
-    fn a_preview_is_halved_until_it_fits_the_pane() {
+    fn a_render_specification_ignores_the_pane_and_keeps_its_declared_size() {
         // `social` is 1280x640. In a 58x27 pane at 10x20 px per cell — 580x540
-        // — it must not be rasterised at its declared size, which is 819 000
-        // pixels for a few thousand cells' worth of screen.
+        // — it is still rasterised at its declared size: ratatui-image fits
+        // the result onto the pane for display, the same as it does for
+        // every other image.
         let mut app = app();
         app.project.metadata_mut().renders.clear();
         app.project.metadata_mut().renders.push(RenderSpec {
@@ -2341,58 +2350,40 @@ mod tests {
             width: 1280,
             height: 640,
             format: Format::Png,
-            background: crate::project::Background::Transparent,
+            background: Background::Transparent,
         });
         app.mode = Mode::Renders;
         with_pane(&mut app, 58, 27);
 
         let spec = app.preview_spec().unwrap();
-        assert_eq!((spec.width, spec.height), (320, 160));
+        assert_eq!((spec.width, spec.height), (1280, 640));
     }
 
     #[test]
-    fn fitting_a_preview_preserves_its_aspect_ratio_exactly() {
-        // Halving is used precisely so the ratio survives. Scaling each side
-        // to fit independently would letterbox an asset that does not.
-        let mut app = app();
-        app.project.metadata_mut().renders.clear();
-        app.project.metadata_mut().renders.push(RenderSpec {
-            name: "wide".to_owned(),
-            variant: "icon".to_owned(),
-            width: 1600,
-            height: 400,
-            format: Format::Png,
-            background: crate::project::Background::Transparent,
-        });
-        app.mode = Mode::Renders;
-        with_pane(&mut app, 30, 10);
-
-        let spec = app.preview_spec().unwrap();
-        assert_eq!(spec.width / spec.height, 4, "1600x400 is 4:1");
-        assert!(spec.width <= 300, "should have shrunk: {}", spec.width);
-    }
-
-    #[test]
-    fn a_preview_is_never_enlarged_to_fill_the_pane() {
-        // A preview must not invent detail the asset does not have.
+    fn a_variants_preview_fills_the_pane_even_past_its_default_size() {
+        // A variant declares no size of its own, so a spacious pane is
+        // filled rather than left with `PREVIEW_SIZE` of it unused.
         let mut app = app();
         with_pane(&mut app, 200, 60);
 
         let spec = app.preview_spec().unwrap();
-        assert_eq!((spec.width, spec.height), (PREVIEW_SIZE, PREVIEW_SIZE));
+        assert_eq!((spec.width, spec.height), (2000, 1200));
     }
 
     #[test]
-    fn a_preview_stops_shrinking_before_it_becomes_unrecognisable() {
+    fn a_variants_preview_does_not_shrink_below_the_minimum_size() {
         let mut app = app();
         with_pane(&mut app, 1, 1);
 
         let spec = app.preview_spec().unwrap();
-        assert!(spec.width >= MIN_PREVIEW_SIZE, "shrank to {}", spec.width);
+        assert_eq!(
+            (spec.width, spec.height),
+            (MIN_PREVIEW_SIZE, MIN_PREVIEW_SIZE)
+        );
     }
 
     #[test]
-    fn before_the_first_frame_a_preview_uses_its_declared_size() {
+    fn before_the_first_frame_a_variants_preview_falls_back_to_a_default_size() {
         // `preview_pixels` is `(0, 0)` until something has been drawn, and a
         // zero-sized pane must not be read as "shrink to nothing".
         let app = app();

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Check that the workspace does not flood the terminal with images.
 
-`ratatui-image` transmits Kitty images as raw RGBA, so one preview of a
-512x512 image is about 1.4 MB of escape sequences — and under tmux every
-4096-byte chunk is separately wrapped in a passthrough sequence. At that size
-the number of transmissions is the difference between a workspace that feels
-instant and one that appears to hang for ten seconds.
+`ratatui-image` transmits Kitty images as raw RGBA, so one preview a couple of
+hundred pixels on a side is already over a megabyte of escape sequences — and
+under tmux every 4096-byte chunk is separately wrapped in a passthrough
+sequence. At that size the number of transmissions is the difference between
+a workspace that feels instant and one that appears to hang for ten seconds.
 
 Two regressions are guarded here, both of which shipped:
 
@@ -36,10 +36,17 @@ import sys
 import termios
 import time
 
-# One 512x512 RGBA transmission is ~1.4 MB. Anything above this means more than
-# one image went out; comfortably above a single transmission's worth of
-# placeholder redraws.
-ONE_IMAGE = 1_500_000
+# A variant's preview fills its pane rather than capping at 512x512 (see
+# PLAN.md: "A variant's preview takes the whole pane..."), so how large one
+# transmission is depends on the fixed pty size below: 120x40 cells, and a
+# preview pane of roughly 58x35 of them. The picker never gets an answer to
+# its capability query over this pty, so it falls back to ratatui-image's own
+# default font size, 10x20 — making the preview pane's pixel box a fixed
+# 580x700, an RGBA transmission of ~1.6 MB raw, ~2.2 MB base64-encoded.
+# Comfortably above that, and comfortably below what even the smallest
+# possible second transmission — the old fixed 512x512 fallback, rendered
+# before the pane's size was known — would add on top of it.
+ONE_IMAGE = 3_000_000
 
 # Enough bytes to be an image rather than a frame of borders and text.
 AN_IMAGE = 100_000

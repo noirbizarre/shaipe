@@ -138,7 +138,7 @@ The interactive TUI.
       and nothing but `PageUp` reaches the rest of it
 - [x] Render the transcript's Markdown — bold, italics and real bullets —
       rather than showing the characters a model wrote
-- [ ] A variant's preview takes the whole pane, rendered to fit the space it
+- [x] A variant's preview takes the whole pane, rendered to fit the space it
       has, where a render specification keeps being drawn at the size it
       declares
 - [ ] Review the toolbar, the footer and the pane titles together: they say
