@@ -20,4 +20,4 @@ pub mod opencode;
 mod update;
 
 pub use agent::{Agent, AgentChoice, AgentConfig, DEFAULT_AGENT, McpServerSpec, Policy};
-pub use update::{AgentUpdate, ToolStatus};
+pub use update::{AgentUpdate, ModelChoice, ToolStatus};

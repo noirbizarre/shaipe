@@ -16,8 +16,9 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
 
+use crate::acp::ModelChoice;
 use crate::project::{Background, Format, Hsl, Project, RenderSpec, Rgba, Variant};
 
 /// What is covering the workspace.
@@ -40,6 +41,8 @@ pub enum Modal {
     Renders(RendersEditor),
     /// The colour picker.
     ColourPicker(ColourPicker),
+    /// The model picker.
+    Model(ModelPicker),
 }
 
 /// One column of the specifications table.
@@ -1021,6 +1024,270 @@ pub fn draw_colour_picker(
     frame.render_widget(Paragraph::new(lines), rest);
 }
 
+/// How many matches the picker shows before it scrolls.
+///
+/// A cap independent of the terminal, not just the clamp [`centred`] already
+/// applies: a hundred models with no query typed yet must not open a box
+/// nobody can see past, which is the complaint a search field alone does not
+/// fix until something has actually been typed.
+const MODEL_PICKER_ROWS: usize = 10;
+
+/// The model picker opened by `M`.
+///
+/// A search field over a list rather than a table: unlike a render
+/// specification or a variant, there is exactly one field to choose, and an
+/// agent's models are its own vocabulary — narrowing a long list by name is
+/// worth more here than editing one would be.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelPicker {
+    models: Vec<ModelChoice>,
+    /// What has been typed into the search field.
+    query: String,
+    /// An index into [`Self::matches`], not into `models` — the list it
+    /// counts through shrinks and grows as the query changes.
+    selected: usize,
+    closed: bool,
+}
+
+impl ModelPicker {
+    /// Open the picker over whatever models the agent last reported.
+    ///
+    /// Starts on the one already in use, so opening the picker and pressing
+    /// `Esc` straight away changes nothing.
+    #[must_use]
+    pub fn new(models: &[ModelChoice]) -> Self {
+        let selected = models.iter().position(|model| model.current).unwrap_or(0);
+        Self {
+            models: models.to_vec(),
+            query: String::new(),
+            selected,
+            closed: false,
+        }
+    }
+
+    /// Whether the picker has been asked to close.
+    #[must_use]
+    pub const fn closed(&self) -> bool {
+        self.closed
+    }
+
+    /// The models the query narrows the list to, best match first.
+    ///
+    /// Matched against the name and the id, so a query nobody typed the
+    /// provider prefix of still finds it. Ties keep the agent's own order,
+    /// which is also what an empty query returns unchanged.
+    fn matches(&self) -> Vec<&ModelChoice> {
+        let mut scored: Vec<(usize, usize, &ModelChoice)> = self
+            .models
+            .iter()
+            .enumerate()
+            .filter_map(|(index, model)| {
+                let score = [
+                    fuzzy_score(&model.name, &self.query),
+                    fuzzy_score(&model.id, &self.query),
+                ]
+                .into_iter()
+                .flatten()
+                .min()?;
+                Some((score, index, model))
+            })
+            .collect();
+        scored.sort_by_key(|&(score, index, _)| (score, index));
+        scored.into_iter().map(|(_, _, model)| model).collect()
+    }
+
+    /// Apply a keypress.
+    ///
+    /// Returns the chosen model's id once `Enter` picks one — `App` turns
+    /// that into an [`crate::tui::app::AgentRequest::SetModel`], carried out
+    /// by the event loop, never here: this stays synchronous so it can be
+    /// tested without a runtime, the same reason every other modal is.
+    /// `Esc` closes without choosing anything; typing narrows the list
+    /// instead of being a shortcut, so every character reaches the query.
+    pub fn key(&mut self, key: KeyEvent) -> Option<String> {
+        match key.code {
+            KeyCode::Up => {
+                self.selected = self.selected.saturating_sub(1);
+                None
+            }
+            KeyCode::Down => {
+                if self.selected + 1 < self.matches().len() {
+                    self.selected += 1;
+                }
+                None
+            }
+            KeyCode::Enter => {
+                // Only when something is actually selected: an empty query
+                // that matches nothing must not close the picker on an
+                // Enter that was reaching for the search field, not for
+                // "give up".
+                let chosen = self
+                    .matches()
+                    .get(self.selected)
+                    .map(|model| model.id.clone());
+                self.closed = chosen.is_some();
+                chosen
+            }
+            KeyCode::Esc => {
+                self.closed = true;
+                None
+            }
+            KeyCode::Backspace => {
+                self.query.pop();
+                // The match set just changed; the previous selection may no
+                // longer exist, let alone still be the right one to land on.
+                self.selected = 0;
+                None
+            }
+            KeyCode::Char(character) => {
+                self.query.push(character);
+                self.selected = 0;
+                None
+            }
+            _ => None,
+        }
+    }
+}
+
+/// How tightly `needle` matches inside `haystack` — smaller is a better
+/// match, and `None` means it does not match at all.
+///
+/// A subsequence match, case-insensitively: every character of `needle`
+/// appears in `haystack` in the same order, not necessarily touching. Enough
+/// to narrow a list of names to the ones worth looking at; a full
+/// fuzzy-finder algorithm would be a dependency for what this many lines
+/// already does. Scored by the span the match takes, greedy from the first
+/// possible start — not the tightest span in the string, which is not worth
+/// the extra pass for names this short.
+fn fuzzy_score(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+
+    let haystack: Vec<char> = haystack.to_lowercase().chars().collect();
+    let needle = needle.to_lowercase();
+    let mut wanted = needle.chars();
+    let mut current = wanted.next()?;
+    let mut start = None;
+
+    for (index, letter) in haystack.iter().enumerate() {
+        if *letter != current {
+            continue;
+        }
+        if start.is_none() {
+            start = Some(index);
+        }
+        match wanted.next() {
+            Some(next) => current = next,
+            None => return Some(index - start.unwrap_or(index) + 1),
+        }
+    }
+
+    None
+}
+
+/// Draw the model picker over the workspace.
+pub fn draw_model_picker(frame: &mut Frame<'_>, picker: &ModelPicker, area: Rect) {
+    let matches = picker.matches();
+
+    // Wide enough for the longest name and the query typed so far, with room
+    // for the marker and a border either side; never narrower than the hint
+    // line at the bottom.
+    let width = picker
+        .models
+        .iter()
+        .map(|model| model.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(picker.query.chars().count() + 2)
+        .max(38)
+        .saturating_add(4);
+    let width = u16::try_from(width).unwrap_or(u16::MAX);
+    // The search field, up to `MODEL_PICKER_ROWS` of the current matches (one
+    // if there are none, so "no matches" has a line to sit on), a blank line,
+    // the hint line, and the two borders.
+    let rows = matches.len().clamp(1, MODEL_PICKER_ROWS);
+    let height = u16::try_from(rows).unwrap_or(1).saturating_add(4);
+    let area = centred(area, width, height);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::LightCyan))
+        .title(Span::styled(
+            " model ",
+            Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    // Everything underneath is cleared: a modal drawn over live cells reads
+    // as corruption rather than as a dialogue.
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
+
+    let [search_area, list_area, hint_area] = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .areas(inner);
+
+    frame.render_widget(
+        Line::from(vec![
+            Span::styled("/ ", Style::default().fg(Color::DarkGray)),
+            Span::styled(picker.query.clone(), Style::default().fg(Color::White)),
+        ]),
+        search_area,
+    );
+
+    let items: Vec<ListItem> = if matches.is_empty() {
+        vec![ListItem::new(Line::styled(
+            "no matches",
+            Style::default().fg(Color::DarkGray),
+        ))]
+    } else {
+        matches
+            .iter()
+            .map(|model| {
+                // The marker says which one answers today; the highlight —
+                // added by the list itself, from `selected` below — says
+                // which one the cursor is on. Two different questions, and a
+                // picker that conflated them could not show "switch away
+                // from the one already selected" at all.
+                let marker = if model.current { "● " } else { "  " };
+                ListItem::new(Line::raw(format!("{marker}{}", model.name)))
+            })
+            .collect()
+    };
+
+    let list =
+        List::new(items).highlight_style(Style::default().fg(Color::Black).bg(Color::LightCyan));
+    let mut state = ListState::default();
+    if !matches.is_empty() {
+        // A fresh state every frame rather than one kept on `ModelPicker`:
+        // `List` derives the scroll offset it needs from `selected` alone,
+        // so there is nothing worth remembering between frames, and nothing
+        // to keep in sync when the query changes what `selected` indexes
+        // into.
+        state.select(Some(picker.selected));
+    }
+    frame.render_stateful_widget(list, list_area, &mut state);
+
+    frame.render_widget(
+        Line::styled(
+            "type to search   ↑↓ choose   enter select   esc close",
+            Style::default().fg(Color::DarkGray),
+        ),
+        hint_area,
+    );
+}
+
 /// A rectangle in the middle of `area`, at most `width` by `height`.
 ///
 /// Clamped rather than assumed: terminals get dragged to absurd sizes, and a
@@ -1721,5 +1988,127 @@ mod tests {
 
         press_picker(&mut picker, &mut project, KeyCode::Up);
         assert_eq!(picker.field, PickerField::Hex);
+    }
+
+    fn models() -> Vec<ModelChoice> {
+        vec![
+            ModelChoice {
+                id: "anthropic/claude-opus-4-1".to_owned(),
+                name: "Claude Opus 4.1".to_owned(),
+                current: false,
+            },
+            ModelChoice {
+                id: "opencode/grok-code".to_owned(),
+                name: "Grok Code".to_owned(),
+                current: true,
+            },
+        ]
+    }
+
+    fn press_model(picker: &mut ModelPicker, code: KeyCode) -> Option<String> {
+        picker.key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn the_model_picker_opens_on_whichever_model_is_already_current() {
+        let picker = ModelPicker::new(&models());
+        assert_eq!(picker.selected, 1, "the second model is marked current");
+    }
+
+    #[test]
+    fn up_and_down_clamp_at_the_ends_of_the_model_list() {
+        let mut picker = ModelPicker::new(&models());
+
+        press_model(&mut picker, KeyCode::Down);
+        assert_eq!(picker.selected, 1, "already at the last model");
+
+        press_model(&mut picker, KeyCode::Up);
+        assert_eq!(picker.selected, 0);
+        press_model(&mut picker, KeyCode::Up);
+        assert_eq!(picker.selected, 0, "already at the first model");
+    }
+
+    #[test]
+    fn enter_returns_the_selected_models_id_and_closes_the_picker() {
+        let mut picker = ModelPicker::new(&models());
+        press_model(&mut picker, KeyCode::Up);
+
+        let chosen = press_model(&mut picker, KeyCode::Enter);
+
+        assert_eq!(chosen, Some("anthropic/claude-opus-4-1".to_owned()));
+        assert!(picker.closed());
+    }
+
+    #[test]
+    fn escape_closes_the_model_picker_without_choosing_anything() {
+        let mut picker = ModelPicker::new(&models());
+
+        let chosen = press_model(&mut picker, KeyCode::Esc);
+
+        assert_eq!(chosen, None);
+        assert!(picker.closed());
+    }
+
+    fn type_model_query(picker: &mut ModelPicker, text: &str) {
+        for character in text.chars() {
+            press_model(picker, KeyCode::Char(character));
+        }
+    }
+
+    #[test]
+    fn typing_narrows_the_list_to_names_and_ids_that_match() {
+        let mut picker = ModelPicker::new(&models());
+
+        type_model_query(&mut picker, "opus");
+
+        assert_eq!(picker.matches(), vec![&models()[0]]);
+    }
+
+    #[test]
+    fn a_query_matching_nothing_shows_no_matches_and_enter_does_not_close() {
+        let mut picker = ModelPicker::new(&models());
+
+        type_model_query(&mut picker, "zzz");
+        assert!(picker.matches().is_empty());
+
+        let chosen = press_model(&mut picker, KeyCode::Enter);
+
+        assert_eq!(chosen, None);
+        assert!(!picker.closed(), "nothing to choose should not close it");
+    }
+
+    #[test]
+    fn backspace_widens_the_list_back_out() {
+        let mut picker = ModelPicker::new(&models());
+
+        type_model_query(&mut picker, "opus");
+        assert_eq!(picker.matches().len(), 1);
+
+        press_model(&mut picker, KeyCode::Backspace);
+        press_model(&mut picker, KeyCode::Backspace);
+        press_model(&mut picker, KeyCode::Backspace);
+        press_model(&mut picker, KeyCode::Backspace);
+
+        assert_eq!(picker.matches().len(), models().len());
+    }
+
+    #[test]
+    fn a_match_can_be_found_by_id_as_well_as_by_name() {
+        let mut picker = ModelPicker::new(&models());
+
+        // Not in either model's `name`, only in `id`.
+        type_model_query(&mut picker, "grok");
+
+        assert_eq!(picker.matches(), vec![&models()[1]]);
+    }
+
+    #[test]
+    fn fuzzy_score_requires_the_query_letters_in_order() {
+        // `p` comes after `o` in "Claude Opus", so a query that asks for `p`
+        // before `o` cannot match even though every letter is present.
+        assert_eq!(fuzzy_score("Claude Opus", "poc"), None);
+        assert!(fuzzy_score("Claude Opus", "claudeopus").is_some());
+        assert_eq!(fuzzy_score("anything", ""), Some(0));
+        assert_eq!(fuzzy_score("box", "x"), Some(1));
     }
 }

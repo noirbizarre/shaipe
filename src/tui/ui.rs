@@ -63,6 +63,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend) {
         Some(Modal::ColourPicker(picker)) => {
             modal::draw_colour_picker(frame, picker, &app.project, body);
         }
+        Some(Modal::Model(picker)) => modal::draw_model_picker(frame, picker, body),
         None => {}
     }
 }
@@ -768,6 +769,20 @@ text, so it reads at 16 pixels.";
 
         // And with the dialogue up, which is the one thing drawn over the top.
         app.open_renders_editor();
+        for (width, height) in [(1, 1), (5, 3), (40, 2), (200, 60)] {
+            render(&mut app, width, height);
+        }
+
+        // The model picker lays out a search field, a list and a hint line
+        // inside whatever room the dialogue gets — the one modal with more
+        // than one row of internal layout to overflow.
+        app.close_modal();
+        app.set_models(vec![crate::acp::ModelChoice {
+            id: "opencode/grok-code".to_owned(),
+            name: "Grok Code".to_owned(),
+            current: true,
+        }]);
+        app.open_model_picker();
         for (width, height) in [(1, 1), (5, 3), (40, 2), (200, 60)] {
             render(&mut app, width, height);
         }

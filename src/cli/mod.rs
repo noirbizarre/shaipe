@@ -228,6 +228,16 @@ pub struct TuiArgs {
     #[arg(long, conflicts_with = "agent")]
     pub no_agent: bool,
 
+    /// Ask the agent to switch to this model when the session opens, if it
+    /// offers one that matches — by the value or the name it advertises.
+    ///
+    /// Shaipe does not choose a model on its own (see ADR-004): this only
+    /// relays a name to whichever selector the agent itself already offers.
+    /// Leaving it unset keeps whatever the agent opened with. `M` in the
+    /// workspace opens the same choice interactively, once a session is open.
+    #[arg(long, env = "SHAIPE_MODEL")]
+    pub model: Option<String>,
+
     /// Approve the agent's own tools when it asks about them.
     ///
     /// Note *when it asks*: permission is resolved inside the agent, and it
@@ -389,5 +399,30 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{arguments:?} should parse: {error}"));
             assert_eq!(cli.preview, Some(Backend::Kitty), "{arguments:?}");
         }
+    }
+
+    #[test]
+    fn a_model_can_be_named_independently_of_the_agent_and_no_agent_flags() {
+        let Some(Command::Tui(args)) = Cli::parse_from([
+            "shaipe",
+            "tui",
+            "--agent",
+            "some-other-agent acp",
+            "--model",
+            "anthropic/claude-opus-4-1",
+        ])
+        .command
+        else {
+            panic!("expected a tui command");
+        };
+        assert_eq!(args.agent, "some-other-agent acp");
+        assert_eq!(args.model.as_deref(), Some("anthropic/claude-opus-4-1"));
+
+        assert!(Cli::try_parse_from(["shaipe", "tui", "--no-agent", "--model", "x"]).is_ok());
+    }
+
+    #[test]
+    fn leaving_the_model_unset_keeps_whatever_the_agent_opened_with() {
+        assert_eq!(TuiArgs::defaults().model, None);
     }
 }

@@ -37,6 +37,20 @@ impl ToolStatus {
     }
 }
 
+/// One of the models an agent offered after opening a session.
+///
+/// The plain shape a picker is allowed to see — nothing from
+/// `agent_client_protocol`'s `SessionConfigOption` crosses this file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelChoice {
+    /// What `session/set_config_option` is sent back if this is chosen.
+    pub id: String,
+    /// What a person reads.
+    pub name: String,
+    /// Whether this was already the model in use when the list arrived.
+    pub current: bool,
+}
+
 /// Something the agent did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentUpdate {
@@ -46,6 +60,13 @@ pub enum AgentUpdate {
     /// must not wait for it — see the deadlock described in
     /// [`super::Agent::start`].
     Ready,
+    /// The models the agent offers, sent once per session.
+    ///
+    /// Sent whether or not this build asked for a particular one at startup,
+    /// so a picker has something to show even when nobody did. Empty or
+    /// absent when the agent offers no such choice — not an error, just
+    /// nothing to pick.
+    Models(Vec<ModelChoice>),
     /// The agent could not be started, or stopped for good.
     Failed(String),
     /// Prose, streamed a chunk at a time.

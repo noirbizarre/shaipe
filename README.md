@@ -318,9 +318,10 @@ the agent's edits and your preview cannot drift apart
 ([ADR-010](docs/adr/010-mcp-over-a-socket-with-a-bridge.md)).
 
 ```bash
-shaipe --agent "some-other-agent acp"   # any ACP agent, not just OpenCode
-shaipe --no-agent                       # open the workspace without one
-shaipe --yes                            # approve the agent's own tools
+shaipe --agent "some-other-agent acp"     # any ACP agent, not just OpenCode
+shaipe --no-agent                         # open the workspace without one
+shaipe --yes                              # approve the agent's own tools
+shaipe --model "anthropic/claude-opus-4-1" # request one of the agent's own models
 ```
 
 The keys:
@@ -338,6 +339,7 @@ The keys:
 | `s` | swap the preview for the SVG that produced it |
 | `t` | swap the prompt for the transcript |
 | `x` | open the editor for whichever the tabs list |
+| `M` | search and pick from whichever models the agent offers, shown once one is chosen |
 | `PageUp` / `PageDown` | scroll the source, or the transcript |
 | `ctrl-c` | stop the turn the agent is on; again to quit |
 | `ctrl-s` | save the project |
@@ -409,6 +411,11 @@ opencode auth login
 Any ACP agent works; OpenCode is the one this was built and tested against. A
 model that can accept images is needed for `render_svg` to be worth anything —
 without one the image is still delivered, and the model still cannot see it.
+
+If your agent's default model is not one, `--model`/`SHAIPE_MODEL` (or `M` in
+the workspace, once a session is open) asks it to switch to one that is —
+matched against whatever the agent's own selector already offers, never
+chosen by Shaipe. See [ADR-011](docs/adr/011-driving-an-agent-is-still-not-a-model.md).
 
 ## Architecture
 

@@ -138,6 +138,11 @@ impl Transcript {
                 self.entries.push(Entry::Notice(reason));
             }
 
+            // Not a conversation entry. `App` reads the list straight off
+            // the update before this runs (see `event_loop`), and a picker
+            // with nothing to show is not something worth saying here.
+            AgentUpdate::Models(_) => {}
+
             // Kept, never dropped. An update this build does not model is
             // still evidence the agent is doing something, and swallowing it
             // makes a working session look wedged.
@@ -241,6 +246,16 @@ mod tests {
             transcript.entries(),
             [Entry::Notice("switched to a different model".to_owned())]
         );
+    }
+
+    #[test]
+    fn the_list_of_models_an_agent_offers_is_not_a_conversation_entry() {
+        // `App` reads the list off the update itself, before this runs; the
+        // transcript has nothing to say about a picker having options.
+        let mut transcript = Transcript::default();
+        transcript.apply(AgentUpdate::Models(vec![]));
+
+        assert!(transcript.entries().is_empty());
     }
 
     #[test]

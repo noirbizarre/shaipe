@@ -8,9 +8,9 @@ use agent_client_protocol::schema::v1::{
     CancelNotification, ContentBlock, InitializeRequest, McpServer, McpServerStdio,
     NewSessionRequest, PermissionOption, PermissionOptionKind, PromptRequest,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigSelectOption,
-    SessionConfigSelectOptions, SessionId, SessionNotification, SetSessionConfigOptionRequest,
-    TextContent, ToolKind,
+    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigSelectOption, SessionConfigSelectOptions, SessionId, SessionNotification,
+    SetSessionConfigOptionRequest, TextContent, ToolKind,
 };
 use agent_client_protocol::{AcpAgent, ConnectionTo};
 use tokio::sync::mpsc;
@@ -22,7 +22,7 @@ use crate::error::{Error, Result};
 use crate::mcp::Address;
 use crate::project::Project;
 
-use super::update::{self, AgentUpdate};
+use super::update::{self, AgentUpdate, ModelChoice};
 
 /// The agent Shaipe starts when nothing says otherwise.
 ///
@@ -147,6 +147,13 @@ pub struct AgentConfig {
     pub env: BTreeMap<String, String>,
     /// Anything about the restriction the user should be told.
     pub note: Option<String>,
+    /// A model to request from the agent's own selector, if it offers one.
+    ///
+    /// Not chosen by Shaipe — see ADR 004 and ADR 011 — and not validated
+    /// against a list Shaipe keeps, because there is no such list: an
+    /// agent's model identifiers are its own vocabulary. Matched against
+    /// whatever `session/new` actually advertises once the session opens.
+    pub model: Option<String>,
 }
 
 impl AgentConfig {
@@ -196,6 +203,7 @@ impl AgentConfig {
             policy: Policy::default(),
             env,
             note,
+            model: None,
         })
     }
 
@@ -210,6 +218,18 @@ impl AgentConfig {
     #[must_use]
     pub fn with_mcp_server(mut self, server: McpServerSpec) -> Self {
         self.mcp_servers.push(server);
+        self
+    }
+
+    /// Ask the agent to switch to this model when the session opens.
+    ///
+    /// Matched against whatever the agent's own model selector advertises —
+    /// by value or by name, case-insensitively — once `session/new` answers.
+    /// There is no list of names to try, unlike [`WORKING_MODES`]: an
+    /// agent's models are its own vocabulary, not Shaipe's to guess at.
+    #[must_use]
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
         self
     }
 
@@ -286,6 +306,7 @@ struct Turn(String);
 pub struct Agent {
     prompts: mpsc::Sender<Turn>,
     cancels: mpsc::Sender<()>,
+    models: mpsc::Sender<String>,
     command: String,
 }
 
@@ -320,13 +341,21 @@ impl Agent {
         let (updates, receiver) = mpsc::channel(DEPTH);
         let (prompts, turns) = mpsc::channel(1);
         let (cancels, cancellations) = mpsc::channel(1);
+        let (models, model_changes) = mpsc::channel(1);
 
-        tokio::spawn(connect(config, updates, turns, cancellations));
+        tokio::spawn(connect(
+            config,
+            updates,
+            turns,
+            cancellations,
+            model_changes,
+        ));
 
         (
             Self {
                 prompts,
                 cancels,
+                models,
                 command,
             },
             receiver,
@@ -375,6 +404,27 @@ impl Agent {
         })
     }
 
+    /// Ask the agent to switch models, mid-session.
+    ///
+    /// `id` is one of the values [`AgentUpdate::Models`] reported —
+    /// [`crate::acp::ModelChoice::id`]. Synchronous and non-blocking like
+    /// [`Agent::prompt`] and [`Agent::cancel`]: whether the switch actually
+    /// happened arrives later on the update stream, as [`AgentUpdate::Other`],
+    /// the same way a rejected mode switch does at startup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::AgentBusy`] if a switch is already queued, or
+    /// [`Error::AgentExited`] if the agent is no longer running.
+    pub fn set_model(&self, id: String) -> Result<()> {
+        self.models.try_send(id).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => Error::AgentBusy,
+            mpsc::error::TrySendError::Closed(_) => Error::AgentExited {
+                command: self.command.clone(),
+            },
+        })
+    }
+
     /// The command this agent was started from.
     #[must_use]
     pub fn command(&self) -> &str {
@@ -388,6 +438,7 @@ async fn connect(
     updates: mpsc::Sender<AgentUpdate>,
     turns: mpsc::Receiver<Turn>,
     cancellations: mpsc::Receiver<()>,
+    model_changes: mpsc::Receiver<String>,
 ) {
     let command = config.command_line();
 
@@ -440,6 +491,7 @@ async fn connect(
             let updates = updates.clone();
             let mut turns = turns;
             let mut cancellations = cancellations;
+            let mut model_changes = model_changes;
 
             async move {
                 // `block_task` is safe out here — this is the foreground
@@ -494,6 +546,57 @@ async fn connect(
 
                 let session = opened.session_id.clone();
 
+                // Read once, whether or not this build asked for a
+                // particular model at startup: a workspace with nothing to
+                // switch to has nothing to offer the `M` picker either.
+                let model = model_option(opened.config_options.as_deref());
+
+                if let Some(option) = model {
+                    drop(
+                        updates
+                            .try_send(AgentUpdate::Models(model_choices(option))),
+                    );
+                }
+
+                // The id to send back with any later switch — captured now,
+                // because `opened` does not outlive this block and the
+                // `select!` loop below needs it for every model change the
+                // user asks for afterwards.
+                let model_option_id = model.map(|option| option.id.clone());
+
+                if let Some(wanted) = config.model.as_deref() {
+                    // A request the user made explicitly, unlike the mode
+                    // preference below — silence on failure would be worse
+                    // than a session that quietly answers with the wrong
+                    // model.
+                    let note = match model.and_then(|option| find_model_choice(option, wanted)) {
+                        Some(choice) => {
+                            let request = SetSessionConfigOptionRequest::new(
+                                session.clone(),
+                                // `find_model_choice` only matches inside the
+                                // option `model` already is, so this is
+                                // always `Some`.
+                                model_option_id.clone().expect("a match implies an option"),
+                                choice.value.clone(),
+                            );
+
+                            match cx.send_request(request).block_task().await {
+                                Ok(_) => None,
+                                Err(error) => Some(format!(
+                                    "could not switch the agent to `{wanted}`: {error}"
+                                )),
+                            }
+                        }
+                        None => Some(format!(
+                            "the agent does not offer a model named `{wanted}`"
+                        )),
+                    };
+
+                    if let Some(note) = note {
+                        drop(updates.try_send(AgentUpdate::Other(note)));
+                    }
+                }
+
                 if let Some(request) = working_mode(&session, opened.config_options.as_deref())
                     && let Err(error) = cx.send_request(request).block_task().await
                 {
@@ -542,6 +645,50 @@ async fn connect(
                             // now rather than after the turn it is cancelling.
                             drop(cx.send_notification(CancelNotification::new(session.clone())));
                         }
+
+                        requested = model_changes.recv() => {
+                            let Some(value) = requested else { return Ok(()) };
+
+                            // No option was ever found for `M` to have sent
+                            // this in the first place, but the channel
+                            // outlives that check — an agent could in
+                            // principle drop its selector mid-session.
+                            let Some(option_id) = model_option_id.clone() else {
+                                drop(updates.try_send(AgentUpdate::Other(
+                                    "the agent offers no model to switch to".to_owned(),
+                                )));
+                                continue;
+                            };
+
+                            let request = SetSessionConfigOptionRequest::new(
+                                session.clone(),
+                                option_id,
+                                value.as_str(),
+                            );
+
+                            let note = match cx.send_request(request).block_task().await {
+                                Ok(_) => {
+                                    // The switch worked, so the workspace's
+                                    // own idea of which model is current is
+                                    // now wrong until something corrects it —
+                                    // nothing else will. Without this the
+                                    // status line and a reopened picker both
+                                    // kept showing whatever was current
+                                    // before, because nothing had told them
+                                    // otherwise.
+                                    if let Some(option) = model {
+                                        drop(updates.try_send(AgentUpdate::Models(
+                                            model_choices_after_switch(option, &value),
+                                        )));
+                                    }
+                                    format!("switched the model to {value}")
+                                }
+                                Err(error) => format!(
+                                    "could not switch the agent's model: {error}"
+                                ),
+                            };
+                            drop(updates.try_send(AgentUpdate::Other(note)));
+                        }
                     }
                 }
             }
@@ -583,16 +730,7 @@ fn working_mode(
 
     // Flattened, because an agent may present its modes in groups and a mode
     // is no less available for being under a heading.
-    let choices: Vec<&SessionConfigSelectOption> = match &select.options {
-        SessionConfigSelectOptions::Ungrouped(options) => options.iter().collect(),
-        SessionConfigSelectOptions::Grouped(groups) => groups
-            .iter()
-            .flat_map(|group| group.options.iter())
-            .collect(),
-        // The protocol may grow another shape. Not knowing how to read it is a
-        // reason to leave the mode alone, not to guess at it.
-        _ => return None,
-    };
+    let choices = flatten(&select.options)?;
 
     // The first mode this build knows about that the agent actually offers.
     // Never invented: asking for a mode an agent does not have is an error it
@@ -608,6 +746,107 @@ fn working_mode(
         option.id.clone(),
         wanted.value.clone(),
     ))
+}
+
+/// Flatten a select option's choices out of whatever grouping the agent used.
+///
+/// An agent may present its modes or models in groups under headings, and a
+/// choice is no less available for being under one. `None` when the protocol
+/// presents a shape this build does not know how to read — not knowing how is
+/// a reason to leave the option alone, not to guess at it.
+fn flatten(options: &SessionConfigSelectOptions) -> Option<Vec<&SessionConfigSelectOption>> {
+    Some(match options {
+        SessionConfigSelectOptions::Ungrouped(options) => options.iter().collect(),
+        SessionConfigSelectOptions::Grouped(groups) => groups
+            .iter()
+            .flat_map(|group| group.options.iter())
+            .collect(),
+        // The protocol may grow another shape.
+        _ => return None,
+    })
+}
+
+/// Find the agent's model selector, if it offers one.
+///
+/// Read by category first — `SessionConfigOptionCategory::Model` is the
+/// protocol's own way of saying "this is a model selector" — and by id
+/// `"model"` as a fallback, the same latitude [`working_mode`] gives modes
+/// that go unlabelled.
+fn model_option(options: Option<&[SessionConfigOption]>) -> Option<&SessionConfigOption> {
+    let options = options?;
+
+    options
+        .iter()
+        .find(|option| option.category == Some(SessionConfigOptionCategory::Model))
+        .or_else(|| {
+            options
+                .iter()
+                .find(|option| option.id.0.as_ref() == "model")
+        })
+}
+
+/// The models inside a selector, in the shape a picker is allowed to see.
+///
+/// Empty rather than `None` when the option is not a choice, or presents its
+/// choices in a shape this build does not know how to read — a workspace
+/// with nothing to offer is not an error, just nothing to pick.
+fn model_choices(option: &SessionConfigOption) -> Vec<ModelChoice> {
+    let SessionConfigKind::Select(select) = &option.kind else {
+        return Vec::new();
+    };
+
+    let Some(choices) = flatten(&select.options) else {
+        return Vec::new();
+    };
+
+    choices
+        .into_iter()
+        .map(|choice| ModelChoice {
+            id: choice.value.0.to_string(),
+            name: choice.name.clone(),
+            current: choice.value.0.as_ref() == select.current_value.0.as_ref(),
+        })
+        .collect()
+}
+
+/// The model list to report after switching, with `chosen` marked current.
+///
+/// Rebuilt from the option's own choices rather than patched in place: the
+/// only thing that changed is which one is current, so starting again from
+/// [`model_choices`] is simpler than hunting through its result for the one
+/// entry to flip — and there is no other way to tell the workspace, since
+/// the request that switched the model carries no confirmation of its own
+/// beyond "it did not error." Without this, a picked model stayed reported
+/// as whatever was current before — the status line, and the picker
+/// reopened, both went on showing the one that had just been left.
+fn model_choices_after_switch(option: &SessionConfigOption, chosen: &str) -> Vec<ModelChoice> {
+    model_choices(option)
+        .into_iter()
+        .map(|choice| ModelChoice {
+            current: choice.id == chosen,
+            ..choice
+        })
+        .collect()
+}
+
+/// Match a model requested by name against what the agent actually offers.
+///
+/// By value or by name, case-insensitively: the value is the agent's own
+/// identifier ("anthropic/claude-opus-4-1") and the name is what it chose to
+/// call it for a person, and Shaipe knows in advance which one the user
+/// typed.
+fn find_model_choice<'a>(
+    option: &'a SessionConfigOption,
+    wanted: &str,
+) -> Option<&'a SessionConfigSelectOption> {
+    let SessionConfigKind::Select(select) = &option.kind else {
+        return None;
+    };
+
+    flatten(&select.options)?.into_iter().find(|choice| {
+        choice.value.0.as_ref().eq_ignore_ascii_case(wanted)
+            || choice.name.eq_ignore_ascii_case(wanted)
+    })
 }
 
 /// Build the transport, with Shaipe's environment on top of the inherited one.
@@ -820,6 +1059,7 @@ mod tests {
             policy: Policy::Guarded,
             env: BTreeMap::new(),
             note: None,
+            model: None,
         };
 
         let started = tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -846,6 +1086,7 @@ mod tests {
             policy: Policy::Guarded,
             env: BTreeMap::new(),
             note: None,
+            model: None,
         };
 
         let (_agent, mut updates) = Agent::start(config);
@@ -891,6 +1132,7 @@ mod tests {
             policy: Policy::Guarded,
             env: BTreeMap::new(),
             note: None,
+            model: None,
         };
 
         let (agent, _updates) = Agent::start(config);
@@ -1088,5 +1330,135 @@ mod tests {
                 RequestPermissionOutcome::Cancelled
             ));
         }
+    }
+
+    /// A model selector, the shape an agent hands back in `config_options`.
+    ///
+    /// `String`, not `&str`: the protocol's own ids only convert from an
+    /// owned string or a `'static` one, and neither fits a value built from
+    /// a borrowed fixture.
+    fn model_selector(current: &str, choices: &[(&str, &str)]) -> SessionConfigOption {
+        let options: Vec<SessionConfigSelectOption> = choices
+            .iter()
+            .map(|(value, name)| {
+                SessionConfigSelectOption::new(value.to_string(), name.to_string())
+            })
+            .collect();
+
+        SessionConfigOption::select("model", "Model", current.to_string(), options)
+            .category(SessionConfigOptionCategory::Model)
+    }
+
+    #[test]
+    fn the_model_option_is_found_by_category() {
+        let option = model_selector("a", &[("a", "A"), ("b", "B")]);
+        let options = [option.clone()];
+
+        assert_eq!(model_option(Some(&options)), Some(&option));
+    }
+
+    #[test]
+    fn an_unlabelled_model_option_is_found_by_id() {
+        // The same latitude `working_mode` gives a mode without a category.
+        let option = SessionConfigOption::select(
+            "model",
+            "Model",
+            "a",
+            vec![SessionConfigSelectOption::new("a", "A")],
+        );
+        let options = [option.clone()];
+
+        assert_eq!(model_option(Some(&options)), Some(&option));
+    }
+
+    #[test]
+    fn no_options_at_all_means_no_model_option() {
+        assert_eq!(model_option(None), None);
+        assert_eq!(model_option(Some(&[])), None);
+    }
+
+    #[test]
+    fn model_choices_marks_the_agents_own_current_value() {
+        let option = model_selector("b", &[("a", "A"), ("b", "B")]);
+
+        assert_eq!(
+            model_choices(&option),
+            vec![
+                ModelChoice {
+                    id: "a".to_owned(),
+                    name: "A".to_owned(),
+                    current: false,
+                },
+                ModelChoice {
+                    id: "b".to_owned(),
+                    name: "B".to_owned(),
+                    current: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn model_choices_are_flattened_out_of_groups() {
+        use agent_client_protocol::schema::v1::SessionConfigSelectGroup;
+
+        let grouped = SessionConfigOption::select(
+            "model",
+            "Model",
+            "b",
+            vec![SessionConfigSelectGroup::new(
+                "anthropic",
+                "Anthropic",
+                vec![
+                    SessionConfigSelectOption::new("a", "A"),
+                    SessionConfigSelectOption::new("b", "B"),
+                ],
+            )],
+        );
+
+        let choices = model_choices(&grouped);
+        assert_eq!(choices.len(), 2, "{choices:?}");
+        assert!(
+            choices
+                .iter()
+                .any(|choice| choice.id == "b" && choice.current)
+        );
+    }
+
+    #[test]
+    fn find_model_choice_matches_by_value_or_by_name_case_insensitively() {
+        let option = model_selector("a", &[("anthropic/claude-opus-4-1", "Claude Opus 4.1")]);
+
+        assert_eq!(
+            find_model_choice(&option, "ANTHROPIC/CLAUDE-OPUS-4-1").map(|choice| &choice.value.0),
+            find_model_choice(&option, "claude opus 4.1").map(|choice| &choice.value.0),
+        );
+        assert!(find_model_choice(&option, "claude opus 4.1").is_some());
+        assert!(find_model_choice(&option, "gpt-5").is_none());
+    }
+
+    #[test]
+    fn model_choices_after_switch_marks_the_newly_chosen_model_current() {
+        // The regression this guards: a picked model kept being reported as
+        // whatever was current before, because nothing rebuilt the list with
+        // the new choice marked — the status line and a reopened picker both
+        // went on showing the one that had just been left.
+        let option = model_selector("a", &[("a", "A"), ("b", "B")]);
+
+        assert_eq!(
+            model_choices_after_switch(&option, "b"),
+            vec![
+                ModelChoice {
+                    id: "a".to_owned(),
+                    name: "A".to_owned(),
+                    current: false,
+                },
+                ModelChoice {
+                    id: "b".to_owned(),
+                    name: "B".to_owned(),
+                    current: true,
+                },
+            ]
+        );
     }
 }

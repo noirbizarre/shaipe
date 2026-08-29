@@ -16,10 +16,11 @@ use ratatui::style::Style;
 use ratatui::widgets::ListState;
 use ratatui_textarea::{TextArea, WrapMode};
 
+use crate::acp::ModelChoice;
 use crate::preview::{Image, Scale};
 use crate::project::{Background, Format, Project, RenderSpec, Rgba};
 use crate::render::{RenderOptions, Renderer};
-use crate::tui::modal::{ColourPicker, Modal, RendersEditor, VariantsEditor};
+use crate::tui::modal::{ColourPicker, Modal, ModelPicker, RendersEditor, VariantsEditor};
 use crate::tui::render_worker::{Rendered, Worker};
 use crate::tui::toolbar::Button;
 use crate::tui::transcript::Transcript;
@@ -399,6 +400,9 @@ pub enum AgentRequest {
     Prompt(String),
     /// Stop the turn in progress.
     Cancel,
+    /// Switch to this model, by the id
+    /// [`crate::acp::AgentUpdate::Models`] reported it under.
+    SetModel(String),
 }
 
 /// The workspace.
@@ -464,6 +468,11 @@ pub struct App {
     pub transcript: Transcript,
     /// Whether there is an agent at all, and if not, why not.
     pub agent: AgentStatus,
+    /// The models the agent offered, last reported.
+    ///
+    /// Empty until a session opens and says otherwise — which is not an
+    /// error, just nothing for `M` to show yet.
+    models: Vec<ModelChoice>,
     /// What the last keypress asked the agent for, if anything.
     pub pending_agent_request: Option<AgentRequest>,
     /// When the agent last changed what it was doing.
@@ -574,6 +583,7 @@ impl App {
             agent: AgentStatus::Absent {
                 reason: "no agent was started".to_owned(),
             },
+            models: Vec::new(),
             pending_agent_request: None,
             agent_since: Instant::now(),
             view: View::default(),
@@ -1922,6 +1932,33 @@ impl App {
         self.modal = Some(Modal::ColourPicker(ColourPicker::new(row, &self.project)));
     }
 
+    /// The models the agent last said it offers.
+    #[must_use]
+    pub fn models(&self) -> &[ModelChoice] {
+        &self.models
+    }
+
+    /// Record what an agent's [`crate::acp::AgentUpdate::Models`] reported.
+    pub fn set_models(&mut self, models: Vec<ModelChoice>) {
+        self.models = models;
+    }
+
+    /// Open the model picker (`M`).
+    ///
+    /// A no-op with a warning if the agent has not said what models it
+    /// offers — nothing to choose from is not the same as choosing nothing,
+    /// and a picker with an empty list would look like a bug rather than an
+    /// honest "there is nothing here."
+    pub fn open_model_picker(&mut self) {
+        if self.models.is_empty() {
+            self.notice = Some(Notice::warning(
+                "the agent has not offered a model to choose from",
+            ));
+            return;
+        }
+        self.modal = Some(Modal::Model(ModelPicker::new(&self.models)));
+    }
+
     /// Close whatever modal is open.
     pub fn close_modal(&mut self) {
         self.modal = None;
@@ -1952,6 +1989,14 @@ impl App {
                 }
                 if !picker.closed() {
                     self.modal = Some(Modal::ColourPicker(picker));
+                }
+            }
+            Some(Modal::Model(mut picker)) => {
+                if let Some(id) = picker.key(key) {
+                    self.pending_agent_request = Some(AgentRequest::SetModel(id));
+                }
+                if !picker.closed() {
+                    self.modal = Some(Modal::Model(picker));
                 }
             }
             None => {}

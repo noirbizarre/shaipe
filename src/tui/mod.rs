@@ -387,6 +387,13 @@ async fn event_loop(
                     _ => None,
                 };
 
+                // Read off the update before it is moved into the
+                // transcript below — `Models` is workspace state for the
+                // `M` picker, not a conversation entry.
+                if let AgentUpdate::Models(models) = &update {
+                    app.set_models(models.clone());
+                }
+
                 // Applied *first*, and that ordering is the whole of it.
                 // Deriving the status beforehand read a transcript that was
                 // still busy — so `Idle`, the update that ends a turn, latched
@@ -468,11 +475,24 @@ fn dispatch(app: &mut App, agent: Option<&Agent>, request: AgentRequest) {
         return;
     };
 
-    let outcome = match request {
-        AgentRequest::Prompt(text) => agent.prompt(text),
-        AgentRequest::Cancel => agent.cancel(),
-    };
+    match request {
+        AgentRequest::Prompt(text) => report_turn(app, agent.prompt(text)),
+        AgentRequest::Cancel => report_turn(app, agent.cancel()),
+        // Queued only. Whether the switch actually happened arrives later as
+        // `AgentUpdate::Other`, the same way a rejected mode switch does at
+        // startup — nothing here started a turn, so nothing here should look
+        // busy.
+        AgentRequest::SetModel(id) => {
+            if let Err(error) = agent.set_model(id) {
+                app.notice = Some(app::Notice::warning(error.to_string()));
+            }
+        }
+    }
+}
 
+/// Report what came back from handing a turn — a prompt or a cancel — to
+/// the agent.
+fn report_turn(app: &mut App, outcome: Result<()>) {
     match outcome {
         // Handed over. Only now is it working — saying so at the keypress
         // would have claimed a turn had started before anything was sent.
@@ -707,6 +727,10 @@ fn handle(app: &mut App, key: KeyEvent) {
         // Only from the palette: elsewhere there is no selected colour for it
         // to open on.
         KeyCode::Char('p') if app.focus == Focus::Palette => app.open_colour_picker(),
+        // Capitalised, the same convention as `r`/`R`: the more drastic
+        // sibling of a lowercase key. There is no lowercase `m` free — it
+        // already swaps what the tabs list.
+        KeyCode::Char('M') => app.open_model_picker(),
         KeyCode::PageDown if app.scrolls() => app.scroll_view(10),
         KeyCode::PageUp if app.scrolls() => app.scroll_view(-10),
         _ => {}
@@ -1036,6 +1060,9 @@ mod tests {
             }),
             _ => None,
         };
+        if let crate::acp::AgentUpdate::Models(models) = &update {
+            app.set_models(models.clone());
+        }
         app.transcript.apply(update);
         app.set_agent(said.unwrap_or(if app.transcript.is_busy() {
             AgentStatus::Busy
@@ -1089,6 +1116,69 @@ mod tests {
             "{:?}",
             app.modal()
         );
+    }
+
+    #[test]
+    fn m_capital_with_nothing_offered_warns_rather_than_opening_an_empty_picker() {
+        // Nothing to choose from is not the same as choosing nothing — a
+        // picker with an empty list would look like a bug, not an honest
+        // "there is nothing here."
+        let mut app = app();
+        assert!(app.models().is_empty());
+
+        press(&mut app, KeyCode::Char('M'));
+
+        assert!(app.modal().is_none());
+        assert!(
+            app.notice
+                .as_ref()
+                .is_some_and(|notice| notice.is_warning()),
+            "{:?}",
+            app.notice
+        );
+    }
+
+    #[test]
+    fn m_capital_opens_the_model_picker_once_the_agent_has_offered_some() {
+        let mut app = app();
+        deliver(
+            &mut app,
+            crate::acp::AgentUpdate::Models(vec![crate::acp::ModelChoice {
+                id: "opencode/grok-code".to_owned(),
+                name: "Grok Code".to_owned(),
+                current: true,
+            }]),
+        );
+
+        press(&mut app, KeyCode::Char('M'));
+
+        assert!(
+            matches!(app.modal(), Some(crate::tui::modal::Modal::Model(_))),
+            "{:?}",
+            app.modal()
+        );
+    }
+
+    #[test]
+    fn choosing_a_model_in_the_picker_queues_a_request_to_the_agent() {
+        let mut app = app();
+        deliver(
+            &mut app,
+            crate::acp::AgentUpdate::Models(vec![crate::acp::ModelChoice {
+                id: "opencode/grok-code".to_owned(),
+                name: "Grok Code".to_owned(),
+                current: false,
+            }]),
+        );
+        press(&mut app, KeyCode::Char('M'));
+
+        press(&mut app, KeyCode::Enter);
+
+        assert_eq!(
+            app.pending_agent_request,
+            Some(AgentRequest::SetModel("opencode/grok-code".to_owned()))
+        );
+        assert!(app.modal().is_none(), "picking a model closes the picker");
     }
 
     #[test]

@@ -467,8 +467,10 @@ pub fn status(app: &App, width: u16) -> Paragraph<'static> {
         // dropped, so whatever they take is not room the hints have.
         let markers = usize::from(app.is_stale()) * "● on disk  ".len()
             + usize::from(app.is_dirty()) * "● unsaved  ".len()
-            // The agent's activity is not a hint and is never dropped, so
-            // whatever it takes is not room the hints have.
+            // Neither the model nor the agent's activity is a hint, and
+            // neither is ever dropped, so whatever they take is not room
+            // the hints have.
+            + current_model(app).map_or(0, |model| model.chars().count() + 3)
             + agent_activity(app).map_or(0, |activity| activity.chars().count() + 3);
 
         let room = usize::from(width).saturating_sub(markers);
@@ -510,6 +512,16 @@ pub fn status(app: &App, width: u16) -> Paragraph<'static> {
         ));
     }
 
+    // Shown whether or not the agent is doing anything — the `M` picker is
+    // not the only place worth knowing which model is answering, and it is
+    // the one thing this line said nothing about before.
+    if let Some(model) = current_model(app) {
+        spans.push(Span::styled(
+            format!("   {model}"),
+            Style::default().fg(Color::LightBlue),
+        ));
+    }
+
     if let Some(activity) = agent_activity(app) {
         spans.push(Span::styled(
             format!("   {activity}"),
@@ -518,6 +530,19 @@ pub fn status(app: &App, width: u16) -> Paragraph<'static> {
     }
 
     Paragraph::new(Line::from(spans))
+}
+
+/// The model currently in use, if the agent has said which one that is.
+///
+/// `None` until [`crate::acp::AgentUpdate::Models`] arrives — not an error,
+/// only that this build has not been told yet, or the agent offers no such
+/// choice at all — and `None` again if it arrived but marked no model
+/// current, which the protocol allows.
+fn current_model(app: &App) -> Option<&str> {
+    app.models()
+        .iter()
+        .find(|model| model.current)
+        .map(|model| model.name.as_str())
 }
 
 /// Which keys are worth naming, in the order they are read.
@@ -593,6 +618,11 @@ fn hints(app: &App) -> Vec<Hint> {
         6,
     ));
     hints.push(Hint::optional("x", app.mode().title(), 8));
+    // Only once there is something to pick — a hint for an empty picker
+    // would be one that lies.
+    if !app.models().is_empty() {
+        hints.push(Hint::optional("M", "model", 8));
+    }
     hints.push(Hint::optional("r", "render", 4));
     hints.push(Hint::optional("ctrl-s", "save", 1));
     hints.push(Hint::optional("R", "reload", 7));
@@ -756,6 +786,53 @@ mod tests {
     /// Every hint on the line, as one string.
     fn footer(app: &App, width: u16) -> String {
         drawn(status(app, width), width, 1)
+    }
+
+    #[test]
+    fn the_model_hint_only_appears_once_the_agent_has_offered_some() {
+        // A hint for a picker with nothing to pick would be one that lies.
+        // Wide enough that nothing else on the line is dropped for room —
+        // this is about the hint's own condition, not the line's truncation.
+        let mut app = App::new(fixtures::project(), "blocks");
+        assert!(!footer(&app, 200).contains('M'), "{}", footer(&app, 200));
+
+        app.set_models(vec![crate::acp::ModelChoice {
+            id: "opencode/grok-code".to_owned(),
+            name: "Grok Code".to_owned(),
+            current: true,
+        }]);
+
+        assert!(footer(&app, 200).contains('M'), "{}", footer(&app, 200));
+    }
+
+    #[test]
+    fn the_current_model_is_shown_in_the_status_line() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        assert!(
+            !footer(&app, 200).contains("Grok Code"),
+            "{}",
+            footer(&app, 200)
+        );
+
+        app.set_models(vec![
+            crate::acp::ModelChoice {
+                id: "anthropic/claude-opus-4-1".to_owned(),
+                name: "Claude Opus 4.1".to_owned(),
+                current: false,
+            },
+            crate::acp::ModelChoice {
+                id: "opencode/grok-code".to_owned(),
+                name: "Grok Code".to_owned(),
+                current: true,
+            },
+        ]);
+
+        let output = footer(&app, 200);
+        assert!(output.contains("Grok Code"), "{output}");
+        assert!(
+            !output.contains("Claude Opus 4.1"),
+            "only the model marked current should show: {output}"
+        );
     }
 
     #[test]

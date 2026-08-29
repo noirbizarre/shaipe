@@ -10,6 +10,16 @@
 //! cargo test --test acp_opencode -- --ignored --nocapture
 //! ```
 //!
+//! `SHAIPE_MODEL` picks which of the agent's own models a test runs against,
+//! the same env var `shaipe tui --model`/`SHAIPE_MODEL` reads and the same
+//! match — by value or by name — the `M` picker in the workspace makes:
+//!
+//! ```sh
+//! SHAIPE_MODEL="anthropic/claude-opus-4-1" \
+//!     cargo test --test acp_opencode -- --ignored --nocapture \
+//!     an_agent_can_see_the_artwork_rather_than_only_read_it
+//! ```
+//!
 //! What they prove that no other test can: that Shaipe's tools reach a real
 //! agent through a real ACP session, and that an image rendered by the live
 //! workspace arrives somewhere a model can see it.
@@ -52,6 +62,15 @@ async fn workspace(
             eprintln!("skipped: {error}");
             return None;
         }
+    };
+
+    // Picks a vision-capable model without this file naming one. Matched by
+    // `connect()` against whatever OpenCode's own selector actually offers —
+    // see `an_agent_can_see_the_artwork_rather_than_only_read_it` for how to
+    // set it.
+    let config = match std::env::var("SHAIPE_MODEL") {
+        Ok(model) => config.with_model(model),
+        Err(_) => config,
     };
 
     let (session, mut commands) = SessionHandle::channel();
@@ -103,6 +122,12 @@ async fn turn(
                     eprintln!("the agent failed: {reason}");
                     return false;
                 }
+                // A `SHAIPE_MODEL` that does not match anything the agent
+                // offers arrives here, before `Ready` — printed rather than
+                // dropped, so a bad value is visible instead of the test
+                // silently running against whatever model was already
+                // configured.
+                AgentUpdate::Other(note) => eprintln!("note: {note}"),
                 _ => {}
             }
         }
@@ -176,6 +201,15 @@ async fn an_agent_can_see_the_artwork_rather_than_only_read_it() {
     // "I cannot see the image" and then looked the colour up with
     // `get_palette`. That is the fake vision loop this project exists not to
     // build, and it passed for two runs before anyone read the output.
+    //
+    // Choosing a vision-capable model is `SHAIPE_MODEL`'s job, not this
+    // test's: set it to whatever OpenCode calls the model, by value or by
+    // name, e.g.
+    // `SHAIPE_MODEL="anthropic/claude-opus-4-1" cargo test --test
+    // acp_opencode -- --ignored --nocapture
+    // an_agent_can_see_the_artwork_rather_than_only_read_it`. Left unset, the
+    // agent answers with whatever it already opens with, and this test finds
+    // out — honestly, one way or the other — whether that is vision-capable.
     //
     // That Shaipe *delivers* a real image block is asserted without a model at
     // all, by `rendering_through_mcp_returns_an_image_block_a_model_can_see`

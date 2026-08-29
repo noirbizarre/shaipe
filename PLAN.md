@@ -207,6 +207,23 @@ see `docs/adr/004-tools-not-a-model.md`.
 - [ ] Choose a model with vision and prove the agent sees the rendered SVG
       rather than reading its source — the test that claims this passed once
       against a model that said "I cannot see images" and looked the answer up
+- [x] A model can be requested from the agent's own selector —
+      `--model`/`SHAIPE_MODEL` at startup, `M` in the workspace mid-session —
+      the same `SetSessionConfigOptionRequest` round trip `working_mode`
+      already makes for a session mode. The item above is still open: nobody
+      has run the ignored vision test against a real, paid, vision-capable
+      model with it yet.
+- [x] The `M` picker narrows a long model list by a typed, fuzzy, in-order
+      match against name and id, since ACP carries no count or paging for
+      `SessionConfigOption` and some agents offer dozens
+- [ ] Mark which models in the `M` picker can see an image. Neither ACP nor
+      OpenCode's own `SessionConfigOption` says so — confirmed by reading
+      OpenCode's `buildModelSelectOptions()`, which sends only `{value,
+      name}` — so this means fetching and caching models.dev's catalogue
+      (`attachment`/`modalities.input`) locally rather than guessing from a
+      name pattern, which is exactly the kind of list ADR-004 exists to avoid
+- [x] The status line names the model currently in use, once the agent has
+      said which one that is — not only inside the `M` picker
 
 ## Artwork
 

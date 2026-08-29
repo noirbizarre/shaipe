@@ -40,8 +40,17 @@ pub async fn run(
         AgentChoice::None
     } else {
         match AgentChoice::discover(&args.agent, &project) {
-            AgentChoice::Start(config) if args.yes => {
-                AgentChoice::Start(Box::new(config.with_policy(Policy::AllowAll)))
+            AgentChoice::Start(config) => {
+                let config = if args.yes {
+                    config.with_policy(Policy::AllowAll)
+                } else {
+                    *config
+                };
+                let config = match &args.model {
+                    Some(model) => config.with_model(model.clone()),
+                    None => config,
+                };
+                AgentChoice::Start(Box::new(config))
             }
             choice => choice,
         }
