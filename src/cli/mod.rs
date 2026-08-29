@@ -86,6 +86,14 @@ pub struct InitArgs {
     /// Seed the project's prompt — what it is meant to be, in your own words.
     #[arg(long)]
     pub prompt: Option<String>,
+
+    /// Attach an existing image as the thing to reproduce, traced or
+    /// vectorised — what an agent works from instead of, or alongside,
+    /// `--prompt`. Recorded as a `source` reference; use `set_reference` to
+    /// attach further references, or to change this one, once the project is
+    /// open. The file must exist.
+    #[arg(long)]
+    pub source: Option<PathBuf>,
 }
 
 /// Arguments to `shaipe mcp`.
@@ -326,6 +334,7 @@ mod tests {
         assert_eq!(args.path, PathBuf::from("logo.svg"));
         assert!(!args.force);
         assert!(args.prompt.is_none());
+        assert!(args.source.is_none());
     }
 
     #[test]
@@ -345,6 +354,17 @@ mod tests {
         assert_eq!(args.path, PathBuf::from("mark.svg"));
         assert!(args.force);
         assert_eq!(args.prompt.as_deref(), Some("A square and a bar."));
+    }
+
+    #[test]
+    fn init_accepts_a_source_image() {
+        let Some(Command::Init(args)) =
+            Cli::parse_from(["shaipe", "init", "mark.svg", "--source", "mockup.png"]).command
+        else {
+            panic!("expected an init command");
+        };
+        assert_eq!(args.path, PathBuf::from("mark.svg"));
+        assert_eq!(args.source, Some(PathBuf::from("mockup.png")));
     }
 
     #[test]

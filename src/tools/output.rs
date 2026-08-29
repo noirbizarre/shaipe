@@ -16,8 +16,9 @@ pub struct ToolImage {
     /// Emitted as text immediately before the image, because a bare image in a
     /// transcript has nothing to say which of five sizes it is.
     pub label: String,
-    /// Always `image/png` today. Named rather than assumed, so the day it is
-    /// not, every transport is already carrying the right answer.
+    /// `image/png` for a render; whatever a reference file's extension
+    /// implies otherwise. Named rather than assumed, so every transport
+    /// already carries the right answer instead of guessing at one.
     pub mime_type: &'static str,
     /// The encoded image.
     ///
@@ -28,14 +29,20 @@ pub struct ToolImage {
 }
 
 impl ToolImage {
+    /// An image, labelled and in a known format.
+    #[must_use]
+    pub fn new(label: impl Into<String>, mime_type: &'static str, bytes: Vec<u8>) -> Self {
+        Self {
+            label: label.into(),
+            mime_type,
+            bytes,
+        }
+    }
+
     /// A PNG, labelled.
     #[must_use]
     pub fn png(label: impl Into<String>, bytes: Vec<u8>) -> Self {
-        Self {
-            label: label.into(),
-            mime_type: "image/png",
-            bytes,
-        }
+        Self::new(label, "image/png", bytes)
     }
 }
 

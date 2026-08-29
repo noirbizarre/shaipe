@@ -64,8 +64,11 @@ shaipe init
 Creates a minimal project — one variant, `icon`, drawn as the primary — so
 there is something to open, render or hand to an agent. Refuses to overwrite
 a file that is already there unless `--force` is given; `--prompt "…"` seeds
-the prompt. `shaipe tui` and bare `shaipe` do the same automatically for a
-path that does not exist yet, in memory, until `ctrl-s` writes it.
+the prompt. `--source <path>` attaches an existing image as a `source`
+reference instead — the thing an agent traces or vectorises — and can be
+combined with `--prompt` to say what to keep or change; the file must already
+exist. `shaipe tui` and bare `shaipe` do the same automatically for a path
+that does not exist yet, in memory, until `ctrl-s` writes it.
 
 ## Rendering
 

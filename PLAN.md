@@ -71,6 +71,8 @@ Local, deterministic, no model.
 - [ ] `shaipe palette` — read and edit the palette without the TUI
 - [x] `shaipe init` — create a project from nothing
 - [ ] Shell completions and a man page
+- [x] `shaipe init --source <path>` — attach a reference image at creation
+      time, so an agent has something to trace from the first turn
 
 ## Workspace
 
@@ -158,7 +160,7 @@ see `docs/adr/004-tools-not-a-model.md`.
 - [x] A transport for the registry — MCP over stdio is the obvious one
 - [x] Mutating tools: set a palette colour, write a variant, record generation
 - [x] Tools for attaching and inspecting references
-- [ ] Raster to vector: hand a PNG to an agent and get an SVG back
+- [x] Raster to vector: hand a PNG to an agent and get an SVG back
 - [x] Tool inputs described by JSON Schema rather than a parameter list — ADR-008
 - [x] Tools renamed to `verb_noun`, pinned by a test — ADR-007
 - [x] `get_svg` and `write_svg`, the written document validated before it is

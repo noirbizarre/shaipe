@@ -329,6 +329,7 @@ mod tests {
             [
                 "get_palette",
                 "get_project",
+                "get_reference_image",
                 "get_references",
                 "get_svg",
                 "get_variants",

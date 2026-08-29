@@ -99,6 +99,19 @@ file is a viewable SVG from the first byte. Refuses to overwrite an existing
 file unless `--force` is given, and `--prompt "…"` seeds the prompt a
 workspace or an agent would otherwise be asked to fill in.
 
+`--source <path>` attaches an existing image as a `source` reference — the
+thing an agent traces or vectorises, instead of working from a prompt alone.
+Combine both to say what to reproduce *and* what to change:
+
+```console
+$ shaipe init --source mockup.png --prompt "keep the mark, drop the wordmark"
+created logo.svg
+```
+
+The file must already exist; `get_reference_image` is how an agent then looks
+at it, and `set_reference` attaches further references, or edits this one,
+after creation.
+
 `shaipe tui` and bare `shaipe` do this automatically for a path that does not
 exist yet — nothing is written until `ctrl-s`.
 
@@ -244,6 +257,7 @@ model answered. Your agent is configured and authenticated in your agent. See
 | `get_variants` | The named parts of the document that can be drawn alone |
 | `get_palette` | The colours, with their names and roles |
 | `get_references` | Files attached for context, and whether they exist |
+| `get_reference_image` | Read an attached reference's bytes and look at it |
 | `get_svg` | The document, exactly as it is |
 | `render_svg` | Draw one variant and **look at it** |
 | `render_grid` | Draw one variant at several sizes, to check it still reads small |

@@ -11,7 +11,7 @@
 
 use serde_json::{Value, json};
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 use crate::inspect::Report;
@@ -30,6 +30,7 @@ pub fn all() -> Vec<Box<dyn Tool>> {
         Box::new(GetVariants),
         Box::new(GetPalette),
         Box::new(GetReferences),
+        Box::new(GetReferenceImage),
         Box::new(GetSvg),
         Box::new(RenderSvg),
         Box::new(RenderGrid),
@@ -188,6 +189,117 @@ impl Tool for GetReferences {
                 })
                 .collect(),
         )))
+    }
+}
+
+/// Read one attached reference's bytes and hand them to whoever is looking.
+struct GetReferenceImage;
+
+impl Tool for GetReferenceImage {
+    fn name(&self) -> &'static str {
+        "get_reference_image"
+    }
+
+    fn description(&self) -> &'static str {
+        "Read an attached reference file's bytes and look at it. Use this \
+         before tracing or matching a `source` reference — `get_references` \
+         only reports whether the file exists, not what it shows. Supports \
+         PNG, JPEG, GIF, WEBP and BMP."
+    }
+
+    fn input_schema(&self) -> Value {
+        object(
+            &[(
+                "src",
+                string(
+                    "Which reference to look at. One of the paths from \
+                     `get_references`, matched exactly.",
+                ),
+            )],
+            &["src"],
+        )
+    }
+
+    fn call(&self, project: &mut Project, input: &Value) -> Result<ToolOutput> {
+        let src = PathBuf::from(required_str(self.name(), input, "src")?);
+
+        let refuse = |reason: String| crate::Error::InvalidToolInput {
+            tool: self.name().to_owned(),
+            reason,
+        };
+
+        // Resolved before anything is read, so a name that was never attached
+        // is reported without ever touching the filesystem.
+        let reference = project
+            .metadata()
+            .references
+            .iter()
+            .find(|reference| reference.src == src)
+            .cloned()
+            .ok_or_else(|| {
+                let known: Vec<String> = project
+                    .metadata()
+                    .references
+                    .iter()
+                    .map(|reference| reference.src.display().to_string())
+                    .collect();
+                refuse(format!(
+                    "`{}` is not an attached reference. {}",
+                    src.display(),
+                    if known.is_empty() {
+                        "Nothing is attached yet; call `set_reference` to attach one.".to_owned()
+                    } else {
+                        format!("Attached: {}", known.join(", "))
+                    }
+                ))
+            })?;
+
+        let resolved = project.resolve(&reference.src);
+
+        // Missing or unreadable reads exactly like any other file-access
+        // failure in the crate — `get_references`' `present` already told the
+        // model whether this was likely, so a surprise here is a race, not a
+        // guess.
+        let bytes =
+            std::fs::read(&resolved).map_err(|error| crate::Error::io(resolved.clone(), error))?;
+
+        // Guessed from the extension, never sniffed from the bytes: Shaipe
+        // reads nothing about the file's content here, the same way
+        // `get_references`' `present` only checks existence. An agent that
+        // attaches a mislabelled file gets a mislabelled image, which is its
+        // mistake to notice, not Shaipe's to fix.
+        let mime_type = reference_mime_type(&resolved).ok_or_else(|| {
+            refuse(format!(
+                "`{}` is not an image format this tool recognises; expected \
+                 .png, .jpg, .jpeg, .gif, .webp or .bmp",
+                resolved.display()
+            ))
+        })?;
+
+        Ok(ToolOutput::json(json!({
+            "src": reference.src.display().to_string(),
+            "resolved": resolved.display().to_string(),
+            "kind": reference.kind.to_string(),
+            "note": reference.note,
+            "mime_type": mime_type,
+        }))
+        .with_image(ToolImage::new(
+            format!("{} ({})", reference.src.display(), reference.kind),
+            mime_type,
+            bytes,
+        )))
+    }
+}
+
+/// The raster formats `get_reference_image` will hand to an agent.
+fn reference_mime_type(path: &Path) -> Option<&'static str> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "bmp" => Some("image/bmp"),
+        _ => None,
     }
 }
 
@@ -928,6 +1040,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+    use crate::Error;
     use crate::fixtures;
     use crate::tools::Registry;
 
@@ -998,6 +1111,109 @@ mod tests {
         assert_eq!(value[1]["kind"], "inspiration");
         assert_eq!(value[1]["note"], Value::Null);
         assert_eq!(value[1]["present"], false);
+    }
+
+    #[test]
+    fn get_reference_image_returns_the_attached_files_bytes_and_mime_type() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        let bytes = b"not a real png, but bytes all the same".to_vec();
+        std::fs::write(directory.path().join("mockup.png"), &bytes).unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        project.metadata_mut().references.push(Reference {
+            src: PathBuf::from("mockup.png"),
+            kind: ReferenceKind::Source,
+            note: Some("hand sketch".to_owned()),
+        });
+
+        let output = Registry::new()
+            .call(
+                "get_reference_image",
+                &mut project,
+                &json!({ "src": "mockup.png" }),
+            )
+            .unwrap();
+
+        assert_eq!(output.value["src"], "mockup.png");
+        assert_eq!(output.value["kind"], "source");
+        assert_eq!(output.value["note"], "hand sketch");
+        assert_eq!(output.value["mime_type"], "image/png");
+
+        // The image travels beside the JSON, not inside it, exactly like
+        // `render_svg`'s.
+        let [image] = &output.images[..] else {
+            panic!("expected exactly one image, got {}", output.images.len());
+        };
+        assert_eq!(image.mime_type, "image/png");
+        assert_eq!(image.bytes, bytes);
+        assert_eq!(image.label, "mockup.png (source)");
+    }
+
+    #[test]
+    fn get_reference_image_of_an_unknown_src_lists_the_ones_that_are_attached() {
+        let mut project = fixtures::project();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        let error = Registry::new()
+            .call(
+                "get_reference_image",
+                &mut project,
+                &json!({ "src": "watermark.png" }),
+            )
+            .unwrap_err();
+
+        let rendered = error.to_string();
+        assert!(rendered.contains("mockup.png"), "{rendered}");
+        assert!(matches!(error, Error::InvalidToolInput { .. }));
+    }
+
+    #[test]
+    fn get_reference_image_of_a_missing_file_reports_why() {
+        let mut project = fixtures::project();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("missing.png", ReferenceKind::Source));
+
+        let error = Registry::new()
+            .call(
+                "get_reference_image",
+                &mut project,
+                &json!({ "src": "missing.png" }),
+            )
+            .unwrap_err();
+        assert!(matches!(error, Error::Io { .. }));
+    }
+
+    #[test]
+    fn get_reference_image_rejects_an_extension_it_does_not_recognise() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        std::fs::write(directory.path().join("mockup.pdf"), b"not an image").unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.pdf", ReferenceKind::Source));
+
+        let error = Registry::new()
+            .call(
+                "get_reference_image",
+                &mut project,
+                &json!({ "src": "mockup.pdf" }),
+            )
+            .unwrap_err();
+
+        let rendered = error.to_string();
+        assert!(rendered.contains("mockup.pdf"), "{rendered}");
+        assert!(matches!(error, Error::InvalidToolInput { .. }));
     }
 
     #[test]
