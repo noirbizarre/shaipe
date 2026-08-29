@@ -91,14 +91,18 @@ pub struct InitArgs {
     /// vectorised — what an agent works from instead of, or alongside,
     /// `--prompt`. Recorded as a `source` reference; use `set_reference` to
     /// attach further references, or to change this one, once the project is
-    /// open. The file must exist.
+    /// open. The file must exist and is resolved like any other path on the
+    /// command line — from the current directory — but stored relative to
+    /// the project itself, so it still resolves once this shell is gone.
     #[arg(long)]
     pub source: Option<PathBuf>,
 
     /// Attach an existing image as a mood board — cues to take, not to copy —
     /// alongside or instead of `--prompt`. Repeatable. Recorded as
     /// `inspiration` references; use `set_reference` to attach further ones,
-    /// or to change these, once the project is open. Every file must exist.
+    /// or to change these, once the project is open. Every file must exist
+    /// and, like `--source`, is resolved from the current directory but
+    /// stored relative to the project.
     #[arg(long)]
     pub inspiration: Vec<PathBuf>,
 }

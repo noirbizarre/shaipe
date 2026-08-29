@@ -68,9 +68,13 @@ the prompt. `--source <path>` attaches an existing image as a `source`
 reference instead — the thing an agent traces or vectorises — and can be
 combined with `--prompt` to say what to keep or change; the file must already
 exist. `--inspiration <path>` attaches a mood board instead — cues to take,
-not to copy — and can be given more than once. `shaipe tui` and bare `shaipe`
-do the same automatically for a path that does not exist yet, in memory,
-until `ctrl-s` writes it.
+not to copy — and can be given more than once. Both resolve from the current
+directory like any other command-line path, but are stored relative to the
+project itself, so the reference still resolves once the shell is gone; a
+path given inside the workspace or to `set_reference` has no shell to resolve
+from, so there it is simply relative to the project, or absolute. `shaipe
+tui` and bare `shaipe` do the same automatically for a path that does not
+exist yet, in memory, until `ctrl-s` writes it.
 
 ## Rendering
 

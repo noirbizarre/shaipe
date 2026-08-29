@@ -120,6 +120,14 @@ $ shaipe init --inspiration mood-a.png --inspiration mood-b.png --prompt "warmer
 created logo.svg
 ```
 
+Both flags resolve from the current directory, the same as any other path on
+the command line, but are stored relative to the project itself — so a
+project created in a subdirectory, sourced from an image sitting beside the
+shell rather than beside it, still finds the image once the shell is gone. A
+reference typed inside the workspace or given to `set_reference` has no shell
+to resolve from, so there the convention is simply: relative to the project,
+or absolute.
+
 `shaipe tui` and bare `shaipe` do this automatically for a path that does not
 exist yet — nothing is written until `ctrl-s`.
 
