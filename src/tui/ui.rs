@@ -3,10 +3,12 @@
 //! ```text
 //! ┌ Shaipe  [Transcript] [Source] [Renders] [Edit variants] ────────────────┐
 //! ├──────────── left, half ─────────┬──────────────── right ────────────────┤
-//! │ prompt, or the transcript  2/3  │ ‹ icon │ wordmark ›                   │
+//! │ prompt, or the transcript  50%  │ ‹ icon │ wordmark ›                   │
 //! │                                 │                                       │
-//! ├────────────────────────── 1/3 ──┤        preview, or the source         │
+//! ├────────────────────────── 25% ──┤        preview, or the source         │
 //! │ palette                         │                                       │
+//! ├────────────────────────── 25% ──┤                                       │
+//! │ references                      │                                       │
 //! └─────────────────────────────────┴───────────────────────────────────────┘
 //! ```
 //!
@@ -60,6 +62,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend) {
     match app.modal() {
         Some(Modal::Variants(editor)) => modal::draw_variants(frame, editor, &app.project, body),
         Some(Modal::Renders(editor)) => modal::draw_renders(frame, editor, &app.project, body),
+        Some(Modal::References(editor)) => {
+            modal::draw_references(frame, editor, &app.project, body);
+        }
         Some(Modal::ColourPicker(picker)) => {
             modal::draw_colour_picker(frame, picker, &app.project, body);
         }
@@ -70,21 +75,30 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend) {
 
 /// Draw the description column.
 ///
-/// Two panes at a fixed ratio, rather than a focused one that takes the column.
-/// The prompt is the reason: it is prose, it is what the whole workspace is
-/// about, and giving it two thirds unconditionally is worth more than making
-/// it grow when the keyboard happens to be in it.
+/// Three panes at a fixed ratio, rather than a focused one that takes the
+/// column. The prompt is the reason for the split itself: it is prose, it is
+/// what the whole workspace is about, and giving it half unconditionally is
+/// worth more than making it grow when the keyboard happens to be in it. The
+/// palette and the references pane share what is left equally — neither is
+/// read as continuously as the prompt, and both are short lists more often
+/// than not.
 fn draw_left(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
-    let [top, bottom] = Layout::default()
+    let [top, middle, bottom] = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
+        .constraints([
+            Constraint::Percentage(50),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+        ])
         .areas(area);
 
     app.set_area(Focus::Prompt, top);
-    app.set_area(Focus::Palette, bottom);
+    app.set_area(Focus::Palette, middle);
+    app.set_area(Focus::References, bottom);
 
     draw_prompt(frame, app, top);
-    draw_palette(frame, app, bottom);
+    draw_palette(frame, app, middle);
+    draw_references(frame, app, bottom);
 }
 
 /// Draw the prompt, or the transcript in its place.
@@ -137,6 +151,17 @@ fn draw_palette(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let list = panes::palette(&app.project.metadata().palette, focused, app.palette_edit())
         .block(panes::frame(Focus::Palette, focused));
     frame.render_stateful_widget(list, area, app.list_state(Focus::Palette));
+}
+
+/// Draw the references pane.
+fn draw_references(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let focused = app.focus == Focus::References;
+    // Built before the mutable borrow the list state needs, same as the
+    // palette above — resolving each `src` needs the whole project, not just
+    // its references, so the pane function takes it directly.
+    let list =
+        panes::references(&app.project, focused).block(panes::frame(Focus::References, focused));
+    frame.render_stateful_widget(list, area, app.list_state(Focus::References));
 }
 
 /// Draw the preview column: a row of tabs, and whatever they select.
@@ -388,22 +413,25 @@ mod tests {
     }
 
     #[test]
-    fn the_prompt_gets_two_thirds_of_the_column_and_the_palette_the_rest() {
+    fn the_prompt_keeps_the_largest_share_of_the_column_whatever_has_focus() {
         // Unconditionally: the prompt is what the workspace is about, and
         // making it grow only when the keyboard is in it means it is short
-        // exactly when somebody is reading it.
+        // exactly when somebody is reading it. The palette and the
+        // references pane split what is left evenly.
         let mut app = App::new(fixtures::project(), "blocks");
 
-        app.focus = Focus::Palette;
+        app.focus = Focus::References;
         frame(&mut app, 100, 30);
 
         let prompt = app.area(Focus::Prompt).height;
         let palette = app.area(Focus::Palette).height;
+        let references = app.area(Focus::References).height;
         assert!(
-            prompt > palette,
-            "the prompt should keep the larger share whatever has focus: \
-             {prompt} vs {palette}"
+            prompt > palette && prompt > references,
+            "the prompt should keep the largest share whatever has focus: \
+             {prompt} vs {palette} vs {references}"
         );
+        assert!(references > 0, "the references pane was not given any room");
     }
 
     /// A prompt like a real one: several paragraphs, hundreds of characters.

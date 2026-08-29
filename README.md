@@ -112,6 +112,14 @@ The file must already exist; `get_reference_image` is how an agent then looks
 at it, and `set_reference` attaches further references, or edits this one,
 after creation.
 
+`--inspiration <path>` attaches a mood board instead — cues to take, not to
+copy — and can be given more than once:
+
+```console
+$ shaipe init --inspiration mood-a.png --inspiration mood-b.png --prompt "warmer, rounder"
+created logo.svg
+```
+
 `shaipe tui` and bare `shaipe` do this automatically for a path that does not
 exist yet — nothing is written until `ctrl-s`.
 
@@ -181,6 +189,8 @@ shaipe tui logo.svg
 │                               │                                           │
 ├───────────────────────────────┤        preview, or the source             │
 │ palette                       │                                           │
+├───────────────────────────────┤                                           │
+│ references                    │                                           │
 └───────────────────────────────┴───────────────────────────────────────────┘
 ```
 
@@ -195,13 +205,15 @@ tabs list. `s` swaps the picture for the SVG that produced it. `t` swaps the
 prompt for the transcript. Each of those has a button on the toolbar as well,
 because a mode with no visible affordance is one people find by accident.
 
-`tab` and `↑` `↓` move between the prompt and the palette, `enter` hands the
-keyboard to whichever has it and `esc` gives it back. Both panes are edited in
-place: the prompt is prose, and a palette colour is its name and its value,
-committed as you type. Every button says what pressing it will do, so the
-toolbar reads `Source` while the preview is up and `Preview` while it is not.
-`r` re-renders, `x` opens the editor for whichever the tabs list — variants or
-render specifications — `q` quits.
+`tab` and `↑` `↓` move between the prompt, the palette and the references pane,
+`enter` hands the keyboard to whichever has it and `esc` gives it back. The
+prompt and the palette are edited in place: the prompt is prose, and a palette
+colour is its name and its value, committed as you type. The references pane
+has no in-place editor — `x` opens a modal table for attaching, retyping and
+removing one, the same way it does for variants and render specifications when
+the tabs list one of those instead. Every button says what pressing it will do,
+so the toolbar reads `Source` while the preview is up and `Preview` while it is
+not. `r` re-renders, `q` quits.
 The mouse works: click a toolbar button or a tab, click a pane to focus it,
 double-click to edit it, wheel to scroll, drag the divider to resize, and
 double-click a specification's tab to write it to `dist/`.
@@ -330,7 +342,7 @@ The keys:
 |---|---|
 | `enter` | edit the focused pane — the prompt, or a palette colour — committed as you type |
 | `esc` | stop editing |
-| `tab` / `shift-tab`, `↑` / `↓` | move between the prompt and the palette, still editing |
+| `tab` / `shift-tab`, `↑` / `↓` | move between the prompt, the palette and the references pane, still editing |
 | `a` | **send the prompt to the agent**, so it makes the artwork match |
 | `alt+a` | the same, without leaving the editor |
 | `e` | open the prompt in `$EDITOR` |
@@ -338,7 +350,7 @@ The keys:
 | `m` | swap the variants for the render specifications |
 | `s` | swap the preview for the SVG that produced it |
 | `t` | swap the prompt for the transcript |
-| `x` | open the editor for whichever the tabs list |
+| `x` | open the editor for whichever the tabs list, or for the references pane when that has the keyboard |
 | `M` | search and pick from whichever models the agent offers, shown once one is chosen |
 | `PageUp` / `PageDown` | scroll the source, or the transcript |
 | `ctrl-c` | stop the turn the agent is on; again to quit |

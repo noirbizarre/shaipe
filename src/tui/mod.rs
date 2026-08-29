@@ -953,6 +953,48 @@ mod tests {
     }
 
     #[test]
+    fn the_sent_prompt_mentions_attached_references_when_there_are_any() {
+        // An agent that does not know a reference exists cannot decide to
+        // look at it — `get_reference_image` is opt-in, so the turn has to
+        // say what there is to opt into.
+        let mut app = app();
+        app.agent = AgentStatus::Ready;
+        app.focus = Focus::Prompt;
+        app.project
+            .metadata_mut()
+            .references
+            .push(crate::project::Reference::new(
+                "mood.png",
+                crate::project::ReferenceKind::Inspiration,
+            ));
+
+        press(&mut app, KeyCode::Char('a'));
+
+        let Some(AgentRequest::Prompt(sent)) = &app.pending_agent_request else {
+            panic!("nothing was sent");
+        };
+        assert!(sent.contains("get_reference_image"), "{sent}");
+        assert!(sent.contains("get_references"), "{sent}");
+    }
+
+    #[test]
+    fn the_sent_prompt_says_nothing_about_references_when_none_are_attached() {
+        // The fixture project has no references — an untouched project's
+        // turn should read exactly as it always has.
+        let mut app = app();
+        app.agent = AgentStatus::Ready;
+        app.focus = Focus::Prompt;
+        assert!(app.project.metadata().references.is_empty());
+
+        press(&mut app, KeyCode::Char('a'));
+
+        let Some(AgentRequest::Prompt(sent)) = &app.pending_agent_request else {
+            panic!("nothing was sent");
+        };
+        assert!(!sent.contains("get_reference_image"), "{sent}");
+    }
+
+    #[test]
     fn alt_a_sends_without_leaving_the_editor() {
         // `a` is a letter once the editor has the keyboard, so the chord is
         // the way to send something you have just finished typing.
@@ -1192,6 +1234,35 @@ mod tests {
             "{:?}",
             app.modal()
         );
+    }
+
+    #[test]
+    fn x_opens_the_references_editor_when_the_references_pane_has_the_keyboard() {
+        // Unlike variants and render specifications, references are not a
+        // tab-strip mode — `x` has to check focus first.
+        let mut app = app();
+        app.focus = Focus::References;
+
+        press(&mut app, KeyCode::Char('x'));
+
+        assert!(
+            matches!(app.modal(), Some(crate::tui::modal::Modal::References(_))),
+            "{:?}",
+            app.modal()
+        );
+    }
+
+    #[test]
+    fn enter_does_nothing_on_the_references_pane() {
+        // References have no in-place edit mode: attaching, retyping and
+        // removing one lives entirely behind `x`.
+        let mut app = app();
+        app.focus = Focus::References;
+
+        press(&mut app, KeyCode::Enter);
+
+        assert!(!app.is_editing());
+        assert!(app.modal().is_none());
     }
 
     #[test]

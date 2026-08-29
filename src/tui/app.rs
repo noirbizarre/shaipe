@@ -18,9 +18,11 @@ use ratatui_textarea::{TextArea, WrapMode};
 
 use crate::acp::ModelChoice;
 use crate::preview::{Image, Scale};
-use crate::project::{Background, Format, Project, RenderSpec, Rgba};
+use crate::project::{Background, Format, Project, Reference, RenderSpec, Rgba};
 use crate::render::{RenderOptions, Renderer};
-use crate::tui::modal::{ColourPicker, Modal, ModelPicker, RendersEditor, VariantsEditor};
+use crate::tui::modal::{
+    ColourPicker, Modal, ModelPicker, ReferencesEditor, RendersEditor, VariantsEditor,
+};
 use crate::tui::render_worker::{Rendered, Worker};
 use crate::tui::toolbar::Button;
 use crate::tui::transcript::Transcript;
@@ -64,19 +66,26 @@ const EXPORT_DIRECTORY: &str = "dist";
 
 /// Which pane the keyboard is talking to.
 ///
-/// Two, not four: the variants and the render specifications are the preview's
-/// tabs now, chosen by [`Mode`], and neither is a list to walk on the left.
+/// Three, not four: the variants and the render specifications are the
+/// preview's tabs, chosen by [`Mode`], and neither is a list to walk on the
+/// left — a render specification or a variant drives what the preview shows,
+/// and there is exactly one of those on screen at a time. References are a
+/// third, different shape: a management list with no "current" one to
+/// render, the same reason the palette stays a pane edited in place rather
+/// than folding into a modal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     /// The prompt, or the transcript in its place.
     Prompt,
     /// The palette.
     Palette,
+    /// The attached references.
+    References,
 }
 
 impl Focus {
     /// Every pane, in the order `Tab` visits them.
-    pub const ALL: [Self; 2] = [Self::Prompt, Self::Palette];
+    pub const ALL: [Self; 3] = [Self::Prompt, Self::Palette, Self::References];
 
     /// How many panes there are.
     pub const COUNT: usize = Self::ALL.len();
@@ -87,6 +96,7 @@ impl Focus {
         match self {
             Self::Prompt => "prompt",
             Self::Palette => "palette",
+            Self::References => "references",
         }
     }
 }
@@ -345,13 +355,30 @@ impl Notice {
 /// it gives a model nothing to do, and the likeliest reply is agreement. This
 /// says what to do with it, and names the tools, because the preamble is read
 /// once and this is read every turn.
-fn instruct(prompt: &str) -> String {
+///
+/// `references` names attached files, regardless of kind — `get_references`
+/// already reports each one's kind and the agent decides relevance from
+/// that. Omitted entirely when nothing is attached, so an untouched project
+/// sends the same turn it always did.
+fn instruct(prompt: &str, references: &[Reference]) -> String {
+    let attachments = if references.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nThis project has {count} file{plural} attached for context — \
+             call `get_references` to see what and why, and \
+             `get_reference_image` to look at any relevant to the prompt \
+             below before you write the SVG.",
+            count = references.len(),
+            plural = if references.len() == 1 { "" } else { "s" },
+        )
+    };
     format!(
         "Update this project's SVG so that it matches the prompt below.\n\n\
          Read the current document with `get_svg`, write the new one with \
          `write_svg`, and look at the result with `render_svg` before you \
          finish. Change the artwork only — leave the `<metadata>` block as you \
-         found it.\n\n---\n\n{prompt}"
+         found it.{attachments}\n\n---\n\n{prompt}"
     )
 }
 
@@ -684,7 +711,15 @@ impl App {
     /// palette's is a field on the selected colour. What they share is that
     /// while either is engaged the arrows belong to the pane and every
     /// printable key is an edit.
+    ///
+    /// A no-op on the references pane: attaching, retyping and removing a
+    /// reference needs a table, the same reason a render specification does,
+    /// and that lives behind `x` (see [`Self::open_references_editor`]), not
+    /// behind `enter`.
     pub fn engage_editor(&mut self) {
+        if self.focus == Focus::References {
+            return;
+        }
         self.editing = Some(self.focus);
         if self.focus == Focus::Palette {
             self.load_palette_field();
@@ -701,7 +736,10 @@ impl App {
         match self.editing.take() {
             Some(Focus::Prompt) => self.commit_prompt(),
             Some(Focus::Palette) => self.commit_palette_field(),
-            None => {}
+            // `engage_editor` never sets `editing` to this — references are
+            // edited only through their modal — so this arm exists solely to
+            // keep the match exhaustive as `Focus` grows.
+            Some(Focus::References) | None => {}
         }
     }
 
@@ -1005,7 +1043,10 @@ impl App {
         }
 
         self.transcript.push_user(prompt.clone());
-        self.pending_agent_request = Some(AgentRequest::Prompt(instruct(&prompt)));
+        self.pending_agent_request = Some(AgentRequest::Prompt(instruct(
+            &prompt,
+            &self.project.metadata().references,
+        )));
     }
 
     /// What the right-hand column is showing.
@@ -1422,6 +1463,7 @@ impl App {
             // it, so it has nothing for the selection machinery to move.
             Focus::Prompt => 0,
             Focus::Palette => self.project.metadata().palette.len(),
+            Focus::References => self.project.metadata().references.len(),
         }
     }
 
@@ -1907,12 +1949,27 @@ impl App {
         self.modal = Some(Modal::Variants(VariantsEditor::new(row, &self.project)));
     }
 
-    /// Open the editor for whichever the tabs currently list.
+    /// Open the references editor.
     ///
-    /// The single entry point `x` and its toolbar button both reach —
-    /// neither has to know which mode the tabs are in, only that there is
-    /// always exactly one editor that matches it.
+    /// References have no in-place edit mode — see [`Self::engage_editor`] —
+    /// so this is the only way to attach, retype or remove one.
+    pub fn open_references_editor(&mut self) {
+        let row = self.selection(Focus::References);
+        self.modal = Some(Modal::References(ReferencesEditor::new(row, &self.project)));
+    }
+
+    /// Open the editor for whichever the tabs currently list, or for the
+    /// references pane if that has the keyboard.
+    ///
+    /// The single entry point `x` and its toolbar button both reach — none of
+    /// them has to know which mode the tabs are in, or that references are a
+    /// pane rather than a tab, only that there is always exactly one editor
+    /// that matches where the keyboard is.
     pub fn open_editor(&mut self) {
+        if self.focus == Focus::References {
+            self.open_references_editor();
+            return;
+        }
         match self.mode {
             Mode::Variants => self.open_variants_editor(),
             Mode::Renders => self.open_renders_editor(),
@@ -1981,6 +2038,14 @@ impl App {
                 }
                 if !editor.closed() {
                     self.modal = Some(Modal::Renders(editor));
+                }
+            }
+            Some(Modal::References(mut editor)) => {
+                if editor.key(key, &mut self.project) {
+                    self.dirty = true;
+                }
+                if !editor.closed() {
+                    self.modal = Some(Modal::References(editor));
                 }
             }
             Some(Modal::ColourPicker(mut picker)) => {

@@ -67,8 +67,10 @@ a file that is already there unless `--force` is given; `--prompt "…"` seeds
 the prompt. `--source <path>` attaches an existing image as a `source`
 reference instead — the thing an agent traces or vectorises — and can be
 combined with `--prompt` to say what to keep or change; the file must already
-exist. `shaipe tui` and bare `shaipe` do the same automatically for a path
-that does not exist yet, in memory, until `ctrl-s` writes it.
+exist. `--inspiration <path>` attaches a mood board instead — cues to take,
+not to copy — and can be given more than once. `shaipe tui` and bare `shaipe`
+do the same automatically for a path that does not exist yet, in memory,
+until `ctrl-s` writes it.
 
 ## Rendering
 
@@ -104,26 +106,28 @@ The JSON form is the stable surface for an agent.
 shaipe            # opens ./logo.svg
 ```
 
-The project's prompt and palette on the left, a live preview on the right,
-drawn with whichever graphics protocol the terminal reports — Kitty, Sixel or
-iTerm2 — and Unicode half-blocks everywhere else. A toolbar along the top names
-every state the workspace is in and lets you click it.
+The project's prompt, palette and references on the left, a live preview on
+the right, drawn with whichever graphics protocol the terminal reports —
+Kitty, Sixel or iTerm2 — and Unicode half-blocks everywhere else. A toolbar
+along the top names every state the workspace is in and lets you click it.
 
 The variants and the render specifications are the preview's tabs: `←` and `→`
 move between them and `m` swaps which of the two they list. `s` swaps the
 picture for the SVG that produced it, `t` swaps the prompt for the transcript,
 and `x` opens the editor for whichever the tabs currently list — variants or
-render specifications, each a table that adds, removes and reorders its rows.
-Each of the four is a toolbar button too, labelled with what pressing it will
-do rather than with the state it is in.
+render specifications, each a table that adds, removes and reorders its rows —
+or for the references pane, the same kind of table, when that has the
+keyboard. Each of the four is a toolbar button too, labelled with what
+pressing it will do rather than with the state it is in.
 
-`tab` and `↑` `↓` move between the prompt and the palette, `enter` hands the
-keyboard to whichever has it and `esc` gives it back; both are edited in place and
-committed as you type. `e` opens the prompt in `$VISUAL` or `$EDITOR`, and
-`ctrl-s` saves; the status line marks unsaved work and quitting with any asks
-first. The mouse works: click a button, a tab or a pane, double-click to edit,
-wheel to scroll, drag the divider to resize, and double-click a specification's
-tab to export it.
+`tab` and `↑` `↓` move between the prompt, the palette and the references
+pane, `enter` hands the keyboard to whichever has it and `esc` gives it back;
+the prompt and the palette are edited in place and committed as you type —
+the references pane has no in-place editor, only the `x` table. `e` opens the
+prompt in `$VISUAL` or `$EDITOR`, and `ctrl-s` saves; the status line marks
+unsaved work and quitting with any asks first. The mouse works: click a
+button, a tab or a pane, double-click to edit, wheel to scroll, drag the
+divider to resize, and double-click a specification's tab to export it.
 
 ```bash
 shaipe doctor

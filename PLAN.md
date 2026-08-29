@@ -73,6 +73,8 @@ Local, deterministic, no model.
 - [ ] Shell completions and a man page
 - [x] `shaipe init --source <path>` — attach a reference image at creation
       time, so an agent has something to trace from the first turn
+- [x] `shaipe init --inspiration <path>` (repeatable) — seed one or more mood
+      boards at creation, the `inspiration` counterpart to `--source`
 
 ## Workspace
 
@@ -145,6 +147,9 @@ The interactive TUI.
       declares
 - [ ] Review the toolbar, the footer and the pane titles together: they say
       overlapping things, and which one to read for what is not obvious
+- [x] A references pane — attach, retype and remove references without
+      leaving the workspace, through a modal editor the same shape as the
+      variants and render specifications ones
 
 ## Agent integration
 
@@ -224,6 +229,8 @@ see `docs/adr/004-tools-not-a-model.md`.
       name pattern, which is exactly the kind of list ADR-004 exists to avoid
 - [x] The status line names the model currently in use, once the agent has
       said which one that is — not only inside the `M` picker
+- [x] The turn sent to the agent mentions attached references when there are
+      any, so it does not have to discover `get_references` on its own
 
 ## Artwork
 

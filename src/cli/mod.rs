@@ -94,6 +94,13 @@ pub struct InitArgs {
     /// open. The file must exist.
     #[arg(long)]
     pub source: Option<PathBuf>,
+
+    /// Attach an existing image as a mood board — cues to take, not to copy —
+    /// alongside or instead of `--prompt`. Repeatable. Recorded as
+    /// `inspiration` references; use `set_reference` to attach further ones,
+    /// or to change these, once the project is open. Every file must exist.
+    #[arg(long)]
+    pub inspiration: Vec<PathBuf>,
 }
 
 /// Arguments to `shaipe mcp`.

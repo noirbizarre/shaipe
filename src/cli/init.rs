@@ -24,12 +24,15 @@ pub fn run(args: &InitArgs, out: &mut dyn Write) -> Result<()> {
         });
     }
 
-    // Checked before anything is created or written: a typo in `--source`
-    // must not leave a project on disk that records a reference to nothing,
-    // when the entire point of the flag is to hand the agent something real
-    // to look at from the first turn.
+    // Checked before anything is created or written: a typo in `--source` or
+    // `--inspiration` must not leave a project on disk that records a
+    // reference to nothing, when the entire point of the flags is to hand the
+    // agent something real to look at from the first turn.
     if let Some(source) = &args.source {
         std::fs::metadata(source).map_err(|error| Error::io(source, error))?;
+    }
+    for inspiration in &args.inspiration {
+        std::fs::metadata(inspiration).map_err(|error| Error::io(inspiration, error))?;
     }
 
     let mut project = Project::init(&args.path)?;
@@ -44,6 +47,15 @@ pub fn run(args: &InitArgs, out: &mut dyn Write) -> Result<()> {
             .metadata_mut()
             .references
             .push(Reference::new(source.clone(), ReferenceKind::Source));
+    }
+    for inspiration in &args.inspiration {
+        // `ReferenceKind::Inspiration`: "cues, not to copy" — a mood board
+        // rather than something to trace. Each `--inspiration` becomes its
+        // own reference, in the order given.
+        project.metadata_mut().references.push(Reference::new(
+            inspiration.clone(),
+            ReferenceKind::Inspiration,
+        ));
     }
     project.save()?;
 
@@ -61,6 +73,7 @@ mod tests {
             force: false,
             prompt: None,
             source: None,
+            inspiration: Vec::new(),
         }
     }
 
@@ -168,5 +181,64 @@ mod tests {
             Some("keep the mark, drop the wordmark")
         );
         assert_eq!(project.metadata().references[0].src, mockup);
+    }
+
+    #[test]
+    fn inspiration_images_end_up_in_the_saved_project() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        let mood_a = directory.path().join("mood-a.png");
+        let mood_b = directory.path().join("mood-b.png");
+        std::fs::write(&mood_a, b"not a real png").unwrap();
+        std::fs::write(&mood_b, b"not a real png").unwrap();
+
+        let mut inspired = args(&path);
+        inspired.inspiration = vec![mood_a.clone(), mood_b.clone()];
+        run(&inspired, &mut Vec::new()).unwrap();
+
+        let project = Project::open(&path).unwrap();
+        let references = &project.metadata().references;
+        assert_eq!(references.len(), 2);
+        assert_eq!(references[0].src, mood_a);
+        assert_eq!(references[0].kind, ReferenceKind::Inspiration);
+        assert_eq!(references[1].src, mood_b);
+        assert_eq!(references[1].kind, ReferenceKind::Inspiration);
+    }
+
+    #[test]
+    fn a_missing_inspiration_image_is_refused_and_nothing_is_created() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        let mood_a = directory.path().join("mood-a.png");
+        std::fs::write(&mood_a, b"not a real png").unwrap();
+
+        let mut inspired = args(&path);
+        inspired.inspiration = vec![mood_a, directory.path().join("missing.png")];
+
+        let error = run(&inspired, &mut Vec::new()).unwrap_err();
+        assert!(matches!(error, Error::Io { .. }));
+        assert!(!path.exists(), "a failed init must not create the project");
+    }
+
+    #[test]
+    fn source_and_inspiration_can_both_be_given() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        let mockup = directory.path().join("mockup.png");
+        let mood = directory.path().join("mood.png");
+        std::fs::write(&mockup, b"not a real png").unwrap();
+        std::fs::write(&mood, b"not a real png").unwrap();
+
+        let mut both = args(&path);
+        both.source = Some(mockup.clone());
+        both.inspiration = vec![mood.clone()];
+        run(&both, &mut Vec::new()).unwrap();
+
+        let project = Project::open(&path).unwrap();
+        let references = &project.metadata().references;
+        assert_eq!(references[0].src, mockup);
+        assert_eq!(references[0].kind, ReferenceKind::Source);
+        assert_eq!(references[1].src, mood);
+        assert_eq!(references[1].kind, ReferenceKind::Inspiration);
     }
 }

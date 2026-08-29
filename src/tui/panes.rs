@@ -11,7 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wrap};
 
-use crate::project::{Palette, Rgba};
+use crate::project::{Palette, Project, Rgba};
 
 use super::app::{AgentStatus, App, Focus, LeftView, PaletteEdit, PaletteField, View};
 use super::markdown;
@@ -287,10 +287,10 @@ fn swatch(colour: Rgba) -> Span<'static> {
 
 /// The palette pane.
 ///
-/// The one list left in the left column, and the only one that is edited in
-/// place. `edit` is what has been typed rather than what the project holds:
-/// a hex colour does not parse until its last character, so drawing the
-/// committed value would make every keystroke but the final one invisible.
+/// The only left-column list edited in place rather than through a modal.
+/// `edit` is what has been typed rather than what the project holds: a hex
+/// colour does not parse until its last character, so drawing the committed
+/// value would make every keystroke but the final one invisible.
 pub fn palette(palette: &Palette, focused: bool, edit: Option<PaletteEdit<'_>>) -> List<'static> {
     let items: Vec<ListItem> = palette
         .colours()
@@ -336,6 +336,54 @@ pub fn palette(palette: &Palette, focused: bool, edit: Option<PaletteEdit<'_>>) 
             ListItem::new(Line::from(spans))
         })
         .collect();
+
+    List::new(items).highlight_style(selected(focused))
+}
+
+/// The references pane.
+///
+/// Read-only — there is no in-place edit mode for a reference, only the
+/// modal `x` opens (see [`crate::tui::modal::ReferencesEditor`]), so unlike
+/// [`palette`] this never overlays a half-typed field. Takes the whole
+/// project rather than just its references, because showing whether a file
+/// is actually there needs [`crate::project::Project::resolve`].
+pub fn references(project: &Project, focused: bool) -> List<'static> {
+    let items: Vec<ListItem> = project
+        .metadata()
+        .references
+        .iter()
+        .map(|reference| {
+            let missing = !project.resolve(&reference.src).exists();
+            let mut spans = vec![
+                Span::styled(
+                    format!("{:<11}", reference.kind.to_string()),
+                    Style::default().fg(Color::Blue),
+                ),
+                Span::raw(reference.src.display().to_string()),
+            ];
+            if missing {
+                spans.push(Span::styled(
+                    " (missing)",
+                    Style::default().fg(Color::LightRed),
+                ));
+            }
+            if let Some(note) = &reference.note {
+                spans.push(Span::styled(
+                    format!("  {note}"),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    if items.is_empty() {
+        return List::new(vec![ListItem::new(Line::styled(
+            "nothing attached — x attaches one",
+            Style::default().fg(Color::DarkGray),
+        ))])
+        .highlight_style(selected(focused));
+    }
 
     List::new(items).highlight_style(selected(focused))
 }
@@ -578,10 +626,14 @@ fn hints(app: &App) -> Vec<Hint> {
         return hints;
     }
 
-    let mut hints = vec![
-        Hint::optional("tab", "pane", 2),
-        Hint::essential("enter", "edit"),
-    ];
+    let mut hints = vec![Hint::optional("tab", "pane", 2)];
+
+    // `enter` does nothing on the references pane — it is edited only
+    // through the modal `x` opens, below — so naming it here would be a hint
+    // that lies.
+    if app.focus != Focus::References {
+        hints.push(Hint::essential("enter", "edit"));
+    }
 
     if app.focus == Focus::Prompt && app.left_view() == LeftView::Prompt {
         // Essential, and this is the whole point of the type. `a` is the only
@@ -617,7 +669,17 @@ fn hints(app: &App) -> Vec<Hint> {
         },
         6,
     ));
-    hints.push(Hint::optional("x", app.mode().title(), 8));
+    // `x` opens whichever editor matches where the keyboard is: the tab
+    // strip's mode everywhere else, or the references pane when that has it.
+    hints.push(Hint::optional(
+        "x",
+        if app.focus == Focus::References {
+            "references"
+        } else {
+            app.mode().title()
+        },
+        8,
+    ));
     // Only once there is something to pick — a hint for an empty picker
     // would be one that lies.
     if !app.models().is_empty() {
@@ -696,6 +758,51 @@ mod tests {
         assert!(output.contains("accent"), "{output}");
         assert!(output.contains("#f05032"), "{output}");
         assert!(output.contains("#18181b"), "{output}");
+    }
+
+    #[test]
+    fn the_references_pane_shows_each_ones_kind_src_and_note() {
+        let mut project = fixtures::project();
+        project
+            .metadata_mut()
+            .references
+            .push(crate::project::Reference {
+                src: "mood.png".into(),
+                kind: crate::project::ReferenceKind::Inspiration,
+                note: Some("warmer palette".to_owned()),
+            });
+
+        let output = drawn(references(&project, true), 60, 4);
+
+        assert!(output.contains("inspiration"), "{output}");
+        assert!(output.contains("mood.png"), "{output}");
+        assert!(output.contains("warmer palette"), "{output}");
+    }
+
+    #[test]
+    fn a_reference_to_a_missing_file_says_so() {
+        let mut project = fixtures::project();
+        project
+            .metadata_mut()
+            .references
+            .push(crate::project::Reference::new(
+                "does-not-exist.png",
+                crate::project::ReferenceKind::Source,
+            ));
+
+        let output = drawn(references(&project, true), 60, 4);
+
+        assert!(output.contains("missing"), "{output}");
+    }
+
+    #[test]
+    fn an_empty_references_pane_says_how_to_attach_one() {
+        let project = fixtures::project();
+        assert!(project.metadata().references.is_empty());
+
+        let output = drawn(references(&project, true), 60, 4);
+
+        assert!(output.contains("nothing attached"), "{output}");
     }
 
     #[test]

@@ -19,26 +19,32 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
 
 use crate::acp::ModelChoice;
-use crate::project::{Background, Format, Hsl, Project, RenderSpec, Rgba, Variant};
+use crate::project::{
+    Background, Format, Hsl, Project, Reference, ReferenceKind, RenderSpec, Rgba, Variant,
+};
 
 /// What is covering the workspace.
 ///
-/// Three variants, for the same reason: a render specification has six
-/// fields, a variant has two, and a colour has three sliders — none of them
-/// fit a list row. A *full* palette editor — adding, removing and renaming
-/// colours — was considered once and rejected for exactly that pane-row
-/// reason, and still is: the palette stays a pane, edited in place, for name
-/// and role. What earns a colour a modal is narrower — the value of the row
-/// already selected, with room to turn hue, saturation and lightness
-/// independently. Variants and render specifications earn one for the
-/// opposite reason: adding, removing and reordering them needs a table, the
-/// same table the tabs above the preview already read from.
+/// Five variants, for the same reason: a render specification has six
+/// fields, a variant has two, a reference has three, and a colour has three
+/// sliders — none of them fit a list row. A *full* palette editor — adding,
+/// removing and renaming colours — was considered once and rejected for
+/// exactly that pane-row reason, and still is: the palette stays a pane,
+/// edited in place, for name and role. What earns a colour a modal is
+/// narrower — the value of the row already selected, with room to turn hue,
+/// saturation and lightness independently. Variants, render specifications
+/// and references earn one for the opposite reason: adding, removing and
+/// reordering them needs a table — the same table the tabs above the preview
+/// already read from, for the first two, and the references pane's list for
+/// the third.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Modal {
     /// The variants editor.
     Variants(VariantsEditor),
     /// The render specifications editor.
     Renders(RendersEditor),
+    /// The references editor.
+    References(ReferencesEditor),
     /// The colour picker.
     ColourPicker(ColourPicker),
     /// The model picker.
@@ -588,6 +594,258 @@ impl VariantsEditor {
             return mutated;
         };
         project.metadata_mut().variants.swap(self.row, target);
+        self.row = target;
+        self.load(project);
+        true
+    }
+}
+
+/// One column of the references table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceField {
+    /// Where the file lives, relative to the project or absolute.
+    Src,
+    /// Why it is attached.
+    Kind,
+    /// What it is, in the project author's words.
+    Note,
+}
+
+impl ReferenceField {
+    /// Every column, left to right.
+    const ALL: [Self; 3] = [Self::Src, Self::Kind, Self::Note];
+
+    /// The column's heading.
+    const fn title(self) -> &'static str {
+        match self {
+            Self::Src => "src",
+            Self::Kind => "kind",
+            Self::Note => "note",
+        }
+    }
+
+    /// How wide it is drawn, in characters.
+    const fn width(self) -> u16 {
+        match self {
+            Self::Src => 28,
+            Self::Kind => 12,
+            Self::Note => 24,
+        }
+    }
+
+    /// Its position, for moving between columns.
+    fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|candidate| *candidate == self)
+            .unwrap_or_default()
+    }
+
+    /// The next column round.
+    fn next(self) -> Self {
+        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+    }
+
+    /// The previous column round.
+    fn previous(self) -> Self {
+        Self::ALL[(self.index() + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+
+    /// What a reference currently says for this column.
+    fn read(self, reference: &Reference) -> String {
+        match self {
+            Self::Src => reference.src.display().to_string(),
+            Self::Kind => reference.kind.to_string(),
+            Self::Note => reference.note.clone().unwrap_or_default(),
+        }
+    }
+
+    /// Write `text` back, reporting whether it said anything usable.
+    ///
+    /// `kind` never refuses a keystroke — [`ReferenceKind::from`] falls back
+    /// to `Other` for anything it does not recognise, the same open set
+    /// `set_reference` already gives an agent — so it is committed on every
+    /// keystroke exactly as `note` is. `src` refuses only an empty string: a
+    /// reference to nothing is not a reference.
+    fn write(self, reference: &mut Reference, text: &str) -> bool {
+        let text = text.trim();
+        match self {
+            Self::Src if !text.is_empty() => reference.src = std::path::PathBuf::from(text),
+            Self::Src => return false,
+            Self::Kind => reference.kind = ReferenceKind::from(text),
+            Self::Note => reference.note = (!text.is_empty()).then(|| text.to_owned()),
+        }
+        true
+    }
+}
+
+/// The references editor.
+///
+/// The same shape as [`RendersEditor`] and [`VariantsEditor`], for the same
+/// reason: attaching, retyping and removing a reference needs a table, and
+/// the references pane — unlike the palette — has no in-place edit mode to
+/// fall back to (see [`crate::tui::app::App::engage_editor`]), so this is the
+/// only way to change one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReferencesEditor {
+    row: usize,
+    field: ReferenceField,
+    /// What has been typed into the current cell.
+    buffer: String,
+    closed: bool,
+}
+
+impl ReferencesEditor {
+    /// Open the editor on a row.
+    #[must_use]
+    pub fn new(row: usize, project: &Project) -> Self {
+        let mut editor = Self {
+            row,
+            field: ReferenceField::Src,
+            buffer: String::new(),
+            closed: false,
+        };
+        editor.load(project);
+        editor
+    }
+
+    /// Which row is being edited.
+    #[must_use]
+    pub const fn row(&self) -> usize {
+        self.row
+    }
+
+    /// Whether the editor has been asked to close.
+    #[must_use]
+    pub const fn closed(&self) -> bool {
+        self.closed
+    }
+
+    /// Fill the buffer from the cell now selected.
+    fn load(&mut self, project: &Project) {
+        self.buffer = project
+            .metadata()
+            .references
+            .get(self.row)
+            .map(|reference| self.field.read(reference))
+            .unwrap_or_default();
+    }
+
+    /// Write the buffer back, reporting whether the project changed.
+    fn commit(&self, project: &mut Project) -> bool {
+        let buffer = self.buffer.clone();
+        let Some(reference) = project.metadata_mut().references.get_mut(self.row) else {
+            return false;
+        };
+        let before = reference.clone();
+        self.field.write(reference, &buffer);
+        *reference != before
+    }
+
+    /// Apply a keypress, reporting whether the project changed.
+    ///
+    /// The key map is [`RendersEditor::key`]'s exactly: the arrows commit
+    /// before moving, `ctrl-n`/`ctrl-d` add and remove a row, and
+    /// `ctrl+↑`/`ctrl+↓` move one.
+    pub fn key(&mut self, key: KeyEvent, project: &mut Project) -> bool {
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+
+        match key.code {
+            KeyCode::Esc => {
+                let mutated = self.commit(project);
+                self.closed = true;
+                return mutated;
+            }
+            KeyCode::Char('n') if control => {
+                self.commit(project);
+                self.add(project);
+                return true;
+            }
+            KeyCode::Char('d') if control => return self.remove(project),
+            KeyCode::Up if control => return self.move_row(-1, project),
+            KeyCode::Down if control => return self.move_row(1, project),
+            KeyCode::Up => {
+                let mutated = self.commit(project);
+                self.row = self.row.saturating_sub(1);
+                self.load(project);
+                return mutated;
+            }
+            KeyCode::Down => {
+                let mutated = self.commit(project);
+                let last = project.metadata().references.len().saturating_sub(1);
+                self.row = self.row.saturating_add(1).min(last);
+                self.load(project);
+                return mutated;
+            }
+            KeyCode::Left | KeyCode::BackTab => {
+                let mutated = self.commit(project);
+                self.field = self.field.previous();
+                self.load(project);
+                return mutated;
+            }
+            KeyCode::Right | KeyCode::Tab | KeyCode::Enter => {
+                let mutated = self.commit(project);
+                self.field = self.field.next();
+                self.load(project);
+                return mutated;
+            }
+            KeyCode::Backspace => {
+                self.buffer.pop();
+            }
+            KeyCode::Char(character) => self.buffer.push(character),
+            _ => return false,
+        }
+
+        self.commit(project)
+    }
+
+    /// Add a reference below the one selected.
+    ///
+    /// Defaults to `inspiration` with an empty `src` — the same default
+    /// `set_reference` gives an agent attaching a new file
+    /// (`tools::builtin::SetReference`) — and selects [`ReferenceField::Src`]
+    /// so typing the path is the very next keystroke, same as
+    /// [`RendersEditor::add`] selecting its `name` column.
+    fn add(&mut self, project: &mut Project) {
+        let references = &mut project.metadata_mut().references;
+        let at = (self.row + 1).min(references.len());
+        references.insert(
+            at,
+            Reference::new(std::path::PathBuf::new(), ReferenceKind::Inspiration),
+        );
+
+        self.row = at;
+        self.field = ReferenceField::Src;
+        self.load(project);
+    }
+
+    /// Remove the selected reference.
+    fn remove(&mut self, project: &mut Project) -> bool {
+        let references = &mut project.metadata_mut().references;
+        if self.row >= references.len() {
+            return false;
+        }
+        references.remove(self.row);
+        self.row = self.row.min(references.len().saturating_sub(1));
+        self.load(project);
+        true
+    }
+
+    /// Commit the cell, then swap the selected row with its neighbour.
+    ///
+    /// See [`RendersEditor::move_row`] — the same rule, the same reason.
+    fn move_row(&mut self, delta: isize, project: &mut Project) -> bool {
+        let mutated = self.commit(project);
+        let len = project.metadata().references.len();
+        let target = if delta.is_negative() {
+            self.row.checked_sub(1)
+        } else {
+            (self.row + 1 < len).then_some(self.row + 1)
+        };
+        let Some(target) = target else {
+            return mutated;
+        };
+        project.metadata_mut().references.swap(self.row, target);
         self.row = target;
         self.load(project);
         true
@@ -1499,6 +1757,102 @@ pub fn draw_variants(
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// Draw the references editor over the workspace.
+pub fn draw_references(
+    frame: &mut Frame<'_>,
+    editor: &ReferencesEditor,
+    project: &Project,
+    area: Rect,
+) {
+    let references = &project.metadata().references;
+    let width: u16 = ReferenceField::ALL
+        .iter()
+        .map(|field| field.width() + 1)
+        .sum();
+    // Heading, a row each, and the two borders — plus one for the key hints,
+    // which are the only place `ctrl-n` is discoverable.
+    let height = u16::try_from(references.len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(5);
+    let area = centred(area, width + 4, height);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::LightYellow))
+        .title(Span::styled(
+            " references ",
+            Style::default()
+                .fg(Color::LightYellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    // Everything underneath is cleared: a modal drawn over live cells reads as
+    // corruption rather than as a dialogue.
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
+
+    let mut lines = vec![Line::from(
+        ReferenceField::ALL
+            .iter()
+            .map(|field| {
+                Span::styled(
+                    pad(field.title(), field.width()),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD),
+                )
+            })
+            .collect::<Vec<_>>(),
+    )];
+
+    for (row, reference) in references.iter().enumerate() {
+        let spans = ReferenceField::ALL
+            .iter()
+            .map(|field| {
+                let here = row == editor.row && *field == editor.field;
+                // The buffer, not the reference, in the cell being typed into
+                // — otherwise the keystrokes would be invisible until they
+                // happened to parse.
+                let text = if here {
+                    editor.buffer.clone()
+                } else {
+                    field.read(reference)
+                };
+                Span::styled(
+                    pad(&text, field.width()),
+                    if here {
+                        Style::default().fg(Color::Black).bg(Color::LightYellow)
+                    } else if row == editor.row {
+                        Style::default().fg(Color::White)
+                    } else {
+                        Style::default().fg(Color::Gray)
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        lines.push(Line::from(spans));
+    }
+
+    if references.is_empty() {
+        lines.push(Line::styled(
+            "nothing attached — ctrl-n adds one",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        "↑↓ row   ←→ field   ctrl-n add   ctrl-d remove   ctrl+↑↓ move   esc close",
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 /// `text` in a cell of `width`, padded or cut to fit.
 fn pad(text: &str, width: u16) -> String {
     let width = usize::from(width);
@@ -1787,6 +2141,184 @@ mod tests {
         let mut editor = VariantsEditor::new(0, &project);
 
         press_variant(&mut editor, &mut project, KeyCode::Esc);
+        assert!(editor.closed());
+    }
+
+    /// A fixture project with two references already attached, since
+    /// [`fixtures::project`] has none.
+    fn project_with_references() -> Project {
+        let mut project = fixtures::project();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+        project.metadata_mut().references.push(Reference {
+            src: "mood.png".into(),
+            kind: ReferenceKind::Inspiration,
+            note: Some("warmer palette".to_owned()),
+        });
+        project
+    }
+
+    fn press_reference(
+        editor: &mut ReferencesEditor,
+        project: &mut Project,
+        code: KeyCode,
+    ) -> bool {
+        editor.key(KeyEvent::new(code, KeyModifiers::NONE), project)
+    }
+
+    fn chord_reference(
+        editor: &mut ReferencesEditor,
+        project: &mut Project,
+        code: KeyCode,
+    ) -> bool {
+        editor.key(KeyEvent::new(code, KeyModifiers::CONTROL), project)
+    }
+
+    fn type_text_reference(editor: &mut ReferencesEditor, project: &mut Project, text: &str) {
+        for character in text.chars() {
+            press_reference(editor, project, KeyCode::Char(character));
+        }
+    }
+
+    #[test]
+    fn retyping_a_references_src_changes_it() {
+        let mut project = project_with_references();
+        let mut editor = ReferencesEditor::new(0, &project);
+
+        for _ in 0..editor.buffer.len() {
+            press_reference(&mut editor, &mut project, KeyCode::Backspace);
+        }
+        type_text_reference(&mut editor, &mut project, "traced.png");
+
+        assert_eq!(
+            project.metadata().references[0].src,
+            std::path::PathBuf::from("traced.png")
+        );
+    }
+
+    #[test]
+    fn an_emptied_src_is_not_committed_as_empty() {
+        // The same rule as an emptied variant name (see
+        // `an_emptied_variant_name_is_not_committed_as_empty`): the cell
+        // commits as it is typed, so "mockup.png" backspaced down to "m"
+        // really is a `src` of "m" — that is the point of editing in place.
+        // What must not happen is the very last backspace, to nothing at
+        // all, reaching the project: a reference to nothing is not a
+        // reference.
+        let mut project = project_with_references();
+        let mut editor = ReferencesEditor::new(0, &project);
+
+        for _ in 0..editor.buffer.len() {
+            press_reference(&mut editor, &mut project, KeyCode::Backspace);
+        }
+
+        assert_eq!(
+            project.metadata().references[0].src,
+            std::path::PathBuf::from("m")
+        );
+    }
+
+    #[test]
+    fn retyping_the_kind_column_changes_it() {
+        let mut project = project_with_references();
+        let mut editor = ReferencesEditor::new(0, &project);
+        press_reference(&mut editor, &mut project, KeyCode::Right); // to `kind`
+        for _ in 0..editor.buffer.len() {
+            press_reference(&mut editor, &mut project, KeyCode::Backspace);
+        }
+
+        type_text_reference(&mut editor, &mut project, "baseline");
+
+        assert_eq!(
+            project.metadata().references[0].kind,
+            ReferenceKind::Baseline
+        );
+    }
+
+    #[test]
+    fn retyping_the_note_column_changes_it() {
+        let mut project = project_with_references();
+        let mut editor = ReferencesEditor::new(0, &project);
+        press_reference(&mut editor, &mut project, KeyCode::Right); // to `kind`
+        press_reference(&mut editor, &mut project, KeyCode::Right); // to `note`
+
+        type_text_reference(&mut editor, &mut project, "the thing to trace");
+
+        assert_eq!(
+            project.metadata().references[0].note.as_deref(),
+            Some("the thing to trace")
+        );
+    }
+
+    #[test]
+    fn a_reference_can_be_added_and_removed() {
+        let mut project = project_with_references();
+        let before = project.metadata().references.len();
+        let mut editor = ReferencesEditor::new(0, &project);
+
+        assert!(chord_reference(
+            &mut editor,
+            &mut project,
+            KeyCode::Char('n')
+        ));
+        assert_eq!(project.metadata().references.len(), before + 1);
+        // Added below the selection and selected, so its path can be typed at
+        // once.
+        assert_eq!(editor.row(), 1);
+        assert_eq!(
+            project.metadata().references[1].kind,
+            ReferenceKind::Inspiration
+        );
+
+        assert!(chord_reference(
+            &mut editor,
+            &mut project,
+            KeyCode::Char('d')
+        ));
+        assert_eq!(project.metadata().references.len(), before);
+    }
+
+    #[test]
+    fn a_reference_can_be_moved_up_and_down() {
+        let mut project = project_with_references();
+        let mut editor = ReferencesEditor::new(0, &project);
+        let first = project.metadata().references[0].src.clone();
+        let second = project.metadata().references[1].src.clone();
+
+        assert!(chord_reference(&mut editor, &mut project, KeyCode::Down));
+        assert_eq!(editor.row(), 1);
+        assert_eq!(project.metadata().references[0].src, second);
+        assert_eq!(project.metadata().references[1].src, first);
+
+        assert!(chord_reference(&mut editor, &mut project, KeyCode::Up));
+        assert_eq!(editor.row(), 0);
+        assert_eq!(project.metadata().references[0].src, first);
+        assert_eq!(project.metadata().references[1].src, second);
+    }
+
+    #[test]
+    fn removing_the_last_reference_leaves_the_cursor_somewhere_real() {
+        // An index past the end panics on draw, which takes the terminal
+        // down with it.
+        let mut project = project_with_references();
+        let mut editor = ReferencesEditor::new(0, &project);
+
+        while !project.metadata().references.is_empty() {
+            chord_reference(&mut editor, &mut project, KeyCode::Char('d'));
+        }
+
+        assert_eq!(editor.row(), 0);
+        assert!(!editor.closed());
+    }
+
+    #[test]
+    fn escape_closes_the_references_editor() {
+        let mut project = project_with_references();
+        let mut editor = ReferencesEditor::new(0, &project);
+
+        press_reference(&mut editor, &mut project, KeyCode::Esc);
         assert!(editor.closed());
     }
 
