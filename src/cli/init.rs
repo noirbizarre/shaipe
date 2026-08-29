@@ -4,11 +4,51 @@
 //! the primary variant, ready to open in the workspace or hand to an agent.
 
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use shaipe::project::{Reference, ReferenceKind};
 use shaipe::{Error, Project, Result};
 
 use crate::cli::InitArgs;
+
+/// `path`, as it should be recorded in a reference: relative to `base` rather
+/// than to wherever the command happened to run.
+///
+/// A reference is resolved against the project's own directory (see
+/// [`shaipe::project::Project::resolve`]), not the shell's working
+/// directory — so `shaipe init subdir/logo.svg --source mockup.png`, with
+/// `mockup.png` sitting beside the shell rather than beside `subdir/`, must
+/// not store `mockup.png` verbatim: an agent resolving it later would look
+/// for `subdir/mockup.png`, which is not the file that was given.
+///
+/// Neither path has to exist for this to make sense — [`std::path::absolute`]
+/// only joins onto the current directory and normalises `.`/`..`
+/// lexically, it never touches the filesystem — which matters for `base`:
+/// the project file itself is not written yet when this runs.
+fn relative_to(base: &Path, target: &Path) -> Result<PathBuf> {
+    let absolute = |path: &Path| std::path::absolute(path).map_err(|error| Error::io(path, error));
+    let base = absolute(base)?;
+    let target = absolute(target)?;
+
+    let mut base_components = base.components().peekable();
+    let mut target_components = target.components().peekable();
+
+    // The shared prefix — typically the whole of `base` — is neither `..`
+    // nor repeated, so what is left of each side is exactly the detour
+    // between them.
+    while base_components.peek().is_some() && base_components.peek() == target_components.peek() {
+        base_components.next();
+        target_components.next();
+    }
+
+    let mut relative = PathBuf::new();
+    for _ in base_components {
+        relative.push("..");
+    }
+    relative.extend(target_components);
+
+    Ok(relative)
+}
 
 /// Run `shaipe init`.
 ///
@@ -36,26 +76,30 @@ pub fn run(args: &InitArgs, out: &mut dyn Write) -> Result<()> {
     }
 
     let mut project = Project::init(&args.path)?;
+    let base = project.base_directory();
     if let Some(prompt) = &args.prompt {
         project.metadata_mut().prompt = Some(prompt.clone());
     }
     if let Some(source) = &args.source {
         // `ReferenceKind::Source`: "the thing being reproduced, traced or
-        // vectorised" — exactly what `--source` means. Stored verbatim, the
-        // same as `set_reference` stores whatever `src` it is given.
+        // vectorised" — exactly what `--source` means. Re-expressed relative
+        // to the project rather than stored verbatim, so it still resolves
+        // once the shell's own working directory is gone.
+        let src = relative_to(&base, source)?;
         project
             .metadata_mut()
             .references
-            .push(Reference::new(source.clone(), ReferenceKind::Source));
+            .push(Reference::new(src, ReferenceKind::Source));
     }
     for inspiration in &args.inspiration {
         // `ReferenceKind::Inspiration`: "cues, not to copy" — a mood board
         // rather than something to trace. Each `--inspiration` becomes its
         // own reference, in the order given.
-        project.metadata_mut().references.push(Reference::new(
-            inspiration.clone(),
-            ReferenceKind::Inspiration,
-        ));
+        let src = relative_to(&base, inspiration)?;
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new(src, ReferenceKind::Inspiration));
     }
     project.save()?;
 
@@ -75,6 +119,57 @@ mod tests {
             source: None,
             inspiration: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_file_beside_the_base_is_relative_to_it_by_name_alone() {
+        let directory = tempfile::tempdir().unwrap();
+        let base = directory.path();
+        let target = base.join("mockup.png");
+
+        assert_eq!(
+            relative_to(base, &target).unwrap(),
+            std::path::Path::new("mockup.png")
+        );
+    }
+
+    #[test]
+    fn a_file_outside_the_base_gets_one_detour_per_directory_between_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let base = directory.path().join("a").join("b");
+        let target = directory.path().join("mockup.png");
+
+        assert_eq!(
+            relative_to(&base, &target).unwrap(),
+            std::path::Path::new("../../mockup.png")
+        );
+    }
+
+    #[test]
+    fn a_file_in_a_sibling_directory_climbs_out_and_back_in() {
+        let directory = tempfile::tempdir().unwrap();
+        let base = directory.path().join("a");
+        let target = directory.path().join("b").join("mockup.png");
+
+        assert_eq!(
+            relative_to(&base, &target).unwrap(),
+            std::path::Path::new("../b/mockup.png")
+        );
+    }
+
+    #[test]
+    fn a_relative_base_and_target_are_both_resolved_against_the_current_directory() {
+        // Neither path has to be absolute, or to exist, for the detour
+        // between them to make sense — only `std::env::current_dir` has to
+        // succeed, which it does in a test process.
+        assert_eq!(
+            relative_to(
+                std::path::Path::new("."),
+                std::path::Path::new("mockup.png")
+            )
+            .unwrap(),
+            std::path::Path::new("mockup.png")
+        );
     }
 
     #[test]
@@ -146,8 +241,40 @@ mod tests {
 
         let project = Project::open(&path).unwrap();
         let reference = &project.metadata().references[0];
-        assert_eq!(reference.src, mockup);
+        // Relative to the project, not the absolute path it was given as —
+        // both live in the same directory here, so that is just the name.
+        assert_eq!(reference.src, std::path::Path::new("mockup.png"));
         assert_eq!(reference.kind, ReferenceKind::Source);
+        assert_eq!(project.resolve(&reference.src), mockup);
+    }
+
+    #[test]
+    fn a_source_image_outside_the_projects_directory_is_recorded_with_a_detour() {
+        // The bug this guards: a project created in a subdirectory, sourced
+        // from a file that lives beside the shell rather than beside it.
+        // Storing the given path verbatim would have an agent resolving it
+        // against the wrong directory the moment the shell is gone.
+        let directory = tempfile::tempdir().unwrap();
+        let subdirectory = directory.path().join("project");
+        std::fs::create_dir(&subdirectory).unwrap();
+        let path = subdirectory.join("logo.svg");
+        let mockup = directory.path().join("mockup.png");
+        std::fs::write(&mockup, b"not a real png").unwrap();
+
+        let mut sourced = args(&path);
+        sourced.source = Some(mockup.clone());
+        run(&sourced, &mut Vec::new()).unwrap();
+
+        let project = Project::open(&path).unwrap();
+        let reference = &project.metadata().references[0];
+        assert_eq!(reference.src, std::path::Path::new("../mockup.png"));
+        // `resolve` joins the literal `..` rather than collapsing it, so the
+        // two are only the same file once the filesystem is asked, not as
+        // equal `PathBuf`s.
+        assert_eq!(
+            std::fs::canonicalize(project.resolve(&reference.src)).unwrap(),
+            std::fs::canonicalize(&mockup).unwrap()
+        );
     }
 
     #[test]
@@ -180,7 +307,10 @@ mod tests {
             project.metadata().prompt.as_deref(),
             Some("keep the mark, drop the wordmark")
         );
-        assert_eq!(project.metadata().references[0].src, mockup);
+        assert_eq!(
+            project.metadata().references[0].src,
+            std::path::Path::new("mockup.png")
+        );
     }
 
     #[test]
@@ -199,9 +329,9 @@ mod tests {
         let project = Project::open(&path).unwrap();
         let references = &project.metadata().references;
         assert_eq!(references.len(), 2);
-        assert_eq!(references[0].src, mood_a);
+        assert_eq!(references[0].src, std::path::Path::new("mood-a.png"));
         assert_eq!(references[0].kind, ReferenceKind::Inspiration);
-        assert_eq!(references[1].src, mood_b);
+        assert_eq!(references[1].src, std::path::Path::new("mood-b.png"));
         assert_eq!(references[1].kind, ReferenceKind::Inspiration);
     }
 
@@ -236,9 +366,9 @@ mod tests {
 
         let project = Project::open(&path).unwrap();
         let references = &project.metadata().references;
-        assert_eq!(references[0].src, mockup);
+        assert_eq!(references[0].src, std::path::Path::new("mockup.png"));
         assert_eq!(references[0].kind, ReferenceKind::Source);
-        assert_eq!(references[1].src, mood);
+        assert_eq!(references[1].src, std::path::Path::new("mood.png"));
         assert_eq!(references[1].kind, ReferenceKind::Inspiration);
     }
 }
