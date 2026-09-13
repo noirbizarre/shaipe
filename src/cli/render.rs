@@ -23,6 +23,18 @@ use crate::cli::RenderArgs;
 pub fn run(args: &RenderArgs, out: &mut dyn Write) -> Result<()> {
     let project = Project::open(&args.input)?;
 
+    // Explicit flag, then the project's own declared default, then the
+    // conventional fallback — resolved against the project file's own
+    // directory (not the shell's cwd) the same way every other relative path
+    // in a project already is, so `shaipe render /anywhere/logo.svg` behaves
+    // identically regardless of where it is invoked from.
+    let output = args
+        .output
+        .clone()
+        .or_else(|| project.metadata().render_output.clone())
+        .unwrap_or_else(|| std::path::PathBuf::from("dist"));
+    let output = project.resolve(&output);
+
     let options = RenderOptions {
         fonts: if args.strict_fonts {
             FontPolicy::Strict
@@ -46,13 +58,13 @@ pub fn run(args: &RenderArgs, out: &mut dyn Write) -> Result<()> {
             writeln!(
                 out,
                 "would write {}",
-                args.output.join(asset.file_name()).display()
+                output.join(asset.file_name()).display()
             )
-            .map_err(|source| shaipe::Error::io(&args.output, source))?;
+            .map_err(|source| shaipe::Error::io(&output, source))?;
             continue;
         }
 
-        let path = asset.write_to(&args.output)?;
+        let path = asset.write_to(&output)?;
         writeln!(
             out,
             "{} ({}x{})",
@@ -112,6 +124,8 @@ fn specifications(project: &Project, args: &RenderArgs) -> Result<Vec<RenderSpec
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use clap::Parser;
     use pretty_assertions::assert_eq;
 
@@ -217,9 +231,10 @@ mod tests {
     #[test]
     fn a_dry_run_writes_no_files_but_names_all_of_them() {
         let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("assets");
         let mut args = args(&["--dry-run"]);
         args.input = "tests/fixtures/logo.svg".into();
-        args.output = directory.path().join("assets");
+        args.output = Some(output.clone());
 
         let mut out = Vec::new();
         run(&args, &mut out).unwrap();
@@ -227,20 +242,21 @@ mod tests {
         let printed = String::from_utf8(out).unwrap();
         assert!(printed.contains("favicon-32.png"), "{printed}");
         assert!(printed.contains("banner.png"), "{printed}");
-        assert!(!args.output.exists(), "a dry run must not create anything");
+        assert!(!output.exists(), "a dry run must not create anything");
     }
 
     #[test]
     fn rendering_writes_one_file_per_specification() {
         let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("assets");
         let mut args = args(&[]);
         args.input = "tests/fixtures/logo.svg".into();
-        args.output = directory.path().join("assets");
+        args.output = Some(output.clone());
 
         run(&args, &mut Vec::new()).unwrap();
 
-        assert!(args.output.join("favicon-32.png").is_file());
-        assert!(args.output.join("banner.png").is_file());
+        assert!(output.join("favicon-32.png").is_file());
+        assert!(output.join("banner.png").is_file());
     }
 
     #[test]
@@ -251,9 +267,9 @@ mod tests {
         let mut args = args(&[]);
         args.input = "tests/fixtures/logo.svg".into();
 
-        args.output = directory.path().join("first");
+        args.output = Some(directory.path().join("first"));
         run(&args, &mut Vec::new()).unwrap();
-        args.output = directory.path().join("second");
+        args.output = Some(directory.path().join("second"));
         run(&args, &mut Vec::new()).unwrap();
 
         for name in ["favicon-32.png", "banner.png"] {
@@ -263,5 +279,75 @@ mod tests {
                 "{name} differed between two runs"
             );
         }
+    }
+
+    #[test]
+    fn a_relative_output_resolves_against_the_projects_directory_not_the_cwd() {
+        let directory = tempfile::tempdir().unwrap();
+        let project_dir = directory.path().join("nested/project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let project_path = project_dir.join("logo.svg");
+        std::fs::write(&project_path, FIXTURE).unwrap();
+
+        let mut args = args(&[]);
+        args.input = project_path;
+        args.output = Some(PathBuf::from("assets")); // relative, deliberately
+
+        run(&args, &mut Vec::new()).unwrap();
+
+        // Landed beside the project file, inside the tempdir — not wherever
+        // this test process's own cwd happens to be.
+        assert!(project_dir.join("assets/favicon-32.png").is_file());
+    }
+
+    #[test]
+    fn a_declared_output_is_used_when_output_is_not_passed() {
+        let directory = tempfile::tempdir().unwrap();
+        let project_path = directory.path().join("logo.svg");
+        let source = FIXTURE.replacen(
+            "<shaipe:renders>",
+            "<shaipe:renders output=\"declared-assets\">",
+            1,
+        );
+        std::fs::write(&project_path, source).unwrap();
+
+        let mut args = args(&[]);
+        args.input = project_path;
+        // args.output left unset — the project's own declaration must apply.
+
+        run(&args, &mut Vec::new()).unwrap();
+
+        assert!(
+            directory
+                .path()
+                .join("declared-assets/favicon-32.png")
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn an_explicit_output_overrides_a_declared_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let project_path = directory.path().join("logo.svg");
+        let source = FIXTURE.replacen(
+            "<shaipe:renders>",
+            "<shaipe:renders output=\"declared-assets\">",
+            1,
+        );
+        std::fs::write(&project_path, source).unwrap();
+
+        let mut args = args(&[]);
+        args.input = project_path;
+        args.output = Some(directory.path().join("explicit-assets"));
+
+        run(&args, &mut Vec::new()).unwrap();
+
+        assert!(
+            directory
+                .path()
+                .join("explicit-assets/favicon-32.png")
+                .is_file()
+        );
+        assert!(!directory.path().join("declared-assets").exists());
     }
 }

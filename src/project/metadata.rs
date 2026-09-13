@@ -87,6 +87,13 @@ pub struct Metadata {
     pub references: Vec<Reference>,
     /// Assets the project declares.
     pub renders: Vec<RenderSpec>,
+    /// Where a bare `shaipe render` writes those assets, if the project says.
+    ///
+    /// Relative to the project file, the same as every other path here — see
+    /// [`crate::project::Project::resolve`]. `--output` on the command line
+    /// still overrides it; this is only the fallback for when nothing else
+    /// says where assets belong.
+    pub render_output: Option<PathBuf>,
 }
 
 impl Metadata {
@@ -177,7 +184,10 @@ impl Metadata {
                 "fonts" => metadata.fonts = read_fonts(&child, path)?,
                 "variants" => metadata.variants = read_variants(&child, path)?,
                 "references" => metadata.references = read_references(&child, path)?,
-                "renders" => metadata.renders = read_renders(&child, path)?,
+                "renders" => {
+                    metadata.renders = read_renders(&child, path)?;
+                    metadata.render_output = child.attribute("output").map(PathBuf::from);
+                }
                 // Ignored on purpose. See the module documentation: forwards
                 // compatibility is the reason the schema is versioned at all.
                 _ => {}

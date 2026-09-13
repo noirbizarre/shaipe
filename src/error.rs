@@ -30,6 +30,22 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    /// A path expected to be a project file is a directory instead.
+    #[error("`{}` is a directory, not a project file", path.display())]
+    #[diagnostic(
+        code(shaipe::project::not_a_file),
+        help(
+            "Point this at the project's SVG file itself, e.g. `{}/logo.svg`. \
+             If you meant to set the output directory, that's `--output`, not \
+             the input.",
+            path.display()
+        )
+    )]
+    NotAFile {
+        /// The directory that was given where a file was expected.
+        path: PathBuf,
+    },
+
     /// The file is not well-formed XML, so it is not an SVG either.
     #[error("`{}` is not well-formed XML", path.display())]
     #[diagnostic(

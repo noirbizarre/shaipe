@@ -153,6 +153,18 @@ Or one asset described entirely on the command line:
 shaipe render logo.svg --variant icon --width 64 --output dist
 ```
 
+`--output` is optional. A project can declare its own default —
+`<shaipe:renders output="docs/images">` — so the common case is just
+`shaipe render logo.svg`. Falls back to `dist` if neither the flag nor the
+project says otherwise.
+
+Either way, a relative `--output` (declared or on the command line) resolves
+against the **project file's own directory**, not the shell's current one —
+the same rule every other relative path in a project already follows
+(`<shaipe:font src="...">`, `<shaipe:reference src="...">`). So
+`shaipe render /elsewhere/logo.svg` writes next to `/elsewhere/logo.svg`
+regardless of where it was invoked from.
+
 No network, no model, no clock, no environment. The same project bytes produce
 the same output bytes on any machine, which is what makes this a CI step:
 

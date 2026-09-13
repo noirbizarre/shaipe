@@ -346,7 +346,15 @@ fn serialise(metadata: &Metadata, indent: &str, declare_namespace: bool) -> Stri
     }
 
     if !metadata.renders.is_empty() {
-        let _ = write!(out, "\n{l1}<shaipe:renders>");
+        let _ = write!(out, "\n{l1}<shaipe:renders");
+        if let Some(output) = &metadata.render_output {
+            let _ = write!(
+                out,
+                r#" output="{}""#,
+                escape(&output.display().to_string())
+            );
+        }
+        out.push('>');
         for spec in &metadata.renders {
             let _ = write!(
                 out,
@@ -379,9 +387,19 @@ fn serialise(metadata: &Metadata, indent: &str, declare_namespace: bool) -> Stri
 ///
 /// # Errors
 ///
-/// Returns [`Error::Io`] carrying the path.
+/// Returns [`Error::NotAFile`] if `path` is a directory — a directory is not
+/// a project file, and the OS's own message for that ("Is a directory") does
+/// not say so — and [`Error::Io`] for every other failure to read it.
 pub fn read(path: &Path) -> Result<String> {
-    std::fs::read_to_string(path).map_err(|source| Error::io(path, source))
+    std::fs::read_to_string(path).map_err(|source| {
+        if source.kind() == std::io::ErrorKind::IsADirectory {
+            Error::NotAFile {
+                path: path.to_path_buf(),
+            }
+        } else {
+            Error::io(path, source)
+        }
+    })
 }
 
 /// Write a file, naming it if that fails.
@@ -433,6 +451,13 @@ mod tests {
     fn a_document_whose_root_is_not_svg_is_rejected() {
         let error = parse("<html><body/></html>", Path::new("x.html")).unwrap_err();
         assert!(matches!(error, Error::NotSvg { .. }));
+    }
+
+    #[test]
+    fn reading_a_directory_says_so_rather_than_the_oss_raw_message() {
+        let directory = tempfile::tempdir().unwrap();
+        let error = read(directory.path()).unwrap_err();
+        assert!(matches!(error, Error::NotAFile { .. }), "{error:?}");
     }
 
     #[test]

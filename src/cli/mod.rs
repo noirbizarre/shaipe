@@ -147,9 +147,12 @@ pub struct RenderArgs {
     #[arg(default_value = DEFAULT_PROJECT)]
     pub input: PathBuf,
 
-    /// Where to write the assets. Created if it does not exist.
-    #[arg(short, long, default_value = "dist")]
-    pub output: PathBuf,
+    /// Where to write the assets, resolved against the project file's own
+    /// directory (not the shell's current directory) unless absolute.
+    /// Defaults to the project's own `<shaipe:renders output="...">` if it
+    /// declares one, or `dist` otherwise. Created if it does not exist.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
 
     /// Render only this declared specification. Repeatable.
     #[arg(short, long, conflicts_with_all = ["variant", "width", "height", "format", "background"])]
@@ -302,12 +305,15 @@ mod tests {
     }
 
     #[test]
-    fn render_defaults_to_the_conventional_project_and_output_directory() {
+    fn render_defaults_to_the_conventional_project_and_leaves_output_unset() {
         let Some(Command::Render(args)) = Cli::parse_from(["shaipe", "render"]).command else {
             panic!("expected a render command");
         };
         assert_eq!(args.input, PathBuf::from("logo.svg"));
-        assert_eq!(args.output, PathBuf::from("dist"));
+        // Not defaulted here: "dist" only applies once a project has been
+        // opened and declared no `<shaipe:renders output="...">` of its own —
+        // see `cli::render::run`.
+        assert_eq!(args.output, None);
         assert!(args.spec.is_empty());
         assert!(args.variant.is_none());
     }
