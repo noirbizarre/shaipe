@@ -10,17 +10,23 @@ source of truth**: a single file that carries the artwork *and*, in its
 `<metadata>`, the prompt, palette, fonts, variants and render specifications
 that describe it. Rendering is local, deterministic and completely independent
 of any model, so the same project opens in the TUI or regenerates a
-repository's assets in CI with no network access at all. Shaipe does not host a
-model and never will — it gives an agent that already exists the ability to
-*see* an SVG. If you are about to add a provider, an API key or a `generate`
-command that calls one, read `docs/adr/004-tools-not-a-model.md` first.
+repository's assets in CI with no network access needed beyond a warm font
+cache (see below). Shaipe does not host a model and never will — it gives an
+agent that already exists the ability to *see* an SVG. If you are about to
+add a provider, an API key or a `generate` command that calls one, read
+`docs/adr/004-tools-not-a-model.md` first.
 
 ## Non-negotiable invariants
 
 1. **Rendering is deterministic.** Same project bytes, same specification, same
-   output bytes, on any machine. No clock, no network, no environment, no
-   system fonts unless the document asked for a family the project failed to
-   supply — enforced by `rendering_the_same_project_twice_produces_identical_bytes`
+   output bytes, on any machine. No clock, no environment, no system fonts
+   unless the document asked for a family the project failed to supply, and
+   no network *reads* — the one narrow exception is a font declared by a
+   checksum-pinned URL (`docs/adr/015-checksum-pinned-remote-fonts.md`),
+   fetched once into a local cache and never touched again on a match; a
+   render itself still never makes the request, `crate::fonts` does, before
+   `src/render/` ever sees the bytes — enforced by
+   `rendering_the_same_project_twice_produces_identical_bytes`
    in `src/render/mod.rs`, and end to end by `.github/workflows/assets.yaml`,
    which re-renders `logo.svg` and fails if `docs/images` changed.
 

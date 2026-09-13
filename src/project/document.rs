@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use roxmltree::{Document, Node};
 
 use crate::error::{Error, Result};
+use crate::project::font::FontSource;
 use crate::project::metadata::{Metadata, NAMESPACE, SCHEMA_VERSION};
 use crate::project::palette::Rgba;
 use crate::project::spec::{Background, Format};
@@ -298,11 +299,24 @@ fn serialise(metadata: &Metadata, indent: &str, declare_namespace: bool) -> Stri
         for font in &metadata.fonts {
             let _ = write!(
                 out,
-                r#"{}<shaipe:font family="{}" src="{}"/>"#,
+                "{}<shaipe:font family=\"{}\"",
                 format_args!("\n{l2}"),
-                escape(&font.family),
-                escape(&font.src.display().to_string())
+                escape(&font.family)
             );
+            match &font.source {
+                FontSource::Local(src) => {
+                    let _ = write!(out, r#" src="{}""#, escape(&src.display().to_string()));
+                }
+                FontSource::Remote { href, sha256 } => {
+                    let _ = write!(
+                        out,
+                        r#" href="{}" sha256="{}""#,
+                        escape(href),
+                        escape(sha256)
+                    );
+                }
+            }
+            out.push_str("/>");
         }
         let _ = write!(out, "\n{l1}</shaipe:fonts>");
     }
@@ -495,6 +509,21 @@ mod tests {
 
         let updated = replace_metadata(MINIMAL, &original, Path::new("test.svg")).unwrap();
         assert_eq!(parse_metadata(&updated), original);
+    }
+
+    #[test]
+    fn a_remote_fonts_href_and_sha256_survive_a_write_then_read_round_trip() {
+        let mut original = parse_metadata(MINIMAL);
+        original.fonts.push(crate::project::font::Font::remote(
+            "Inter",
+            "https://example.com/Inter-Bold.ttf",
+            "abc123",
+        ));
+
+        let updated = replace_metadata(MINIMAL, &original, Path::new("test.svg")).unwrap();
+        assert_eq!(parse_metadata(&updated), original);
+        assert!(updated.contains(r#"href="https://example.com/Inter-Bold.ttf""#));
+        assert!(updated.contains(r#"sha256="abc123""#));
     }
 
     #[test]

@@ -5,10 +5,14 @@
 //! ```
 //!
 //! Nothing in this module knows that an LLM exists, and nothing in it reads
-//! the network, the clock or the environment. Given the same project bytes and
-//! the same specification it produces the same bytes, on any machine — which
-//! is the property that lets `shaipe render` be a CI check rather than a
-//! convenience.
+//! the clock or the environment — and it never reaches the network itself:
+//! a font declared by URL (ADR 015) is resolved, checksum-verified and
+//! cached by [`crate::fonts`] before its bytes ever arrive here, the one
+//! narrow, opt-in exception to "no network" that exists anywhere in Shaipe.
+//! Given the same project bytes, the same specification and the same
+//! already-resolved font bytes, this produces the same output bytes, on any
+//! machine — which is the property that lets `shaipe render` be a CI check
+//! rather than a convenience.
 //!
 //! It also knows nothing about the terminal: a render is bytes, and displaying
 //! them is [`crate::preview`]'s problem.

@@ -69,13 +69,36 @@ pub struct ColourReport {
 pub struct FontReport {
     /// The family it provides.
     pub family: String,
-    /// Where the project says it is, verbatim.
-    pub src: PathBuf,
-    /// Where that resolves to, and whether anything is there. An agent asked
-    /// to fix a font problem needs both.
-    pub resolved: PathBuf,
-    /// Whether the file exists.
-    pub present: bool,
+    /// Where its bytes actually come from.
+    pub source: FontSourceReport,
+}
+
+/// Where one font's bytes come from, and whether they are actually there
+/// right now — an agent asked to fix a font problem needs both, whichever
+/// kind of source it is.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum FontSourceReport {
+    /// A file committed alongside the project.
+    Local {
+        /// Where the project says it is, verbatim.
+        src: PathBuf,
+        /// Where that resolves to.
+        resolved: PathBuf,
+        /// Whether the file exists.
+        present: bool,
+    },
+    /// A checksum-pinned URL, fetched once and cached.
+    Remote {
+        /// Where to fetch it from.
+        href: String,
+        /// The pinned checksum.
+        sha256: String,
+        /// Where a fetch would cache it — or already has.
+        cache_path: PathBuf,
+        /// Whether that cache entry exists yet.
+        cached: bool,
+    },
 }
 
 /// One renderable part of the document.
@@ -150,14 +173,27 @@ impl Report {
             fonts: metadata
                 .fonts
                 .iter()
-                .map(|font| {
-                    let resolved = project.resolve(&font.src);
-                    FontReport {
-                        family: font.family.clone(),
-                        src: font.src.clone(),
-                        present: resolved.is_file(),
-                        resolved,
-                    }
+                .map(|font| FontReport {
+                    family: font.family.clone(),
+                    source: match &font.source {
+                        crate::project::font::FontSource::Local(src) => {
+                            let resolved = project.resolve(src);
+                            FontSourceReport::Local {
+                                src: src.clone(),
+                                present: resolved.is_file(),
+                                resolved,
+                            }
+                        }
+                        crate::project::font::FontSource::Remote { href, sha256 } => {
+                            let cache_path = crate::fonts::remote_cache_path(sha256);
+                            FontSourceReport::Remote {
+                                href: href.clone(),
+                                sha256: sha256.clone(),
+                                cached: cache_path.is_file(),
+                                cache_path,
+                            }
+                        }
+                    },
                 })
                 .collect(),
             variants: metadata

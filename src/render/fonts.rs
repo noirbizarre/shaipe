@@ -9,6 +9,12 @@
 //! document is asked which families it wants, the project's declared font
 //! files are loaded, and only if something is still missing does the system
 //! get consulted — loudly, and not at all under [`FontPolicy::Strict`].
+//!
+//! A declared font's bytes are acquired by [`crate::fonts::resolve`], never
+//! read directly here — a local file or a checksum-verified, cached fetch
+//! are the same one call from this module's point of view, and the one
+//! place that call can reach the network (a font declared by URL, on a
+//! cache miss) is deliberately not this one. See ADR 015.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -105,12 +111,7 @@ pub fn database(
     let mut database = Database::new();
 
     for font in &project.metadata().fonts {
-        let path = project.resolve(&font.src);
-        let data = std::fs::read(&path).map_err(|source| Error::Font {
-            family: font.family.clone(),
-            path: path.clone(),
-            source,
-        })?;
+        let data = crate::fonts::resolve(project, font)?;
         database.load_font_source(Source::Binary(Arc::new(data)));
     }
 

@@ -101,6 +101,22 @@ png = "0.18.1"
 # artwork around it survives untouched and no XML writer is needed.
 roxmltree = "0.21.1"
 
+# A font may be declared by a checksum-pinned URL instead of a committed
+# file (`src/fonts/`, see ADR 015) — the one place in the crate that touches
+# the network at all, deliberately kept out of `src/render/` so its own "no
+# network" claim stays true by construction. Default features already
+# include `rustls` (TLS), which is all a plain HTTPS GET needs; nothing here
+# is fetched without its declared `sha256` matching first.
+ureq = "3.4.2"
+# Verifying that checksum. A cache keyed by anything less than the actual
+# bytes' hash would just be a different way to trust an untrusted download.
+sha2 = "0.11.0"
+# Where the checksum-verified bytes are cached between runs — the OS's own
+# cache convention (`$XDG_CACHE_HOME` on Linux, and its equivalent
+# elsewhere), never inside the project, so a warm cache means a render
+# reads nothing but that directory and never the network again.
+directories = "6.0.0"
+
 # TUI. `ratatui-image` carries the four terminal graphics protocols and the
 # capability query; it is confined to `src/preview/` and named nowhere else.
 # See ADR 006 — and note that it is what sets this crate's MSRV, through

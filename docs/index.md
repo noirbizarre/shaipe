@@ -83,9 +83,11 @@ shaipe render logo.svg --output docs/images
 shaipe render logo.svg --variant icon --width 64 --output dist
 ```
 
-With no flags, every declared specification is produced. Rendering reads no
-network, no clock and no environment, so the same project bytes produce the
-same output bytes anywhere — which is what makes it a CI check:
+With no flags, every declared specification is produced. Rendering itself
+reads no network, no clock and no environment — a font declared by a
+checksum-pinned URL is fetched and cached once by a separate step before a
+render ever runs, never during one — so the same project bytes produce the
+same output bytes anywhere, which is what makes it a CI check:
 
 ```yaml
 - run: shaipe render logo.svg --output docs/images --strict-fonts

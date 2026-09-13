@@ -234,10 +234,34 @@ fn read_fonts(node: &Node<'_, '_>, path: &Path) -> Result<Vec<Font>> {
     node.children()
         .filter(|child| child.has_tag_name((NAMESPACE, "font")))
         .map(|child| {
-            Ok(Font::new(
-                require(&child, "family", path)?,
-                PathBuf::from(require(&child, "src", path)?),
-            ))
+            let family = require(&child, "family", path)?;
+            let invalid = |reason: String| Error::InvalidMetadata {
+                path: path.to_path_buf(),
+                reason,
+            };
+
+            match (child.attribute("src"), child.attribute("href")) {
+                (Some(src), None) => Ok(Font::new(family, PathBuf::from(src))),
+                (None, Some(href)) => {
+                    // Unpinned would just be system-font fallback with extra
+                    // steps — the cache key (and the whole point of caching)
+                    // is the hash the project commits to, not the URL.
+                    let sha256 = child.attribute("sha256").ok_or_else(|| {
+                        invalid(format!(
+                            "`<shaipe:font family=\"{family}\">` has `href` but no `sha256` — \
+                             a remote font must pin the checksum it expects"
+                        ))
+                    })?;
+                    Ok(Font::remote(family, href, sha256))
+                }
+                (Some(_), Some(_)) => Err(invalid(format!(
+                    "`<shaipe:font family=\"{family}\">` has both `src` and `href` — \
+                     a font is one or the other, not both"
+                ))),
+                (None, None) => Err(invalid(format!(
+                    "`<shaipe:font family=\"{family}\">` has neither `src` nor `href`"
+                ))),
+            }
         })
         .collect()
 }

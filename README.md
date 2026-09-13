@@ -32,7 +32,7 @@ It keeps a logo and everything that describes it — prompt, palette, fonts,
 variants, the assets to produce — in one ordinary SVG file, and renders that
 file locally, exactly and without ever calling a model. The same project opens
 in a terminal workspace with a live preview, or regenerates a repository's
-entire asset set in CI on a machine with no network.
+entire asset set in CI on a machine with no network beyond a warm font cache.
 
 Shaipe does not host a model, and will not. Bring your own agent.
 
@@ -165,8 +165,12 @@ the same rule every other relative path in a project already follows
 `shaipe render /elsewhere/logo.svg` writes next to `/elsewhere/logo.svg`
 regardless of where it was invoked from.
 
-No network, no model, no clock, no environment. The same project bytes produce
-the same output bytes on any machine, which is what makes this a CI step:
+No model, no clock, no environment, and no network *during* a render — the
+one exception is a font declared by a checksum-pinned URL, resolved by a
+separate step before rendering and never touched again once its cache is
+warm (see below). The same project bytes and the same resolved font bytes
+produce the same output bytes on any machine, which is what makes this a CI
+step:
 
 ```yaml
 - run: shaipe render logo.svg --output docs/images --strict-fonts
@@ -175,7 +179,8 @@ the same output bytes on any machine, which is what makes this a CI step:
 
 `--strict-fonts` refuses to fall back to the system's fonts. A system font
 would render something plausible on the runner and something different on a
-laptop — silently.
+laptop — silently. A font declared by `src=` or by a checksum-verified
+`href=` both count as explicit, neither is a "system" fallback.
 
 ### Inspect
 

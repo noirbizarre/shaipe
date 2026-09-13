@@ -13,6 +13,7 @@
 
 pub mod acp;
 pub mod error;
+pub mod fonts;
 pub mod inspect;
 pub mod logging;
 pub mod mcp;

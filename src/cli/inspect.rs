@@ -6,7 +6,7 @@
 
 use std::io::Write;
 
-use shaipe::inspect::Report;
+use shaipe::inspect::{FontSourceReport, Report};
 use shaipe::{Error, Project, Result};
 
 use crate::cli::{InspectArgs, ReportFormat};
@@ -87,11 +87,24 @@ fn text(report: &Report) -> String {
     if !report.fonts.is_empty() {
         out.push_str("\nfonts\n");
         for font in &report.fonts {
-            // A missing font file is the single most likely cause of a render
-            // that differs between a laptop and CI, so it is called out here
-            // rather than left to be discovered at render time.
-            let status = if font.present { "" } else { "  MISSING" };
-            let _ = writeln!(out, "  {:<16} {}{status}", font.family, font.src.display());
+            // A missing local file, or a not-yet-cached remote one, is the
+            // single most likely cause of a render that differs between a
+            // laptop and CI, so it is called out here rather than left to be
+            // discovered at render time.
+            match &font.source {
+                FontSourceReport::Local { src, present, .. } => {
+                    let status = if *present { "" } else { "  MISSING" };
+                    let _ = writeln!(out, "  {:<16} {}{status}", font.family, src.display());
+                }
+                FontSourceReport::Remote { href, cached, .. } => {
+                    let status = if *cached {
+                        "  (cached)"
+                    } else {
+                        "  NOT CACHED"
+                    };
+                    let _ = writeln!(out, "  {:<16} {href}{status}", font.family);
+                }
+            }
         }
     }
 

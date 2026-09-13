@@ -58,7 +58,9 @@ pub struct Cli {
 /// The subcommands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Render a project's assets. Never calls out to a network or a model.
+    /// Render a project's assets. Never calls out to a model, and never to
+    /// the network either, except once per checksum-pinned font URL, cached
+    /// after the first fetch (ADR 015).
     Render(RenderArgs),
     /// Describe what a project contains.
     Inspect(InspectArgs),

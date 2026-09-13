@@ -42,6 +42,12 @@ are loaded. Only if a family is still unresolved does anything else happen:
   the render may differ elsewhere, and says how to fix it;
 - under `--strict-fonts`, it is an error.
 
+> **Since written:** a font may also be declared by a checksum-pinned URL
+> instead of a committed file — see
+> [ADR-015](015-checksum-pinned-remote-fonts.md). The reasoning here is
+> unchanged: this is a third source, trusted by a pinned hash rather than by
+> presence, not a reversal of "never load system fonts speculatively."
+
 ## Consequences
 
 - A project with no text — the common case for a logo — never touches the

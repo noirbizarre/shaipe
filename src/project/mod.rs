@@ -21,7 +21,7 @@ pub mod variant;
 use std::path::{Path, PathBuf};
 
 pub use document::SVG_NAMESPACE;
-pub use font::Font;
+pub use font::{Font, FontSource};
 pub use metadata::{Generation, Metadata};
 pub use palette::{Colour, Hsl, Palette, Rgba, Role};
 pub use reference::{Reference, ReferenceKind};
@@ -246,6 +246,67 @@ mod tests {
         assert_eq!(metadata.palette.len(), 2);
         assert_eq!(metadata.variant_names(), ["icon", "wordmark"]);
         assert_eq!(metadata.spec_names(), ["favicon-32", "banner"]);
+    }
+
+    /// A minimal project declaring exactly the `<shaipe:font>` children given.
+    fn project_with_fonts(fonts: &str) -> Result<Project> {
+        let source = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:shaipe="https://shaipe.dev/ns/2026" viewBox="0 0 1 1">
+  <metadata>
+    <shaipe:project version="1" primary="icon">
+      <shaipe:fonts>
+        {fonts}
+      </shaipe:fonts>
+      <shaipe:variants>
+        <shaipe:variant name="icon"/>
+      </shaipe:variants>
+    </shaipe:project>
+  </metadata>
+  <symbol id="icon" viewBox="0 0 1 1"><rect width="1" height="1"/></symbol>
+  <use href="#icon"/>
+</svg>"##
+        );
+        Project::from_source("test.svg", source)
+    }
+
+    #[test]
+    fn a_remote_font_without_a_checksum_is_refused() {
+        let error =
+            project_with_fonts(r#"<shaipe:font family="Inter" href="https://example.com/i.ttf"/>"#)
+                .unwrap_err();
+        assert!(matches!(error, Error::InvalidMetadata { .. }), "{error:?}");
+    }
+
+    #[test]
+    fn a_font_with_both_src_and_href_is_refused() {
+        let error = project_with_fonts(
+            r#"<shaipe:font family="Inter" src="fonts/i.ttf" href="https://example.com/i.ttf" sha256="a"/>"#,
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::InvalidMetadata { .. }), "{error:?}");
+    }
+
+    #[test]
+    fn a_font_with_neither_src_nor_href_is_refused() {
+        let error = project_with_fonts(r#"<shaipe:font family="Inter"/>"#).unwrap_err();
+        assert!(matches!(error, Error::InvalidMetadata { .. }), "{error:?}");
+    }
+
+    #[test]
+    fn a_remote_font_with_a_checksum_parses_as_a_remote_source() {
+        let project = project_with_fonts(
+            r#"<shaipe:font family="Inter" href="https://example.com/i.ttf" sha256="abc123"/>"#,
+        )
+        .unwrap();
+        let font = &project.metadata().fonts[0];
+        assert_eq!(font.family, "Inter");
+        assert_eq!(
+            font.source,
+            FontSource::Remote {
+                href: "https://example.com/i.ttf".to_owned(),
+                sha256: "abc123".to_owned(),
+            }
+        );
     }
 
     #[test]

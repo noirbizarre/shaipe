@@ -257,6 +257,49 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    /// A font declared by URL could not be fetched.
+    #[error("failed to fetch font `{family}` from `{href}`")]
+    #[diagnostic(
+        code(shaipe::fonts::fetch),
+        help(
+            "This is the only network access Shaipe ever makes (see ADR 015), and it \
+             only happens once — a warm cache never repeats it. Check connectivity, or \
+             declare `src=\"...\"` instead for a render that never needs one."
+        )
+    )]
+    FontFetch {
+        /// The family the URL was meant to provide.
+        family: String,
+        /// Where it was fetched from.
+        href: String,
+        /// Why.
+        #[source]
+        source: Box<ureq::Error>,
+    },
+
+    /// A font's bytes — freshly downloaded or read back from the cache — do
+    /// not match the checksum the project declared.
+    #[error("font `{family}` at `{href}` does not match its declared checksum")]
+    #[diagnostic(
+        code(shaipe::fonts::checksum),
+        help(
+            "Rejected rather than used silently. If the font genuinely changed \
+             upstream, update `sha256` in `<shaipe:font>` deliberately; if it did not, \
+             something on the way here altered it — a corrupted cache entry, most \
+             likely, which a retry will re-fetch and replace."
+        )
+    )]
+    FontChecksumMismatch {
+        /// The family the URL was meant to provide.
+        family: String,
+        /// Where it came from.
+        href: String,
+        /// What the project declared.
+        expected: String,
+        /// What the bytes actually hashed to.
+        found: String,
+    },
+
     /// A declared font family was not resolved and system fallback was refused.
     #[error("font family `{family}` is not available")]
     #[diagnostic(

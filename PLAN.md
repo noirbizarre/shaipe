@@ -49,6 +49,8 @@ Local, deterministic, no model.
 - [x] Transparent and flat-colour backgrounds
 - [x] Fonts declared by the project, system fallback only when it must
 - [x] `--strict-fonts` refuses the fallback, for CI
+- [x] A font may be declared by a checksum-pinned URL instead of a committed
+      file, fetched once and cached content-addressed — ADR-015
 - [x] Byte-identical output across runs, machines and optimisation levels
 - [x] Metadata stripped from exported SVG — an asset is not a project
 - [ ] Padding and inset in a render specification

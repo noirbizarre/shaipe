@@ -1,9 +1,12 @@
 //! `shaipe render`.
 //!
 //! The command the whole design is arranged around. It reads a project,
-//! rasterises it, and writes files — with no network access, no model call and
-//! no dependence on the machine it runs on. That is what makes it usable as a
-//! CI step that regenerates a repository's assets and fails if they changed.
+//! rasterises it, and writes files — with no model call and no dependence on
+//! the machine it runs on. The one narrow exception is a font declared by a
+//! checksum-pinned URL: fetched once, cached, and never touched again on a
+//! match (ADR 015; `crate::fonts`, not this module, is what can reach the
+//! network at all). That is what makes it usable as a CI step that
+//! regenerates a repository's assets and fails if they changed.
 
 use std::io::Write;
 
