@@ -21,6 +21,7 @@ pub mod project;
 pub mod render;
 pub mod tools;
 pub mod tui;
+pub mod vectorize;
 
 #[cfg(test)]
 pub(crate) mod fixtures;

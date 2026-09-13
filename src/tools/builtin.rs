@@ -20,7 +20,8 @@ use crate::project::palette::{Colour, Role};
 use crate::project::{Background, Format, Project, Reference, ReferenceKind, RenderSpec, Rgba};
 use crate::render::{RenderOptions, Renderer};
 use crate::tools::{
-    Tool, ToolImage, ToolOutput, integer, integers, object, optional_u32, required_str, string,
+    Tool, ToolImage, ToolOutput, boolean, integer, integers, object, optional_u32, required_str,
+    string,
 };
 
 /// Every tool Shaipe implements.
@@ -31,6 +32,7 @@ pub fn all() -> Vec<Box<dyn Tool>> {
         Box::new(GetPalette),
         Box::new(GetReferences),
         Box::new(GetReferenceImage),
+        Box::new(GetReferenceTrace),
         Box::new(GetSvg),
         Box::new(RenderSvg),
         Box::new(RenderGrid),
@@ -300,6 +302,137 @@ fn reference_mime_type(path: &Path) -> Option<&'static str> {
         "webp" => Some("image/webp"),
         "bmp" => Some("image/bmp"),
         _ => None,
+    }
+}
+
+/// Trace an attached reference's pixels into vector paths, algorithmically.
+///
+/// See [`crate::vectorize`] and ADR 014 for why this exists at all: an LLM
+/// writing `<path d="...">` from a prompt and an image can name the shapes
+/// present but cannot reproduce an exact curve or corner radius from it —
+/// that is a measurement, not a description, and this tool is what actually
+/// measures.
+struct GetReferenceTrace;
+
+impl Tool for GetReferenceTrace {
+    fn name(&self) -> &'static str {
+        "get_reference_trace"
+    }
+
+    fn description(&self) -> &'static str {
+        "Trace an attached reference image into vector paths, algorithmically \
+         — not by describing the shape, by measuring its pixels. Use this \
+         before hand-writing a mark from a `source` reference: an LLM can name \
+         the shapes in an image but cannot reproduce exact curves, corner \
+         radii or organic tapering from it; this can. Returns a small \
+         standalone SVG — one silhouette, holes cut by winding, no colour \
+         baked in — to inspect and then hand-graft into a variant with \
+         `write_variant` or `write_svg`, the same way any other markup is \
+         merged. Only separates one foreground colour from one background; \
+         it is not for tracing photographs or multi-colour artwork. If the \
+         result is many small fragments instead of one coherent shape, the \
+         mark is probably a medium-brightness colour (a saturated green or \
+         blue reads as roughly as bright as its background to the default \
+         cutoff) rather than genuinely dark — raise `threshold` toward 200+ \
+         and try again."
+    }
+
+    fn input_schema(&self) -> Value {
+        object(
+            &[
+                (
+                    "src",
+                    string(
+                        "Which reference to trace. One of the paths from \
+                         `get_references`, matched exactly.",
+                    ),
+                ),
+                (
+                    "threshold",
+                    json!({
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 255,
+                        "description": "Binary cutoff separating foreground from \
+                         background: pixels darker than this are traced. Lower \
+                         it if background is being traced instead of the mark, \
+                         raise it if part of the mark is being missed. Omit for \
+                         a sensible default (128).",
+                    }),
+                ),
+                (
+                    "invert",
+                    boolean(
+                        "Set when the reference is light artwork on a dark \
+                         background, so light pixels are traced as the \
+                         foreground instead of dark ones.",
+                    ),
+                ),
+            ],
+            &["src"],
+        )
+    }
+
+    fn call(&self, project: &mut Project, input: &Value) -> Result<ToolOutput> {
+        let src = PathBuf::from(required_str(self.name(), input, "src")?);
+        let threshold = input
+            .get("threshold")
+            .and_then(Value::as_u64)
+            .and_then(|value| u8::try_from(value).ok());
+        let invert = input
+            .get("invert")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        let refuse = |reason: String| crate::Error::InvalidToolInput {
+            tool: self.name().to_owned(),
+            reason,
+        };
+
+        // Same resolution as `get_reference_image`: reported before anything
+        // is read, so an unattached name is a clear refusal, not a race.
+        let reference = project
+            .metadata()
+            .references
+            .iter()
+            .find(|reference| reference.src == src)
+            .cloned()
+            .ok_or_else(|| {
+                let known: Vec<String> = project
+                    .metadata()
+                    .references
+                    .iter()
+                    .map(|reference| reference.src.display().to_string())
+                    .collect();
+                refuse(format!(
+                    "`{}` is not an attached reference. {}",
+                    src.display(),
+                    if known.is_empty() {
+                        "Nothing is attached yet; call `set_reference` to attach one.".to_owned()
+                    } else {
+                        format!("Attached: {}", known.join(", "))
+                    }
+                ))
+            })?;
+
+        let resolved = project.resolve(&reference.src);
+
+        let bytes =
+            std::fs::read(&resolved).map_err(|error| crate::Error::io(resolved.clone(), error))?;
+
+        let svg = crate::vectorize::trace(
+            &resolved,
+            &bytes,
+            crate::vectorize::TraceOptions { threshold, invert },
+        )?;
+        let path_count = svg.matches("<path").count();
+
+        Ok(ToolOutput::json(json!({
+            "src": reference.src.display().to_string(),
+            "resolved": resolved.display().to_string(),
+            "svg": svg,
+            "path_count": path_count,
+        })))
     }
 }
 
@@ -1214,6 +1347,172 @@ mod tests {
         let rendered = error.to_string();
         assert!(rendered.contains("mockup.pdf"), "{rendered}");
         assert!(matches!(error, Error::InvalidToolInput { .. }));
+    }
+
+    /// A tiny synthetic PNG: a black ring on a transparent background,
+    /// `size` pixels square — same shape [`crate::vectorize`]'s own tests
+    /// build, reused here so this module does not need its own fixture file.
+    fn ring_png(size: u32) -> Vec<u8> {
+        let mut img = image::RgbaImage::new(size, size);
+        let center = f64::from(size) / 2.0;
+        let outer = center - 4.0;
+        let inner = outer / 2.5;
+        for y in 0..size {
+            for x in 0..size {
+                let dx = f64::from(x) - center;
+                let dy = f64::from(y) - center;
+                let d = (dx * dx + dy * dy).sqrt();
+                let pixel = if d <= outer && d >= inner {
+                    image::Rgba([0, 0, 0, 255])
+                } else {
+                    image::Rgba([0, 0, 0, 0])
+                };
+                img.put_pixel(x, y, pixel);
+            }
+        }
+        let mut bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        bytes
+    }
+
+    #[test]
+    fn get_reference_trace_returns_svg_markup_with_no_colour_baked_in() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        std::fs::write(directory.path().join("mockup.png"), ring_png(64)).unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        let output = Registry::new()
+            .call(
+                "get_reference_trace",
+                &mut project,
+                &json!({ "src": "mockup.png" }),
+            )
+            .unwrap();
+
+        assert_eq!(output.value["src"], "mockup.png");
+        assert_eq!(output.value["path_count"], 1);
+        let svg = output.value["svg"].as_str().unwrap();
+        assert!(svg.contains("<path"), "{svg}");
+        // No mutation: this is a `get_` tool, and the project is unread by
+        // anything other than resolving where the reference lives.
+        assert!(
+            !Registry::new()
+                .get("get_reference_trace")
+                .unwrap()
+                .mutates()
+        );
+    }
+
+    #[test]
+    fn get_reference_trace_of_an_unknown_src_lists_the_ones_that_are_attached() {
+        let mut project = fixtures::project();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        let error = Registry::new()
+            .call(
+                "get_reference_trace",
+                &mut project,
+                &json!({ "src": "watermark.png" }),
+            )
+            .unwrap_err();
+
+        let rendered = error.to_string();
+        assert!(rendered.contains("mockup.png"), "{rendered}");
+        assert!(matches!(error, Error::InvalidToolInput { .. }));
+    }
+
+    #[test]
+    fn get_reference_trace_of_bytes_that_are_not_an_image_reports_why() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        std::fs::write(directory.path().join("mockup.png"), b"not a real png").unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        let error = Registry::new()
+            .call(
+                "get_reference_trace",
+                &mut project,
+                &json!({ "src": "mockup.png" }),
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, Error::Decode { .. }));
+    }
+
+    #[test]
+    fn get_reference_trace_of_a_blank_image_says_nothing_traced() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        let blank = image::RgbaImage::from_pixel(32, 32, image::Rgba([255, 255, 255, 255]));
+        let mut bytes = Vec::new();
+        blank
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        std::fs::write(directory.path().join("mockup.png"), bytes).unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        let error = Registry::new()
+            .call(
+                "get_reference_trace",
+                &mut project,
+                &json!({ "src": "mockup.png" }),
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, Error::EmptyTrace { .. }));
+    }
+
+    #[test]
+    fn get_reference_trace_threshold_and_invert_are_accepted() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        std::fs::write(directory.path().join("mockup.png"), ring_png(64)).unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        let output = Registry::new()
+            .call(
+                "get_reference_trace",
+                &mut project,
+                &json!({ "src": "mockup.png", "threshold": 200, "invert": false }),
+            )
+            .unwrap();
+
+        assert!(output.value["svg"].as_str().unwrap().contains("<path"));
     }
 
     #[test]

@@ -280,6 +280,53 @@ pub enum Error {
     )]
     NoEditor,
 
+    /// A reference image could not be decoded for tracing.
+    #[error("failed to decode `{}` as an image", path.display())]
+    #[diagnostic(
+        code(shaipe::vectorize::decode),
+        help(
+            "`get_reference_trace` recognises the same formats as \
+             `get_reference_image` — .png, .jpg, .jpeg, .gif, .webp and \
+             .bmp — and needs the bytes to actually be one of them, not \
+             just named like one."
+        )
+    )]
+    Decode {
+        /// The reference that would not decode.
+        path: PathBuf,
+        /// Why.
+        #[source]
+        source: image::ImageError,
+    },
+
+    /// The tracing pipeline itself failed — not a decode problem, and not an
+    /// empty result (both have their own variant), but something the
+    /// pipeline reported about the run itself.
+    #[error("tracing `{}` failed: {reason}", path.display())]
+    #[diagnostic(code(shaipe::vectorize::trace))]
+    Trace {
+        /// The reference being traced.
+        path: PathBuf,
+        /// What the pipeline reported.
+        reason: String,
+    },
+
+    /// Tracing produced no paths.
+    #[error("tracing `{}` produced no paths", path.display())]
+    #[diagnostic(
+        code(shaipe::vectorize::empty),
+        help(
+            "Nothing was darker than the threshold (default 128), so there \
+             was no foreground to trace. Pass a higher `threshold`, or \
+             `invert: true` if the reference is light artwork on a dark \
+             background."
+        )
+    )]
+    EmptyTrace {
+        /// The reference that traced to nothing.
+        path: PathBuf,
+    },
+
     /// A tool was invoked that the registry does not know.
     #[error("unknown tool `{tool}`")]
     #[diagnostic(

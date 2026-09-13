@@ -165,7 +165,12 @@ see `docs/adr/004-tools-not-a-model.md`.
 - [x] A transport for the registry — MCP over stdio is the obvious one
 - [x] Mutating tools: set a palette colour, write a variant, record generation
 - [x] Tools for attaching and inspecting references
-- [x] Raster to vector: hand a PNG to an agent and get an SVG back
+- [x] Raster to vector: hand a PNG to an agent and get an SVG back — the
+      infrastructure (references, `get_reference_image`), not an algorithm;
+      the agent still had to redraw what it saw
+- [x] `get_reference_trace` — deterministic algorithmic raster-to-vector
+      tracing (`vtracer`), so an agent is not limited to hand-describing
+      curves it can only approximate — ADR-014
 - [x] Tool inputs described by JSON Schema rather than a parameter list — ADR-008
 - [x] Tools renamed to `verb_noun`, pinned by a test — ADR-007
 - [x] `get_svg` and `write_svg`, the written document validated before it is

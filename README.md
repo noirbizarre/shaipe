@@ -109,8 +109,9 @@ created logo.svg
 ```
 
 The file must already exist; `get_reference_image` is how an agent then looks
-at it, and `set_reference` attaches further references, or edits this one,
-after creation.
+at it, `get_reference_trace` is how it measures one algorithmically into
+vector paths rather than hand-describing them, and `set_reference` attaches
+further references, or edits this one, after creation.
 
 `--inspiration <path>` attaches a mood board instead — cues to take, not to
 copy — and can be given more than once:
@@ -278,6 +279,7 @@ model answered. Your agent is configured and authenticated in your agent. See
 | `get_palette` | The colours, with their names and roles |
 | `get_references` | Files attached for context, and whether they exist |
 | `get_reference_image` | Read an attached reference's bytes and look at it |
+| `get_reference_trace` | Trace a reference's pixels into vector paths, algorithmically |
 | `get_svg` | The document, exactly as it is |
 | `render_svg` | Draw one variant and **look at it** |
 | `render_grid` | Draw one variant at several sizes, to check it still reads small |
@@ -501,8 +503,6 @@ Early, but real. Nothing described above is a mock.
   picker yet.
 - Palette *binding*. The palette is recorded and reported, but the artwork does
   not yet reference it, so editing a colour does not restyle the mark.
-- Raster → vector. PNG and JPEG references can be attached to a project; asking
-  a model to reconstruct an SVG from one is future work.
 
 **Dogfooding.** `logo.svg` at the root of this repository is a Shaipe project,
 and every image in `docs/images/` is rendered from it. The artwork itself is

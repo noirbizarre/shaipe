@@ -208,6 +208,11 @@ pub(crate) fn integer(description: &str) -> Value {
     json!({ "type": "integer", "minimum": 1, "description": description })
 }
 
+/// A boolean argument.
+pub(crate) fn boolean(description: &str) -> Value {
+    json!({ "type": "boolean", "description": description })
+}
+
 /// A bounded array of positive integers.
 ///
 /// The bound is in the schema as well as in the tool's own check, so a model
@@ -330,6 +335,7 @@ mod tests {
                 "get_palette",
                 "get_project",
                 "get_reference_image",
+                "get_reference_trace",
                 "get_references",
                 "get_svg",
                 "get_variants",
