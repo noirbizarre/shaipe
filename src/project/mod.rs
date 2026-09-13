@@ -36,7 +36,16 @@ use crate::error::{Error, Result};
 /// [`document::replace_metadata`] a byte range to splice into — the same path
 /// every other edit takes, which is what makes a freshly initialised project
 /// round-trip identically once it is saved.
-const TEMPLATE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:shaipe="https://shaipe.dev/ns/2026" viewBox="0 0 64 64" width="64" height="64">
+///
+/// The root's `width`/`height` (512) are deliberately larger than its
+/// `viewBox` (64) — they only set the intrinsic display size a browser or
+/// image viewer uses when there is nothing else to size the file by
+/// (`preserveAspectRatio` scales the `viewBox` content to fit uniformly, with
+/// no effect on any coordinate a symbol is drawn in, and no effect on an
+/// export — see `ADR-003`, which reads a `RenderSpec`'s own dimensions
+/// instead). Left equal to `viewBox` before, every fresh project opened
+/// exactly as large as its own 64-unit coordinate system, i.e. tiny.
+const TEMPLATE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:shaipe="https://shaipe.dev/ns/2026" viewBox="0 0 64 64" width="512" height="512">
   <metadata>
     <shaipe:project version="1"/>
   </metadata>
