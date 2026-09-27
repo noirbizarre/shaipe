@@ -334,6 +334,7 @@ mod tests {
             [
                 "get_palette",
                 "get_project",
+                "get_reference_analysis",
                 "get_reference_image",
                 "get_reference_trace",
                 "get_references",

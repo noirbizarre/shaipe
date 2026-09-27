@@ -12,6 +12,7 @@
 #![warn(missing_docs)]
 
 pub mod acp;
+pub mod analysis;
 pub mod error;
 pub mod fonts;
 pub mod inspect;

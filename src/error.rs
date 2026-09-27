@@ -406,6 +406,25 @@ pub enum Error {
         path: PathBuf,
     },
 
+    /// A reference image could not be decoded for structured analysis.
+    #[error("failed to decode `{}` as an image", path.display())]
+    #[diagnostic(
+        code(shaipe::analysis::decode),
+        help(
+            "`get_reference_analysis` recognises the same formats as \
+             `get_reference_image` — .png, .jpg, .jpeg, .gif, .webp and \
+             .bmp — and needs the bytes to actually be one of them, not \
+             just named like one."
+        )
+    )]
+    AnalysisDecode {
+        /// The reference that would not decode.
+        path: PathBuf,
+        /// Why.
+        #[source]
+        source: image::ImageError,
+    },
+
     /// A tool was invoked that the registry does not know.
     #[error("unknown tool `{tool}`")]
     #[diagnostic(
