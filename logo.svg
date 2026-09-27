@@ -1,16 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:shaipe="https://shaipe.dev/ns/2026" viewBox="0 0 256 256" width="512" height="512">
   <metadata>
     <shaipe:project version="1" primary="icon">
-      <shaipe:prompt>A mark for Shaipe, an LLM-native SVG asset workspace. 
+      <shaipe:prompt>A mark for Shaipe, an LLM-native SVG asset workspace.
 
 The name plays on &quot;shape&quot; and &quot;AI&quot;.
-A shape that is partly drawn and partly inferred: an outlined square whose lower-right quadrant has been resolved into solid colour, suggesting a form being completed rather than one already finished. 
+A shape that is partly drawn and partly inferred: an outlined square whose lower-right quadrant has been resolved into solid colour, suggesting a form being completed rather than one already finished.
 Geometric, flat, monoline, no gradients. The icon carries no text, so it reads at 16 pixels. The wordmark sets &quot;Shaipe&quot; (with ai in bold) as text using the Fira Sans font.</shaipe:prompt>
       <shaipe:palette>
         <shaipe:color name="accent" value="#f05032" role="accent"/>
         <shaipe:color name="ink" value="#18181b" role="foreground"/>
         <shaipe:color name="paper" value="#ffffff" role="background"/>
       </shaipe:palette>
+      <shaipe:fonts>
+        <shaipe:font family="Fira Sans" src="fonts/FiraSans-Regular.ttf"/>
+      </shaipe:fonts>
       <shaipe:variants>
         <shaipe:variant name="icon"/>
         <shaipe:variant name="icon-inverse"/>
@@ -36,8 +39,9 @@ Geometric, flat, monoline, no gradients. The icon carries no text, so it reads a
     workflow, and `<shaipe:generation>` is absent because nothing has
     generated anything.
 
-    Paths only, no `<text>`: text would make every render depend on a font
-    being installed, and therefore on the machine doing the rendering.
+    The wordmark is `<text>`, but only because `<shaipe:font>` above pins it
+    to a committed Fira Sans file (ADR 005) — nothing here depends on a font
+    being installed on the machine doing the rendering.
 
     The geometry is defined once, in `<defs>`, and drawn in `currentColor`.
     Each variant is a `<symbol>` that sets `color` and reuses it, so the light
