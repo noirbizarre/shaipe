@@ -587,7 +587,26 @@ async fn connect(
                             );
 
                             match cx.send_request(request).block_task().await {
-                                Ok(_) => None,
+                                Ok(_) => {
+                                    // The `Models` sent above, right after
+                                    // `session/new`, still marks whatever was
+                                    // current *before* this switch — the same
+                                    // staleness `model_choices_after_switch`
+                                    // exists to fix for a switch made mid
+                                    // session. Without this, the status line
+                                    // and a picker opened straight away both
+                                    // showed the wrong model until the first
+                                    // one asked for afterwards.
+                                    if let Some(option) = model {
+                                        drop(updates.try_send(AgentUpdate::Models(
+                                            model_choices_after_switch(
+                                                option,
+                                                choice.value.0.as_ref(),
+                                            ),
+                                        )));
+                                    }
+                                    None
+                                }
                                 Err(error) => Some(format!(
                                     "could not switch the agent to `{wanted}`: {error}"
                                 )),
