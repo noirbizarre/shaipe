@@ -9,11 +9,15 @@ version = "0.1.0"
 edition = "2024"
 # The MSRV. Set by `ratatui-image` -> `icy_sixel` -> `quantette`; nothing else
 # in the tree needs anything this recent. Checked by a dedicated CI job, which
-# greps this very line — keep it a plain literal. `rust-toolchain.toml` separately pins the channel to develop
-# against; the two answer different questions.
+# greps this very line — keep it a plain literal. `rust-toolchain.toml`
+# separately pins the channel to develop against; the two answer different
+# questions.
 rust-version = "1.90"
 license = "MIT"
-authors = ["Axel H. <noirbizarre@gmail.com>"]
+# No `authors`: Cargo/crates.io stopped generating and reading it after the
+# 2021 edition — ownership on crates.io comes from the registry account that
+# published, not this field. `author` still feeds LICENSE and, when `aur` is
+# on, the PKGBUILD's `# Maintainer:` line.
 description = "An LLM-native SVG asset workspace"
 repository = "https://github.com/noirbizarre/shaipe"
 homepage = "https://noirbizarre.github.io/shaipe/"
@@ -21,6 +25,43 @@ documentation = "https://noirbizarre.github.io/shaipe/"
 readme = "README.md"
 keywords = ["svg", "logo", "tui", "cli", "vector"]
 categories = ["command-line-utilities", "multimedia::images"]
+
+# cargo-binstall otherwise derives an asset name from the target triple, and
+# the publish workflow's assets carry short platform suffixes instead (the
+# `asset` field of each entry in `data/targets.toml`). A wrong guess is not an
+# error: binstall silently falls back to compiling from source, which is the
+# slow path this exists to avoid. So every target the publish workflow builds
+# is mapped by hand, from that same catalogue — one override per selected
+# target, so this list never drifts from the publish matrix.
+#
+# `pkg-fmt = "bin"`: the publish workflow uploads the raw executable, not an
+# archive — see publish-release.yaml's "Stage the asset" step.
+[package.metadata.binstall]
+pkg-fmt = "bin"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/{ version }/shaipe_{ version }_linux-amd64"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/{ version }/shaipe_{ version }_linux-arm64"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/{ version }/shaipe_{ version }_linux-amd64-musl"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/{ version }/shaipe_{ version }_linux-arm64-musl"
+
+[package.metadata.binstall.overrides.x86_64-apple-darwin]
+pkg-url = "{ repo }/releases/download/{ version }/shaipe_{ version }_darwin-amd64"
+
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "{ repo }/releases/download/{ version }/shaipe_{ version }_darwin-arm64"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/{ version }/shaipe_{ version }_windows-amd64.exe"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/{ version }/shaipe_{ version }_windows-arm64.exe"
 
 [[bin]]
 name = "shaipe"
@@ -32,7 +73,10 @@ path = "src/lib.rs"
 
 [profile.release]
 # Release binaries are cross-compiled once per tag and downloaded many times, so
-# the build cost is paid once and the size saving is paid forward.
+# the build cost is paid once and the size saving is paid forward.#
+# Cargo only reads [profile.*] from a workspace's root manifest, so this stays
+# unconditional: member crates inherit it whether or not this file also
+# defines a [package].
 lto = true
 codegen-units = 1
 strip = true

@@ -19,14 +19,17 @@ defaults:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: full
-  # NOT `MISE_ACTION_VERSION`, however obvious that name looks: mise reads
-  # `MISE_<TOOL>_VERSION` from the environment, so that name would be
-  # interpreted as a request to install a tool called `action`.
-  #
-  # Owned by the template: bump it there and `git tpl update` propagates it.
-  # The docs and prepare-release workflows repeat the literal — keep them in
-  # sync, as `env:` does not cross workflow files.
-  PINNED_MISE_VERSION: 2026.9.14
+
+  # sccache caches individual objects, so a Cargo.lock bump doesn't force a full rebuild the way rust-cache's key does.
+  RUSTC_WRAPPER: sccache
+  # Incremental compilation's on-disk state can't be reused by sccache, so the two are mutually exclusive.
+  CARGO_INCREMENTAL: "0"
+  # Backs sccache with GitHub's own Actions cache instead of a separate cloud bucket and its credentials.
+  SCCACHE_GHA_ENABLED: "true"
+  # lld-link ships with windows-latest (no install step) and links faster than link.exe; nextest links one binary
+  # per test target, so this matters. Scoped to this triple, so it's a no-op on Linux/macOS — which already
+  # defaults to Apple's own faster linker on Xcode 15+.
+  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: lld-link
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -46,11 +49,17 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
 
+      # mold links faster than GNU ld, and clippy still has to link every test/example target it type-checks.
+      - uses: rui314/setup-mold@v1
+
+      - uses: mozilla-actions/sccache-action@v0.0.11
+
       # Tool versions come from mise.toml + mise.lock, so CI runs exactly
-      # what `mise run default` runs locally.
+      # what `mise run default` runs locally. No pinned mise version: an
+      # incompatibility should surface here, not only on a contributor's
+      # machine running whatever they already have.
       - uses: jdx/mise-action@v4
         with:
-          version: ${{ env.PINNED_MISE_VERSION }}
           cache: true
 
       # The hooks, not the mise tasks: this is the same command a developer's
@@ -82,12 +91,30 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
 
+      # mold is Linux-only, so it only applies to this one leg of the matrix.
+      - name: Install mold (faster Linux linker)
+        if: matrix.os.flag == 'linux'
+        uses: rui314/setup-mold@v1
+
+      - uses: mozilla-actions/sccache-action@v0.0.11
+
       # nextest and llvm-cov are pinned by mise.lock rather than resolved
       # per-run, so a tool release cannot change CI behaviour on its own.
       - uses: jdx/mise-action@v4
         with:
-          version: ${{ env.PINNED_MISE_VERSION }}
           cache: true
+
+      - name: Disable Windows Defender real-time scanning
+        if: matrix.os.flag == 'windows'
+        shell: pwsh
+        # A Rust test suite spawns many short-lived processes and writes just as
+        # many small files into fresh temp directories. Defender's real-time
+        # protection inspects both, and that inspection is the standard,
+        # documented reason this workload is dramatically slower on
+        # `windows-latest` than on Linux/macOS — matching the "~4x slower" this
+        # project already lives with per `.github/codecov.yml`. The runner is
+        # destroyed at the end of the job, so there is nothing to re-enable.
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
 
       - name: Run tests (with coverage)
         run: |

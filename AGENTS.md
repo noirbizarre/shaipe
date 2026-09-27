@@ -82,7 +82,7 @@ add a provider, an API key or a `generate` command that calls one, read
 
 ## Layout
 
-```
+```text
 src/
 ├── lib.rs        the library surface
 ├── main.rs       the shaipe binary
@@ -101,7 +101,7 @@ src/
 
 Dependencies point inward, and the direction is enforced, not described:
 
-```
+```text
 cli ──> tui ──> preview ──┐
   │       │               ├──> (pixels only)
   │       ├──> render ────┴──> project ──> error
@@ -235,7 +235,7 @@ derives the version from the commit history, `prepare-release` applies it, and
 mise run ci
 ```
 
-Formatting, Clippy, spelling, workflow linting, tests and the documentation build. Same as CI.
+Formatting, Clippy, spelling, workflow and Markdown linting, tests and the documentation build. Same as CI.
 
 ## This repository is generated from a template
 

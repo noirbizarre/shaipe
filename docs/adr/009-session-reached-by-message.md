@@ -19,7 +19,7 @@ wrong here for two separate reasons.
 **The mechanical one.** `prek.toml` carries a hook,
 `stdout-lock-not-held-across-the-tui`:
 
-```
+```bash
 [ "$(grep -rl "[.]lock()" src --include=*.rs)" = src/main.rs ]
 ```
 
