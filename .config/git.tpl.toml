@@ -7,6 +7,7 @@
 source = "https://github.com/noirbizarre/rust.tpl"
 
 [answers]
+aur = false
 author = "Axel H. <noirbizarre@gmail.com>"
 bin_name = "shaipe"
 categories = "command-line-utilities,multimedia::images"
@@ -16,9 +17,12 @@ crate = "shaipe"
 description = "An LLM-native SVG asset workspace"
 docs = true
 docs_accent = "indigo"
+homebrew = false
+homebrew_tap = "noirbizarre/homebrew-tap"
 keywords = "svg,logo,tui,cli,vector"
+man_pages = false
 msrv = true
-msrv_version = "1.88"
+msrv_version = "1.90"
 owner = "noirbizarre"
 publish = true
 targets = [
@@ -31,3 +35,4 @@ targets = [
     "x86_64-pc-windows-msvc",
     "aarch64-pc-windows-msvc",
 ]
+workspace = false
