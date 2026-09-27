@@ -38,3 +38,4 @@ by editing the old one. The history is the value.
 - [ADR-015](015-checksum-pinned-remote-fonts.md) — A font may be declared by a checksum-pinned URL, cached locally
 - [ADR-016](016-remembering-a-chosen-model.md) — A chosen model is remembered per agent, in the OS config directory
 - [ADR-017](017-vision-capability-from-models-dev.md) — Vision capability is read from models.dev, cached, never guessed
+- [ADR-018](018-structured-reference-measurement.md) — Measure a reference's pixels into facts, not a model's guess

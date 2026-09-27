@@ -31,6 +31,7 @@ pub fn all() -> Vec<Box<dyn Tool>> {
         Box::new(GetVariants),
         Box::new(GetPalette),
         Box::new(GetReferences),
+        Box::new(GetReferenceAnalysis),
         Box::new(GetReferenceImage),
         Box::new(GetReferenceTrace),
         Box::new(GetSvg),
@@ -191,6 +192,100 @@ impl Tool for GetReferences {
                 })
                 .collect(),
         )))
+    }
+}
+
+/// Measure an attached reference's pixels into objective facts, algorithmically.
+///
+/// See [`crate::analysis`] and ADR 018 for why this exists: dimensions,
+/// dominant colours, region bounding boxes and centroids are measurements, not
+/// descriptions, and a vision model reading pixels cannot report them any
+/// more precisely than it can report an exact curve — the same gap
+/// `get_reference_trace`/ADR 014 closes for geometry.
+struct GetReferenceAnalysis;
+
+impl Tool for GetReferenceAnalysis {
+    fn name(&self) -> &'static str {
+        "get_reference_analysis"
+    }
+
+    fn description(&self) -> &'static str {
+        "Measure an attached reference image's pixels into objective facts: \
+         dimensions, a background/foreground split, dominant colours, \
+         connected regions with bounding boxes and centroids, holes, and \
+         left-right/top-bottom symmetry scores. This is measurement, not \
+         semantic interpretation — it cannot say a region is a \"castle\" or \
+         a \"letter A\", only where it is, how big it is and what colour \
+         sits near it; naming what a region is remains the vision model's \
+         job. Use this before `get_reference_trace` or hand-composing a \
+         variant, to ground layout and colour guesses in actual pixels. \
+         Only separates one background colour, sampled from the image \
+         border, from everything else — unreliable for photographs, busy \
+         multi-region backgrounds, or artwork drawn all the way to the \
+         canvas edge with no margin, the same caveat `get_reference_trace` \
+         gives for its own threshold."
+    }
+
+    fn input_schema(&self) -> Value {
+        object(
+            &[(
+                "src",
+                string(
+                    "Which reference to analyse. One of the paths from \
+                     `get_references`, matched exactly.",
+                ),
+            )],
+            &["src"],
+        )
+    }
+
+    fn call(&self, project: &mut Project, input: &Value) -> Result<ToolOutput> {
+        let src = PathBuf::from(required_str(self.name(), input, "src")?);
+
+        let refuse = |reason: String| crate::Error::InvalidToolInput {
+            tool: self.name().to_owned(),
+            reason,
+        };
+
+        // Same resolution as `get_reference_image`: reported before anything
+        // is read, so an unattached name is a clear refusal, not a race.
+        let reference = project
+            .metadata()
+            .references
+            .iter()
+            .find(|reference| reference.src == src)
+            .cloned()
+            .ok_or_else(|| {
+                let known: Vec<String> = project
+                    .metadata()
+                    .references
+                    .iter()
+                    .map(|reference| reference.src.display().to_string())
+                    .collect();
+                refuse(format!(
+                    "`{}` is not an attached reference. {}",
+                    src.display(),
+                    if known.is_empty() {
+                        "Nothing is attached yet; call `set_reference` to attach one.".to_owned()
+                    } else {
+                        format!("Attached: {}", known.join(", "))
+                    }
+                ))
+            })?;
+
+        let resolved = project.resolve(&reference.src);
+
+        let bytes =
+            std::fs::read(&resolved).map_err(|error| crate::Error::io(resolved.clone(), error))?;
+
+        let analysis = crate::analysis::analyze(&resolved, &bytes)?;
+
+        Ok(ToolOutput::json(json!({
+            "src": reference.src.display().to_string(),
+            "resolved": resolved.display().to_string(),
+            "analysis": serde_json::to_value(&analysis)
+                .expect("Analysis always serialises"),
+        })))
     }
 }
 
@@ -1513,6 +1608,92 @@ mod tests {
             .unwrap();
 
         assert!(output.value["svg"].as_str().unwrap().contains("<path"));
+    }
+
+    #[test]
+    fn get_reference_analysis_reports_measurements_for_an_attached_image() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        std::fs::write(directory.path().join("mockup.png"), ring_png(64)).unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        let output = Registry::new()
+            .call(
+                "get_reference_analysis",
+                &mut project,
+                &json!({ "src": "mockup.png" }),
+            )
+            .unwrap();
+
+        assert_eq!(output.value["src"], "mockup.png");
+        let analysis = &output.value["analysis"];
+        assert_eq!(analysis["dimensions"]["width"], 64);
+        assert_eq!(analysis["dimensions"]["height"], 64);
+        assert_eq!(analysis["region_count"], 1);
+        assert_eq!(analysis["hole_count"], 1);
+        assert_eq!(
+            analysis["holes"][0]["enclosed_by"],
+            analysis["regions"][0]["id"]
+        );
+
+        // No mutation: this is a `get_` tool.
+        assert!(
+            !Registry::new()
+                .get("get_reference_analysis")
+                .unwrap()
+                .mutates()
+        );
+    }
+
+    #[test]
+    fn get_reference_analysis_of_an_unknown_src_lists_the_ones_that_are_attached() {
+        let mut project = fixtures::project();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        let error = Registry::new()
+            .call(
+                "get_reference_analysis",
+                &mut project,
+                &json!({ "src": "watermark.png" }),
+            )
+            .unwrap_err();
+
+        let rendered = error.to_string();
+        assert!(rendered.contains("mockup.png"), "{rendered}");
+        assert!(matches!(error, Error::InvalidToolInput { .. }));
+    }
+
+    #[test]
+    fn get_reference_analysis_of_bytes_that_are_not_an_image_reports_why() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        std::fs::write(directory.path().join("mockup.png"), b"not a real png").unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        let error = Registry::new()
+            .call(
+                "get_reference_analysis",
+                &mut project,
+                &json!({ "src": "mockup.png" }),
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, Error::AnalysisDecode { .. }));
     }
 
     #[test]

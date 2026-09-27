@@ -248,6 +248,10 @@ see `docs/adr/004-tools-not-a-model.md`.
       model actually in use is confirmed to lack vision — never a silent
       switch, since a model can cost differently from another and that is
       not Shaipe's decision to make — ADR-017
+- [x] `get_reference_analysis` — deterministic structured measurements of an
+      attached reference: dimensions, background/foreground split, dominant
+      colours, connected regions, holes and symmetry scores, distinct from
+      semantic interpretation — ADR-018
 
 ## Artwork
 

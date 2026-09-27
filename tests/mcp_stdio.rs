@@ -130,6 +130,7 @@ fn the_standalone_server_advertises_every_tool() {
         [
             "get_palette",
             "get_project",
+            "get_reference_analysis",
             "get_reference_image",
             "get_reference_trace",
             "get_references",
