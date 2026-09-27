@@ -487,7 +487,7 @@ The reasoning behind each significant choice — including two where the obvious
 
 Early, but real. Nothing described above is a mock.
 
-**Works today**
+### Works today
 
 - The project format: metadata, palette, fonts, variants, references, render
   specifications, with a versioned schema and byte-preserving writes.
@@ -503,7 +503,7 @@ Early, but real. Nothing described above is a mock.
 - Talking to an agent from the workspace: type a prompt, watch the tool calls,
   and see the preview follow the agent's edit.
 
-**Not yet**
+### Not yet
 
 - Any generation *by Shaipe*. There is no `shaipe generate`, no provider and no
   API key, and adding one is

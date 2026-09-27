@@ -33,6 +33,6 @@ by editing the old one. The history is the value.
 - [ADR-010](010-mcp-over-a-socket-with-a-bridge.md) — A live workspace serves MCP on a socket, reached by a bridge
 - [ADR-011](011-driving-an-agent-is-still-not-a-model.md) — Driving an agent is still not providing a model
 - [ADR-012](012-cannot-restrict-an-agents-own-tools.md) — Shaipe cannot restrict an agent's own tools *(superseded by ADR-013)*
-- [ADR-013](013-restrict-the-agent-through-its-environment.md) — Restrict the agent through the environment it is started in
-- [ADR-014](014-deterministic-raster-to-vector-tracing.md) — Trace a reference deterministically; do not ask a model to redraw it
+- [ADR-013](013-restrict-the-agent-through-its-environment.md) — Restrict the agent through its own environment
+- [ADR-014](014-deterministic-raster-to-vector-tracing.md) — Trace deterministically; do not ask a model to redraw it
 - [ADR-015](015-checksum-pinned-remote-fonts.md) — A font may be declared by a checksum-pinned URL, cached locally

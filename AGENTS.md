@@ -82,7 +82,7 @@ add a provider, an API key or a `generate` command that calls one, read
 
 ## Layout
 
-```
+```text
 src/
 ├── lib.rs        the library surface
 ├── main.rs       the shaipe binary
@@ -101,7 +101,7 @@ src/
 
 Dependencies point inward, and the direction is enforced, not described:
 
-```
+```text
 cli ──> tui ──> preview ──┐
   │       │               ├──> (pixels only)
   │       ├──> render ────┴──> project ──> error
