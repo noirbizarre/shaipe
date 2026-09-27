@@ -124,6 +124,7 @@ pub async fn run(
     let mut listener = None;
     let mut updates = None;
     let mut connected = None;
+    let mut vision_updates = None;
 
     match agent {
         AgentChoice::None => {
@@ -145,11 +146,40 @@ pub async fn run(
                 ),
             }
 
+            // Captured before `*config` is moved into `start_agent` below —
+            // `Settings` remembers a model per this exact string, and there
+            // is no reading it back off `config` once that call has taken it.
+            let command_line = config.command_line();
+
             match start_agent(*config, session).await {
                 Ok((agent, socket, stream)) => {
                     // Not `Ready`: the handshake is still going. The prompt says
                     // so, and `AgentUpdate::Ready` is what changes it.
                     app.agent = AgentStatus::Connecting;
+                    app.configure_agent(command_line, crate::settings::Settings::load());
+
+                    // Whatever is already cached, shown at once — this is a
+                    // disk read, never the network, so it can never delay the
+                    // workspace opening. A stale or missing cache is
+                    // refreshed on a blocking thread, off the event loop,
+                    // and `vision_updates` is how its result gets back here.
+                    let cached = crate::vision::Catalogue::load();
+                    app.set_vision(cached.clone());
+                    if cached.is_stale() {
+                        let (vision_tx, vision_rx) = mpsc::channel(1);
+                        tokio::task::spawn_blocking(move || {
+                            let mut catalogue = cached;
+                            if catalogue.refresh().is_ok() {
+                                drop(vision_tx.blocking_send(catalogue));
+                            }
+                            // A failed refresh says nothing back — the
+                            // workspace already has whatever the disk cache
+                            // held, or nothing, and either is exactly what
+                            // was showing before this ran.
+                        });
+                        vision_updates = Some(vision_rx);
+                    }
+
                     connected = Some(agent);
                     listener = Some(socket);
                     updates = Some(stream);
@@ -169,6 +199,7 @@ pub async fn run(
         &mut preview,
         commands,
         updates,
+        vision_updates,
         connected.as_ref(),
     )
     .await;
@@ -242,6 +273,7 @@ async fn event_loop(
     preview: &mut Preview,
     mut commands: mpsc::Receiver<SessionCommand>,
     updates: Option<mpsc::Receiver<AgentUpdate>>,
+    vision_updates: Option<mpsc::Receiver<crate::vision::Catalogue>>,
     agent: Option<&Agent>,
 ) -> Result<()> {
     let io_error = |source| Error::io("the terminal", source);
@@ -261,6 +293,13 @@ async fn event_loop(
     // nothing that depends on the tick ever ran.
     let (_agentless, idle) = mpsc::channel(1);
     let mut updates = updates.unwrap_or(idle);
+
+    // The same idle-channel trick for the vision catalogue's refresh, which
+    // fires at most once a session — most of the time there is nothing
+    // stale to refetch at all, and this is what lets that branch sit in the
+    // `select!` below unconditionally rather than behind another `if`.
+    let (_no_refresh, idle_vision) = mpsc::channel(1);
+    let mut vision_updates = vision_updates.unwrap_or(idle_vision);
 
     // Constructed here rather than in `run`, and the placement is
     // load-bearing: `EventStream` spawns a reader on standard input, and one
@@ -406,6 +445,15 @@ async fn event_loop(
                 } else {
                     AgentStatus::Ready
                 }));
+            }
+
+            catalogue = vision_updates.recv() => {
+                let Some(catalogue) = catalogue else { continue };
+                // Fires at most once a session — see where `vision_updates`
+                // is built in `run`. `App::set_vision` is what may open the
+                // `M` picker on its own, if the model already in use turns
+                // out, only now, to be a confirmed non-vision one.
+                app.set_vision(catalogue);
             }
 
             _ = ticks.tick() => {

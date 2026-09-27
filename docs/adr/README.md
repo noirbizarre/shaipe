@@ -36,3 +36,5 @@ by editing the old one. The history is the value.
 - [ADR-013](013-restrict-the-agent-through-its-environment.md) — Restrict the agent through its own environment
 - [ADR-014](014-deterministic-raster-to-vector-tracing.md) — Trace deterministically; do not ask a model to redraw it
 - [ADR-015](015-checksum-pinned-remote-fonts.md) — A font may be declared by a checksum-pinned URL, cached locally
+- [ADR-016](016-remembering-a-chosen-model.md) — A chosen model is remembered per agent, in the OS config directory
+- [ADR-017](017-vision-capability-from-models-dev.md) — Vision capability is read from models.dev, cached, never guessed

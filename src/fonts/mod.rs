@@ -5,9 +5,12 @@
 //! project's own directory. A remote one is fetched once, its SHA-256
 //! checked against what the project pinned, and cached content-addressed by
 //! that hash — a warm cache reads nothing but that one file back, and never
-//! the network again. This is the only place in the crate that makes an
-//! outbound request; see ADR 015 for why, and why it is not
-//! [`crate::render`], which still reads nothing but the project.
+//! the network again. See ADR 015 for why, and why it is not
+//! [`crate::render`], which still reads nothing but the project — that
+//! invariant is about rendering, specifically, not about the crate as a
+//! whole. [`crate::vision`] is the one other place that reaches the network,
+//! for an unrelated reason (see ADR 017) and nowhere near `src/render/`
+//! either.
 //!
 //! A checksum is not optional for a remote font. Without one, a URL is just
 //! system-font fallback with extra steps: the same untrusted "whatever is

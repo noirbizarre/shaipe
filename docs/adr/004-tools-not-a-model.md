@@ -47,8 +47,12 @@ Everything currently registered is read-only: `inspect_project`,
 > [ADR-008](008-json-schema-for-tool-inputs.md), and the transport this section
 > declines to build now exists — see
 > [ADR-011](011-driving-an-agent-is-still-not-a-model.md), which argues that
-> building it does not contradict this ADR. The decision recorded here is
-> unchanged: Shaipe still provides tools and still does not provide a model.
+> building it does not contradict this ADR. [ADR-017](017-vision-capability-from-models-dev.md)
+> makes the same argument about a *fetched and continuously refreshed*
+> mapping of which models have vision — an external fact cached locally, not
+> an invented, hand-maintained opinion about models. The decision recorded
+> here is unchanged: Shaipe still provides tools and still does not provide
+> a model.
 
 ### Alternatives rejected
 

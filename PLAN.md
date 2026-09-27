@@ -228,7 +228,7 @@ see `docs/adr/004-tools-not-a-model.md`.
 - [x] The `M` picker narrows a long model list by a typed, fuzzy, in-order
       match against name and id, since ACP carries no count or paging for
       `SessionConfigOption` and some agents offer dozens
-- [ ] Mark which models in the `M` picker can see an image. Neither ACP nor
+- [x] Mark which models in the `M` picker can see an image. Neither ACP nor
       OpenCode's own `SessionConfigOption` says so — confirmed by reading
       OpenCode's `buildModelSelectOptions()`, which sends only `{value,
       name}` — so this means fetching and caching models.dev's catalogue
@@ -238,6 +238,16 @@ see `docs/adr/004-tools-not-a-model.md`.
       said which one that is — not only inside the `M` picker
 - [x] The turn sent to the agent mentions attached references when there are
       any, so it does not have to discover `get_references` on its own
+- [x] Whichever model is actually in use is remembered per agent command, so
+      `--model`/`SHAIPE_MODEL` do not have to be repeated on every run —
+      ADR-016
+- [x] The `M` picker filters to vision-capable models by default, with
+      `ctrl-v` to lift that for a turn that genuinely does not need one —
+      ADR-017
+- [x] The `M` picker opens on its own, once a session, the first time the
+      model actually in use is confirmed to lack vision — never a silent
+      switch, since a model can cost differently from another and that is
+      not Shaipe's decision to make — ADR-017
 
 ## Artwork
 

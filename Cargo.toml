@@ -146,12 +146,16 @@ png = "0.18.1"
 roxmltree = "0.21.1"
 
 # A font may be declared by a checksum-pinned URL instead of a committed
-# file (`src/fonts/`, see ADR 015) — the one place in the crate that touches
-# the network at all, deliberately kept out of `src/render/` so its own "no
-# network" claim stays true by construction. Default features already
-# include `rustls` (TLS), which is all a plain HTTPS GET needs; nothing here
-# is fetched without its declared `sha256` matching first.
-ureq = "3.4.2"
+# file (`src/fonts/`, see ADR 015) — deliberately kept out of `src/render/`
+# so its own "no network" claim stays true by construction. Default features
+# already include `rustls` (TLS), which is all a plain HTTPS GET needs;
+# nothing here is fetched without its declared `sha256` matching first.
+#
+# `src/vision.rs` (see ADR 017) is the crate's other user of this, fetching
+# models.dev's catalogue rather than a font — `json` turns that reply
+# straight into a typed struct instead of a `serde_json::Value` this crate
+# would otherwise have to depend on separately just to walk by hand.
+ureq = { version = "3.4.2", features = ["json"] }
 # Verifying that checksum. A cache keyed by anything less than the actual
 # bytes' hash would just be a different way to trust an untrusted download.
 sha2 = "0.11.0"
