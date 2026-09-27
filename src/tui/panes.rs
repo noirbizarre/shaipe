@@ -1164,7 +1164,12 @@ mod tests {
         assert!(unsaved.contains("unsaved"), "{unsaved}");
         assert!(!unsaved.contains("on disk"), "{unsaved}");
 
-        std::fs::write(&path, fixtures::PROJECT.replace("#f05032", "#0066ff")).unwrap();
+        // `#06f`, not `#0066ff`: same length as the original would leave
+        // `Watcher` with nothing but `mtime` to notice the write by, and
+        // nothing guarantees the clock ticks between the two writes
+        // (watch.rs). `#06f` expands to the same colour, three characters
+        // shorter.
+        std::fs::write(&path, fixtures::PROJECT.replace("#f05032", "#06f")).unwrap();
         app.poll_file();
 
         let stale = drawn(status(&app, 120), 120, 1);

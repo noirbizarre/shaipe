@@ -91,6 +91,13 @@ mod tests {
     use crate::mcp::listener::Listener;
     use crate::tools::{Registry, SessionHandle};
 
+    // Unix-only: it dials the listener's address with a raw `UnixStream`,
+    // which does not exist as a type on Windows — not just unavailable at
+    // runtime, absent from `tokio::net` entirely — so the whole function has
+    // to disappear on non-unix rather than fail inside a match arm. Same
+    // convention as `a_workspace_socket_is_not_reachable_by_other_users` in
+    // `listener.rs`.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_bridge_carries_a_tool_call_to_a_workspace_and_the_answer_back() {
         // The end-to-end proof of the session-scoped design, with no
@@ -98,21 +105,16 @@ mod tests {
         // a completely separate task owns, and gets the real answer back.
         let session = SessionHandle::detached(fixtures::project(), Registry::new(), false);
         let listener = Listener::bind(session).await.unwrap();
-        let address = listener.address().clone();
+        let Address::Unix(path) = listener.address().clone() else {
+            panic!("a unix build should bind a unix socket");
+        };
 
         // Stand-ins for the bridge process's own stdin and stdout.
         let (client_side, bridge_side) = tokio::io::duplex(1 << 16);
         let (bridge_in, bridge_out) = tokio::io::split(bridge_side);
 
         tokio::spawn(async move {
-            let stream = tokio::net::UnixStream::connect(match &address {
-                #[cfg(unix)]
-                Address::Unix(path) => path.clone(),
-                #[allow(unreachable_patterns)]
-                _ => unreachable!("this test is unix-only"),
-            })
-            .await
-            .unwrap();
+            let stream = tokio::net::UnixStream::connect(path).await.unwrap();
             drop(pump(stream, bridge_in, bridge_out).await);
         });
 
@@ -131,6 +133,11 @@ mod tests {
         assert!(text.contains("wordmark"), "{text}");
     }
 
+    // Unix-only: the address literal below is a `unix:` scheme, which
+    // `Address::from_str` only accepts on unix — `Address::Unix` and its
+    // parser branch are both `#[cfg(unix)]` in listener.rs, so the `.parse()`
+    // here would return `Err` and the `.unwrap()` would panic on Windows.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_bridge_pointed_at_nothing_says_so_rather_than_hanging() {
         // What an agent sees if it starts a bridge after the workspace quit.
@@ -145,6 +152,10 @@ mod tests {
         assert!(error.to_string().contains("shaipe-does-not-exist"));
     }
 
+    // Unix-only, same as above: `Listener::bind` only ever produces
+    // `Address::Unix` under `#[cfg(unix)]` (listener.rs), so the destructure
+    // below would panic on Windows, where it always binds `Address::Tcp`.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_bridge_exits_when_the_agent_closes_its_input() {
         // The leak this guards against: an agent that has finished with a
@@ -154,12 +165,10 @@ mod tests {
         let session = SessionHandle::detached(fixtures::project(), Registry::new(), false);
         let listener = Listener::bind(session).await.unwrap();
 
-        let stream = match listener.address() {
-            #[cfg(unix)]
-            Address::Unix(path) => tokio::net::UnixStream::connect(path).await.unwrap(),
-            #[allow(unreachable_patterns)]
-            _ => unreachable!("this test is unix-only"),
+        let Address::Unix(path) = listener.address() else {
+            panic!("a unix build should bind a unix socket");
         };
+        let stream = tokio::net::UnixStream::connect(path).await.unwrap();
 
         let (mut agent_side, bridge_side) = tokio::io::duplex(1 << 16);
         let (bridge_in, bridge_out) = tokio::io::split(bridge_side);

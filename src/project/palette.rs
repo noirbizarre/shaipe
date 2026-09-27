@@ -105,7 +105,7 @@ impl FromStr for Rgba {
             }
             6 | 8 => {
                 let mut channels = [u8::MAX; 4];
-                for (channel, pair) in channels.iter_mut().zip(bytes.chunks_exact(2)) {
+                for (channel, pair) in channels.iter_mut().zip(bytes.as_chunks::<2>().0) {
                     *channel = nibble(pair[0])? << 4 | nibble(pair[1])?;
                 }
                 Ok(Self::new(

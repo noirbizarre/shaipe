@@ -1,0 +1,18 @@
+# Line endings are forced to LF on checkout, on every platform, regardless
+# of `core.autocrlf`. Without this, Windows checks text files out with CRLF
+# by default — including `tests/fixtures/logo.svg` and every `.rs` file's own
+# raw-string fixtures — which breaks every byte-identical comparison the
+# project's determinism invariants depend on (AGENTS.md invariants 1 and 2)
+# purely because of how the file happened to be checked out, not because of
+# anything Shaipe did.
+* text=auto eol=lf
+
+# Never touched: normalizing line endings in a binary asset corrupts it.
+# `text=auto`'s own detection should already skip these, but a font or an
+# image is exactly the kind of file where "should" is not good enough.
+*.png binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.ico binary

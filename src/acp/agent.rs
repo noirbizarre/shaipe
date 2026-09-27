@@ -246,15 +246,21 @@ impl AgentConfig {
 /// is a dependency for one lookup.
 fn which(program: &str) -> Option<PathBuf> {
     // An explicit path is used as given, so `--agent ./my-agent` works.
-    if program.contains(std::path::MAIN_SEPARATOR) {
+    // Checked against `/` as well as the platform separator: a forward slash
+    // is accepted as a path separator by Windows itself, so a path written
+    // with one (as every non-Windows path is) must not be treated as a bare
+    // command name to search `PATH` for.
+    if program.contains(['/', std::path::MAIN_SEPARATOR]) {
         let path = Path::new(program);
         return path.is_file().then(|| path.to_path_buf());
     }
 
-    std::env::var_os("PATH")?
-        .to_str()?
-        .split(':')
-        .map(|directory| Path::new(directory).join(program))
+    // `env::split_paths`, not a manual `':'` split: `PATH` is `;`-separated
+    // on Windows, and a plain `:`-split there would also cut every entry's
+    // own drive letter (`C:\...`) in half.
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|directory| directory.join(program))
         .find(|candidate| candidate.is_file())
 }
 
@@ -1004,15 +1010,17 @@ mod tests {
     fn the_bridge_server_points_at_this_build_not_at_whatever_is_on_path() {
         // A `shaipe` on PATH may be a different version, or absent while
         // developing. The agent must reach *this* workspace.
-        let address: Address = "unix:/tmp/shaipe-test/mcp.sock".parse().unwrap();
+        //
+        // A `tcp:` address, not `unix:`: `Address::Unix` and its parser are
+        // both unix-only (mcp::listener), and what this test actually checks
+        // — that `address.to_argument()` round-trips into `spec.args` — does
+        // not depend on which kind of address it is.
+        let address: Address = "tcp:127.0.0.1:4242".parse().unwrap();
         let spec = McpServerSpec::shaipe_bridge(&address).unwrap();
 
         assert_eq!(spec.command, std::env::current_exe().unwrap());
         assert_eq!(spec.name, "shaipe");
-        assert_eq!(
-            spec.args,
-            ["mcp", "--bridge", "unix:/tmp/shaipe-test/mcp.sock"]
-        );
+        assert_eq!(spec.args, ["mcp", "--bridge", "tcp:127.0.0.1:4242"]);
     }
 
     #[test]
@@ -1020,7 +1028,9 @@ mod tests {
         // The one place Shaipe's vocabulary meets ACP's. If the arguments are
         // dropped here, the agent starts a bridge pointed at nothing and the
         // only symptom is an agent that cannot see the project.
-        let address: Address = "unix:/tmp/shaipe-test/mcp.sock".parse().unwrap();
+        //
+        // `tcp:`, for the same reason as the test above.
+        let address: Address = "tcp:127.0.0.1:4242".parse().unwrap();
         let spec = McpServerSpec::shaipe_bridge(&address).unwrap();
 
         let McpServer::Stdio(stdio) = to_acp(&spec) else {
@@ -1031,10 +1041,7 @@ mod tests {
 
         assert_eq!(stdio.name, "shaipe");
         assert_eq!(stdio.command, std::env::current_exe().unwrap());
-        assert_eq!(
-            stdio.args,
-            ["mcp", "--bridge", "unix:/tmp/shaipe-test/mcp.sock"]
-        );
+        assert_eq!(stdio.args, ["mcp", "--bridge", "tcp:127.0.0.1:4242"]);
     }
 
     #[tokio::test]
@@ -1154,7 +1161,12 @@ mod tests {
     fn an_explicit_path_is_used_as_given() {
         // `--agent ./my-agent` has to work without being on PATH.
         assert!(which("/does/not/exist").is_none());
-        assert_eq!(which("/bin/sh"), Some(PathBuf::from("/bin/sh")));
+
+        // No path is guaranteed to exist on every platform except this
+        // process's own binary, which is also, conveniently, always given
+        // with a separator in it.
+        let exe = std::env::current_exe().unwrap();
+        assert_eq!(which(exe.to_str().unwrap()), Some(exe));
     }
 
     /// The options an agent offers when it asks to run something.

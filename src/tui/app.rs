@@ -2866,7 +2866,13 @@ mod tests {
         let (directory, mut app) = on_disk();
         let path = app.project.path().to_path_buf();
 
-        std::fs::write(&path, fixtures::PROJECT.replace("#f05032", "#0066ff")).unwrap();
+        // The three-digit form, not `#0066ff` itself: `Watcher` falls back to
+        // a length check exactly because `mtime` alone is not trustworthy
+        // between two writes this close together (watch.rs), and swapping in
+        // a same-length replacement here would make this test depend on
+        // clock resolution rather than on `poll_file`. `#06f` expands to the
+        // same `#0066ff` (palette.rs), so the assertion below is unaffected.
+        std::fs::write(&path, fixtures::PROJECT.replace("#f05032", "#06f")).unwrap();
         app.poll_file();
 
         assert_eq!(
@@ -2892,7 +2898,10 @@ mod tests {
         app.set_draft("a wordless circular mark");
         assert!(app.is_dirty());
 
-        std::fs::write(&path, fixtures::PROJECT.replace("#f05032", "#0066ff")).unwrap();
+        // `#06f`, not `#0066ff`: same length as the original would leave
+        // `Watcher` with nothing but `mtime` to notice the write by, and nothing
+        // here guarantees the clock ticks between the two (watch.rs).
+        std::fs::write(&path, fixtures::PROJECT.replace("#f05032", "#06f")).unwrap();
         app.poll_file();
 
         assert!(app.is_stale());
@@ -2919,13 +2928,14 @@ mod tests {
 
         app.engage_editor();
         app.set_draft("mine");
-        std::fs::write(&path, fixtures::PROJECT.replace("#f05032", "#0066ff")).unwrap();
+        // `#06f`, same reason as the sibling test above.
+        std::fs::write(&path, fixtures::PROJECT.replace("#f05032", "#06f")).unwrap();
         app.poll_file();
 
         app.save();
         assert!(app.is_dirty(), "the save should not have gone through");
         assert_eq!(
-            std::fs::read_to_string(&path).unwrap().contains("#0066ff"),
+            std::fs::read_to_string(&path).unwrap().contains("#06f"),
             true,
             "their write was overwritten"
         );
