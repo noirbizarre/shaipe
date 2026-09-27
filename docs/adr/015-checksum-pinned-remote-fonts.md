@@ -108,6 +108,10 @@ shorthand later if it turns out to matter.
 - This is the first network-touching code path in the entire crate —
   confirmed by exhaustive search before writing this, not assumed. Named
   plainly here rather than left implicit.
+  > **Since written:** [ADR-017](017-vision-capability-from-models-dev.md)
+  > added a second, for an unrelated reason and nowhere near `src/render/`
+  > either — this one remains the only network access a *render* can ever
+  > depend on, which is the claim invariant 1 actually makes.
 - `AGENTS.md`'s invariant 1 and `README.md`'s two "no network" sentences are
   narrowed, not deleted: they now name this one, opt-in, checksum-pinned
   exception, the same way they'd need to if any future capability earned one.

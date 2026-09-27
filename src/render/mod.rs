@@ -8,8 +8,12 @@
 //! the clock or the environment — and it never reaches the network itself:
 //! a font declared by URL (ADR 015) is resolved, checksum-verified and
 //! cached by [`crate::fonts`] before its bytes ever arrive here, the one
-//! narrow, opt-in exception to "no network" that exists anywhere in Shaipe.
-//! Given the same project bytes, the same specification and the same
+//! narrow, opt-in exception to "no network" that a render can ever depend
+//! on. [`crate::vision`] (ADR 017) also reaches the network, for a reason
+//! that has nothing to do with rendering and nowhere near this module —
+//! naming both here would be the kind of thing that goes stale the next
+//! time either changes, so it stays named once, at its own source. Given
+//! the same project bytes, the same specification and the same
 //! already-resolved font bytes, this produces the same output bytes, on any
 //! machine — which is the property that lets `shaipe render` be a CI check
 //! rather than a convenience.

@@ -20,6 +20,7 @@ use crate::acp::ModelChoice;
 use crate::preview::{Image, Scale};
 use crate::project::{Background, Format, Project, Reference, RenderSpec, Rgba};
 use crate::render::{RenderOptions, Renderer};
+use crate::settings::Settings;
 use crate::tui::modal::{
     ColourPicker, Modal, ModelPicker, ReferencesEditor, RendersEditor, VariantsEditor,
 };
@@ -27,6 +28,7 @@ use crate::tui::render_worker::{Rendered, Worker};
 use crate::tui::toolbar::Button;
 use crate::tui::transcript::Transcript;
 use crate::tui::watch::Watcher;
+use crate::vision::Catalogue;
 
 /// The narrowest the description column may be dragged.
 ///
@@ -500,6 +502,31 @@ pub struct App {
     /// Empty until a session opens and says otherwise — which is not an
     /// error, just nothing for `M` to show yet.
     models: Vec<ModelChoice>,
+    /// The agent's command line, once one has actually started —
+    /// [`Settings`] remembers a chosen model per command, and this is the
+    /// key it is remembered under. `None` before an agent starts, and with
+    /// `--no-agent`, when there is nothing to remember a model for.
+    agent_command: Option<String>,
+    /// Where the model last chosen for [`Self::agent_command`] is
+    /// remembered across runs. Loaded once, in [`Self::configure_agent`] —
+    /// not in [`Self::new`], so every test that never wires up an agent
+    /// stays free of any file I/O.
+    settings: Settings,
+    /// The id of whichever model [`Self::models`] currently marks `current`,
+    /// tracked so [`Self::set_models`] only ever writes to [`Self::settings`]
+    /// when that actually changes, rather than on every report the agent
+    /// happens to resend.
+    current_model: Option<String>,
+    /// Which models are known to have vision, per [models.dev]'s catalogue.
+    /// Empty until [`Self::set_vision`] is told otherwise — which, like
+    /// [`Self::models`] being empty, is not an error, just nothing yet.
+    ///
+    /// [models.dev]: https://models.dev
+    vision: Catalogue,
+    /// Whether the `M` picker has already been opened once on its own, this
+    /// session, because the model in use had no vision. Never twice — see
+    /// [`Self::maybe_nudge_for_vision`].
+    vision_nudge_shown: bool,
     /// What the last keypress asked the agent for, if anything.
     pub pending_agent_request: Option<AgentRequest>,
     /// When the agent last changed what it was doing.
@@ -611,6 +638,11 @@ impl App {
                 reason: "no agent was started".to_owned(),
             },
             models: Vec::new(),
+            agent_command: None,
+            settings: Settings::default(),
+            current_model: None,
+            vision: Catalogue::default(),
+            vision_nudge_shown: false,
             pending_agent_request: None,
             agent_since: Instant::now(),
             view: View::default(),
@@ -1996,8 +2028,76 @@ impl App {
     }
 
     /// Record what an agent's [`crate::acp::AgentUpdate::Models`] reported.
+    ///
+    /// Whichever entry is marked `current` is remembered — via
+    /// [`Self::settings`], keyed by [`Self::agent_command`] — the moment it
+    /// changes, so the next `shaipe tui` for this same agent starts on it
+    /// without `--model` having to say so again. Only on a change: the agent
+    /// resends this list more than once a session, and re-saving the model
+    /// already saved would just be a write that changed nothing.
     pub fn set_models(&mut self, models: Vec<ModelChoice>) {
+        let current_id = models
+            .iter()
+            .find(|model| model.current)
+            .map(|model| model.id.clone());
+
+        // Set *before* the change check below: `maybe_nudge_for_vision` may
+        // call `open_model_picker`, which refuses to open over an empty
+        // list — and until this line, `self.models` is still whatever the
+        // previous report said, not this one.
         self.models = models;
+
+        let changed = current_id.filter(|id| self.current_model.as_deref() != Some(id.as_str()));
+        if let Some(id) = changed {
+            self.current_model = Some(id.clone());
+            if let Some(command) = self.agent_command.clone() {
+                self.settings.set_model(&command, &id);
+            }
+            self.maybe_nudge_for_vision();
+        }
+    }
+
+    /// Called once an agent has actually started, with the exact command
+    /// line it was started as. Everything [`Self::settings`] remembers is
+    /// keyed by this string, so it has to be known before [`Self::set_models`]
+    /// can save anything against it.
+    ///
+    /// Takes an already-loaded [`Settings`] rather than loading one itself —
+    /// what lets a test hand it one pointed at a private `tempdir`, instead
+    /// of every test that starts an agent touching the real, shared,
+    /// machine-wide config directory.
+    pub fn configure_agent(&mut self, command: String, settings: Settings) {
+        self.agent_command = Some(command);
+        self.settings = settings;
+    }
+
+    /// Record which models are known to have vision, per [`Catalogue`].
+    ///
+    /// [models.dev]: https://models.dev
+    pub fn set_vision(&mut self, vision: Catalogue) {
+        self.vision = vision;
+        self.maybe_nudge_for_vision();
+    }
+
+    /// Open the `M` picker on its own, the first time — and only the first
+    /// time — the model actually in use this session is *confirmed* to lack
+    /// vision. Unknown is not confirmed: a model the catalogue has never
+    /// heard of is never nudged over, only one it has said "no" about.
+    ///
+    /// Never switches anything itself. A model can cost differently from
+    /// another, and that is the user's call to make, not Shaipe's to guess
+    /// at on their behalf — see ADR 004 and ADR 017.
+    fn maybe_nudge_for_vision(&mut self) {
+        if self.vision_nudge_shown || self.modal.is_some() {
+            return;
+        }
+        let Some(current) = self.current_model.clone() else {
+            return;
+        };
+        if self.vision.has_vision(&current) == Some(false) {
+            self.vision_nudge_shown = true;
+            self.open_model_picker();
+        }
     }
 
     /// Open the model picker (`M`).
@@ -2013,7 +2113,7 @@ impl App {
             ));
             return;
         }
-        self.modal = Some(Modal::Model(ModelPicker::new(&self.models)));
+        self.modal = Some(Modal::Model(ModelPicker::new(&self.models, &self.vision)));
     }
 
     /// Close whatever modal is open.
@@ -2206,6 +2306,8 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -3005,5 +3107,102 @@ mod tests {
         // And the project in memory is untouched, so nothing was lost.
         assert_eq!(app.project.source(), fixtures::PROJECT);
         drop(directory);
+    }
+
+    fn model(id: &str, current: bool) -> ModelChoice {
+        ModelChoice {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            current,
+        }
+    }
+
+    #[test]
+    fn configuring_the_agent_and_reporting_a_current_model_remembers_it() {
+        let mut app = app();
+        app.configure_agent("opencode".to_owned(), Settings::default());
+
+        app.set_models(vec![model("anthropic/claude-opus-4-5", true)]);
+
+        assert_eq!(
+            app.settings.model_for("opencode"),
+            Some("anthropic/claude-opus-4-5")
+        );
+    }
+
+    #[test]
+    fn reporting_models_before_the_agent_is_configured_does_not_panic_or_save_anything() {
+        let mut app = app();
+
+        app.set_models(vec![model("anthropic/claude-opus-4-5", true)]);
+
+        assert_eq!(app.settings.model_for("opencode"), None);
+    }
+
+    #[test]
+    fn a_confirmed_non_vision_model_opens_the_picker_on_its_own() {
+        let mut app = app();
+        app.configure_agent("opencode".to_owned(), Settings::default());
+        app.set_vision(Catalogue::with_vision(HashMap::from([(
+            "text-only/model".to_owned(),
+            false,
+        )])));
+
+        app.set_models(vec![model("text-only/model", true)]);
+
+        assert!(
+            app.modal.is_some(),
+            "the picker should have opened without being asked"
+        );
+    }
+
+    #[test]
+    fn an_unknown_model_is_never_nudged_over() {
+        let mut app = app();
+        app.configure_agent("opencode".to_owned(), Settings::default());
+        // An empty catalogue: nothing has been fetched yet, or this id
+        // simply is not in it — either way `has_vision` answers `None`, not
+        // the confirmed `Some(false)` a nudge requires.
+        app.set_vision(Catalogue::default());
+
+        app.set_models(vec![model("self-hosted/mystery", true)]);
+
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn a_confirmed_vision_model_is_never_nudged_over() {
+        let mut app = app();
+        app.configure_agent("opencode".to_owned(), Settings::default());
+        app.set_vision(Catalogue::with_vision(HashMap::from([(
+            "anthropic/claude-opus-4-5".to_owned(),
+            true,
+        )])));
+
+        app.set_models(vec![model("anthropic/claude-opus-4-5", true)]);
+
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn the_vision_nudge_fires_at_most_once_a_session() {
+        let mut app = app();
+        app.configure_agent("opencode".to_owned(), Settings::default());
+        app.set_vision(Catalogue::with_vision(HashMap::from([
+            ("text-only/model".to_owned(), false),
+            ("another-text-only/model".to_owned(), false),
+        ])));
+
+        app.set_models(vec![model("text-only/model", true)]);
+        assert!(app.modal.is_some(), "opens the first time");
+        app.close_modal();
+
+        // A different model, also confirmed non-vision — a fresh reason to
+        // nudge if the flag tracked per-model rather than per-session.
+        app.set_models(vec![model("another-text-only/model", true)]);
+        assert!(
+            app.modal.is_none(),
+            "the nudge is a once-a-session courtesy, not a once-per-switch one"
+        );
     }
 }

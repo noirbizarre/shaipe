@@ -6,6 +6,7 @@
 
 use shaipe::acp::{AgentChoice, Policy};
 use shaipe::preview::{Backend, Scale};
+use shaipe::settings::Settings;
 use shaipe::{Project, Result};
 
 use crate::cli::TuiArgs;
@@ -48,7 +49,17 @@ pub async fn run(
                 };
                 let config = match &args.model {
                     Some(model) => config.with_model(model.clone()),
-                    None => config,
+                    // Nothing asked explicitly this run — fall back to
+                    // whatever was last chosen for this exact agent command,
+                    // if anything was. Reuses the very same `with_model` /
+                    // `find_model_choice` round trip `--model` already goes
+                    // through, so a saved id that no longer exists is
+                    // reported exactly the way a mistyped `--model` would be,
+                    // never silently ignored.
+                    None => match Settings::load().model_for(&config.command_line()) {
+                        Some(model) => config.with_model(model.to_owned()),
+                        None => config,
+                    },
                 };
                 AgentChoice::Start(Box::new(config))
             }

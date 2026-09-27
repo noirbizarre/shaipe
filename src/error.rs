@@ -300,6 +300,26 @@ pub enum Error {
         found: String,
     },
 
+    /// The models.dev catalogue used to know which models can see an image
+    /// could not be fetched or understood.
+    #[error("failed to fetch the model catalogue from `{href}`")]
+    #[diagnostic(
+        code(shaipe::vision::fetch),
+        help(
+            "This only affects the `M` picker's vision filter (see ADR 017); \
+             everything else keeps working. Yesterday's cached catalogue is \
+             used if there is one, and Shaipe tries again tomorrow. Check \
+             connectivity if this persists."
+        )
+    )]
+    VisionFetch {
+        /// Where the catalogue was fetched from.
+        href: String,
+        /// Why.
+        #[source]
+        source: Box<ureq::Error>,
+    },
+
     /// A declared font family was not resolved and system fallback was refused.
     #[error("font family `{family}` is not available")]
     #[diagnostic(

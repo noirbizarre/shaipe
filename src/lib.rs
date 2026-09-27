@@ -20,9 +20,11 @@ pub mod mcp;
 pub mod preview;
 pub mod project;
 pub mod render;
+pub mod settings;
 pub mod tools;
 pub mod tui;
 pub mod vectorize;
+pub mod vision;
 
 #[cfg(test)]
 pub(crate) mod fixtures;

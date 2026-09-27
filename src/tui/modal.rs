@@ -18,10 +18,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
 
+use std::collections::HashMap;
+
 use crate::acp::ModelChoice;
 use crate::project::{
     Background, Format, Hsl, Project, Reference, ReferenceKind, RenderSpec, Rgba, Variant,
 };
+use crate::vision::Catalogue;
 
 /// What is covering the workspace.
 ///
@@ -1299,6 +1302,16 @@ const MODEL_PICKER_ROWS: usize = 10;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelPicker {
     models: Vec<ModelChoice>,
+    /// Whether each model in [`Self::models`] is confirmed to have vision, by
+    /// id — only the ids the catalogue actually answered for, per
+    /// [`Catalogue::has_vision`]. Not the whole catalogue: `models` is at
+    /// most a few dozen entries, and cloning thousands of unrelated ones
+    /// into every picker would be pure waste.
+    vision: HashMap<String, bool>,
+    /// Whether [`Self::matches`] hides models `vision` confirms lack it.
+    /// Unknown models (not in `vision` at all) are never hidden by this —
+    /// only a confirmed `Some(false)` is.
+    vision_only: bool,
     /// What has been typed into the search field.
     query: String,
     /// An index into [`Self::matches`], not into `models` — the list it
@@ -1311,12 +1324,21 @@ impl ModelPicker {
     /// Open the picker over whatever models the agent last reported.
     ///
     /// Starts on the one already in use, so opening the picker and pressing
-    /// `Esc` straight away changes nothing.
+    /// `Esc` straight away changes nothing. Starts filtered to vision-capable
+    /// models — Shaipe's whole reason for choosing one at all is that the
+    /// agent can then see the render — with `ctrl-v` there to lift that
+    /// filter for the rare turn that does not need it.
     #[must_use]
-    pub fn new(models: &[ModelChoice]) -> Self {
+    pub fn new(models: &[ModelChoice], vision: &Catalogue) -> Self {
         let selected = models.iter().position(|model| model.current).unwrap_or(0);
+        let known = models
+            .iter()
+            .filter_map(|model| Some((model.id.clone(), vision.has_vision(&model.id)?)))
+            .collect();
         Self {
             models: models.to_vec(),
+            vision: known,
+            vision_only: true,
             query: String::new(),
             selected,
             closed: false,
@@ -1329,16 +1351,36 @@ impl ModelPicker {
         self.closed
     }
 
+    /// Whether `model` is confirmed to have vision, confirmed not to, or
+    /// simply not something the catalogue said anything about.
+    fn has_vision(&self, model: &ModelChoice) -> Option<bool> {
+        self.vision.get(&model.id).copied()
+    }
+
+    /// Flip whether [`Self::matches`] hides confirmed non-vision models.
+    fn toggle_vision_filter(&mut self) {
+        self.vision_only = !self.vision_only;
+        // The match set just changed size; the previous selection may no
+        // longer be inside it, let alone still be the right one to land on.
+        self.selected = 0;
+    }
+
     /// The models the query narrows the list to, best match first.
     ///
     /// Matched against the name and the id, so a query nobody typed the
     /// provider prefix of still finds it. Ties keep the agent's own order,
     /// which is also what an empty query returns unchanged.
+    ///
+    /// A model [`Self::has_vision`] confirms lacks it is dropped first, when
+    /// [`Self::vision_only`] asks for that — before the query even runs,
+    /// since a model filtered out this way is not one narrowing the search
+    /// further should ever bring back.
     fn matches(&self) -> Vec<&ModelChoice> {
         let mut scored: Vec<(usize, usize, &ModelChoice)> = self
             .models
             .iter()
             .enumerate()
+            .filter(|(_, model)| !self.vision_only || self.has_vision(model) != Some(false))
             .filter_map(|(index, model)| {
                 let score = [
                     fuzzy_score(&model.name, &self.query),
@@ -1361,8 +1403,14 @@ impl ModelPicker {
     /// by the event loop, never here: this stays synchronous so it can be
     /// tested without a runtime, the same reason every other modal is.
     /// `Esc` closes without choosing anything; typing narrows the list
-    /// instead of being a shortcut, so every character reaches the query.
+    /// instead of being a shortcut, so every character reaches the query —
+    /// `ctrl-v` is checked first precisely so plain `v` still does that.
     pub fn key(&mut self, key: KeyEvent) -> Option<String> {
+        if key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.toggle_vision_filter();
+            return None;
+        }
+
         match key.code {
             KeyCode::Up => {
                 self.selected = self.selected.saturating_sub(1);
@@ -1449,8 +1497,8 @@ pub fn draw_model_picker(frame: &mut Frame<'_>, picker: &ModelPicker, area: Rect
     let matches = picker.matches();
 
     // Wide enough for the longest name and the query typed so far, with room
-    // for the marker and a border either side; never narrower than the hint
-    // line at the bottom.
+    // for the current marker, the vision glyph and a border either side;
+    // never narrower than the hint line at the bottom.
     let width = picker
         .models
         .iter()
@@ -1459,7 +1507,7 @@ pub fn draw_model_picker(frame: &mut Frame<'_>, picker: &ModelPicker, area: Rect
         .unwrap_or(0)
         .max(picker.query.chars().count() + 2)
         .max(38)
-        .saturating_add(4);
+        .saturating_add(6);
     let width = u16::try_from(width).unwrap_or(u16::MAX);
     // The search field, up to `MODEL_PICKER_ROWS` of the current matches (one
     // if there are none, so "no matches" has a line to sit on), a blank line,
@@ -1519,7 +1567,17 @@ pub fn draw_model_picker(frame: &mut Frame<'_>, picker: &ModelPicker, area: Rect
                 // picker that conflated them could not show "switch away
                 // from the one already selected" at all.
                 let marker = if model.current { "● " } else { "  " };
-                ListItem::new(Line::raw(format!("{marker}{}", model.name)))
+                // A third question, independent of both: whether this one
+                // has been confirmed to see an image. Blank rather than a
+                // "no" glyph when it has not — an unknown model is not one
+                // this picker has anything bad to say about, see
+                // `ModelPicker::matches`.
+                let vision = if picker.has_vision(model) == Some(true) {
+                    "✓ "
+                } else {
+                    "  "
+                };
+                ListItem::new(Line::raw(format!("{marker}{vision}{}", model.name)))
             })
             .collect()
     };
@@ -1537,9 +1595,14 @@ pub fn draw_model_picker(frame: &mut Frame<'_>, picker: &ModelPicker, area: Rect
     }
     frame.render_stateful_widget(list, list_area, &mut state);
 
+    let vision_hint = if picker.vision_only {
+        "ctrl-v show all"
+    } else {
+        "ctrl-v vision only"
+    };
     frame.render_widget(
         Line::styled(
-            "type to search   ↑↓ choose   enter select   esc close",
+            format!("type to search   ↑↓ choose   enter select   esc close   {vision_hint}"),
             Style::default().fg(Color::DarkGray),
         ),
         hint_area,
@@ -2543,13 +2606,13 @@ mod tests {
 
     #[test]
     fn the_model_picker_opens_on_whichever_model_is_already_current() {
-        let picker = ModelPicker::new(&models());
+        let picker = ModelPicker::new(&models(), &Catalogue::default());
         assert_eq!(picker.selected, 1, "the second model is marked current");
     }
 
     #[test]
     fn up_and_down_clamp_at_the_ends_of_the_model_list() {
-        let mut picker = ModelPicker::new(&models());
+        let mut picker = ModelPicker::new(&models(), &Catalogue::default());
 
         press_model(&mut picker, KeyCode::Down);
         assert_eq!(picker.selected, 1, "already at the last model");
@@ -2562,7 +2625,7 @@ mod tests {
 
     #[test]
     fn enter_returns_the_selected_models_id_and_closes_the_picker() {
-        let mut picker = ModelPicker::new(&models());
+        let mut picker = ModelPicker::new(&models(), &Catalogue::default());
         press_model(&mut picker, KeyCode::Up);
 
         let chosen = press_model(&mut picker, KeyCode::Enter);
@@ -2573,7 +2636,7 @@ mod tests {
 
     #[test]
     fn escape_closes_the_model_picker_without_choosing_anything() {
-        let mut picker = ModelPicker::new(&models());
+        let mut picker = ModelPicker::new(&models(), &Catalogue::default());
 
         let chosen = press_model(&mut picker, KeyCode::Esc);
 
@@ -2589,7 +2652,7 @@ mod tests {
 
     #[test]
     fn typing_narrows_the_list_to_names_and_ids_that_match() {
-        let mut picker = ModelPicker::new(&models());
+        let mut picker = ModelPicker::new(&models(), &Catalogue::default());
 
         type_model_query(&mut picker, "opus");
 
@@ -2598,7 +2661,7 @@ mod tests {
 
     #[test]
     fn a_query_matching_nothing_shows_no_matches_and_enter_does_not_close() {
-        let mut picker = ModelPicker::new(&models());
+        let mut picker = ModelPicker::new(&models(), &Catalogue::default());
 
         type_model_query(&mut picker, "zzz");
         assert!(picker.matches().is_empty());
@@ -2611,7 +2674,7 @@ mod tests {
 
     #[test]
     fn backspace_widens_the_list_back_out() {
-        let mut picker = ModelPicker::new(&models());
+        let mut picker = ModelPicker::new(&models(), &Catalogue::default());
 
         type_model_query(&mut picker, "opus");
         assert_eq!(picker.matches().len(), 1);
@@ -2626,12 +2689,94 @@ mod tests {
 
     #[test]
     fn a_match_can_be_found_by_id_as_well_as_by_name() {
-        let mut picker = ModelPicker::new(&models());
+        let mut picker = ModelPicker::new(&models(), &Catalogue::default());
 
         // Not in either model's `name`, only in `id`.
         type_model_query(&mut picker, "grok");
 
         assert_eq!(picker.matches(), vec![&models()[1]]);
+    }
+
+    /// Three models: one the catalogue confirms has vision, one it confirms
+    /// does not, and one it says nothing about at all — the three answers
+    /// [`crate::vision::Catalogue::has_vision`] can actually give.
+    fn models_with_mixed_vision() -> Vec<ModelChoice> {
+        vec![
+            ModelChoice {
+                id: "anthropic/claude-opus-4-5".to_owned(),
+                name: "Claude Opus 4.5".to_owned(),
+                current: true,
+            },
+            ModelChoice {
+                id: "deepinfra/text-only".to_owned(),
+                name: "Text Only".to_owned(),
+                current: false,
+            },
+            ModelChoice {
+                id: "self-hosted/mystery".to_owned(),
+                name: "Mystery Model".to_owned(),
+                current: false,
+            },
+        ]
+    }
+
+    fn mixed_vision_catalogue() -> Catalogue {
+        Catalogue::with_vision(HashMap::from([
+            ("anthropic/claude-opus-4-5".to_owned(), true),
+            ("deepinfra/text-only".to_owned(), false),
+            // Deliberately nothing for "self-hosted/mystery" — the
+            // catalogue never heard of it.
+        ]))
+    }
+
+    #[test]
+    fn the_default_filter_hides_only_confirmed_non_vision_models() {
+        let picker = ModelPicker::new(&models_with_mixed_vision(), &mixed_vision_catalogue());
+
+        let matches = picker.matches();
+        assert_eq!(
+            matches,
+            vec![
+                &models_with_mixed_vision()[0],
+                &models_with_mixed_vision()[2]
+            ],
+            "confirmed vision and unknown both stay; confirmed non-vision does not"
+        );
+    }
+
+    #[test]
+    fn an_unclassified_catalogue_filters_out_nothing() {
+        // The catalogue has not been fetched yet, or nothing in it matches
+        // this agent's model ids at all — either way, `has_vision` answers
+        // `None` for everything, and `None` is never a reason to hide.
+        let picker = ModelPicker::new(&models_with_mixed_vision(), &Catalogue::default());
+
+        assert_eq!(picker.matches().len(), models_with_mixed_vision().len());
+    }
+
+    #[test]
+    fn ctrl_v_toggles_the_filter_and_a_plain_v_still_searches() {
+        let mut picker = ModelPicker::new(&models_with_mixed_vision(), &mixed_vision_catalogue());
+        assert_eq!(picker.matches().len(), 2, "starts filtered to vision-only");
+
+        picker.key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+        assert_eq!(
+            picker.matches().len(),
+            models_with_mixed_vision().len(),
+            "ctrl-v lifts the filter"
+        );
+
+        picker.key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+        assert_eq!(picker.matches().len(), 2, "ctrl-v again restores it");
+
+        // A plain, unmodified `v` must still reach the query — nothing about
+        // adding the toggle should swallow the letter.
+        let mut picker = ModelPicker::new(&models_with_mixed_vision(), &Catalogue::default());
+        press_model(&mut picker, KeyCode::Char('v'));
+        assert_eq!(
+            picker.query, "v",
+            "an unmodified `v` must reach the query, not the toggle"
+        );
     }
 
     #[test]
