@@ -405,15 +405,17 @@ fn serialise(metadata: &Metadata, indent: &str, declare_namespace: bool) -> Stri
 /// a project file, and the OS's own message for that ("Is a directory") does
 /// not say so — and [`Error::Io`] for every other failure to read it.
 pub fn read(path: &Path) -> Result<String> {
-    std::fs::read_to_string(path).map_err(|source| {
-        if source.kind() == std::io::ErrorKind::IsADirectory {
-            Error::NotAFile {
-                path: path.to_path_buf(),
-            }
-        } else {
-            Error::io(path, source)
-        }
-    })
+    // Checked up front rather than matched from the read's own error: Windows
+    // never reports `ErrorKind::IsADirectory` for this — opening a directory
+    // through the same call a file would use fails with plain access-denied,
+    // indistinguishable from a real permissions problem by kind alone.
+    if path.is_dir() {
+        return Err(Error::NotAFile {
+            path: path.to_path_buf(),
+        });
+    }
+
+    std::fs::read_to_string(path).map_err(|source| Error::io(path, source))
 }
 
 /// Write a file, naming it if that fails.
