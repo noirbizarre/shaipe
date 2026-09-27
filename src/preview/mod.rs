@@ -15,6 +15,7 @@ mod image;
 
 pub use image::Image;
 
+use std::io::IsTerminal as _;
 use std::str::FromStr;
 
 use ratatui::Frame;
@@ -232,6 +233,18 @@ impl Preview {
         // fancy ones did not work.
         let mut error = None;
         let mut picker = if requested == Backend::Blocks {
+            Picker::halfblocks()
+        } else if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            // Checked before ever calling into `ratatui-image`, not just as
+            // an optimisation: its Windows raw-mode setup opens the console
+            // object directly (`CONIN$`) rather than checking this process's
+            // actual stdin, so it can succeed against a console this process
+            // is not reading from at all. The query then spins re-reading
+            // immediate EOF from the real, closed stdin forever — nothing
+            // inside it ever times out on its own, unlike the equivalent
+            // failure on unix, where enabling raw mode on a non-tty fails
+            // outright. A test runner's redirected stdio hit exactly this.
+            error = Some("stdin or stdout is not a terminal".to_owned());
             Picker::halfblocks()
         } else {
             Picker::from_query_stdio().unwrap_or_else(|reason| {
