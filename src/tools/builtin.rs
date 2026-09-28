@@ -34,6 +34,7 @@ pub fn all() -> Vec<Box<dyn Tool>> {
         Box::new(GetReferenceAnalysis),
         Box::new(GetReferenceImage),
         Box::new(GetReferenceTrace),
+        Box::new(CompareReference),
         Box::new(GetSvg),
         Box::new(RenderSvg),
         Box::new(RenderGrid),
@@ -528,6 +529,154 @@ impl Tool for GetReferenceTrace {
             "svg": svg,
             "path_count": path_count,
         })))
+    }
+}
+
+/// Compare an attached reference against a rendered variant.
+///
+/// See [`crate::compare`] and ADR 019: renders `variant` at the reference's
+/// own pixel dimensions — never the other way around, so nothing here is a
+/// guess about alignment — and reports every signal separately rather than
+/// folding them into one score, per issue #5's own design brief.
+struct CompareReference;
+
+impl Tool for CompareReference {
+    fn name(&self) -> &'static str {
+        "compare_reference"
+    }
+
+    fn description(&self) -> &'static str {
+        "Compare an attached reference image against a rendered variant, in \
+         one call. Renders `variant` at the reference's own pixel dimensions \
+         — nothing is resampled, so the two are compared on a canvas this \
+         tool established rather than one either side had to guess at — and \
+         reports foreground-mask overlap, bounding-box and centroid offsets, \
+         area difference, whole-canvas pixel error, an SSIM-based \
+         perceptual-similarity score and edge/contour overlap, each named \
+         separately rather than folded into one opaque score. Returns four \
+         images: the reference, the current render, an overlay showing where \
+         the two silhouettes agree and disagree, and a colourised difference \
+         heatmap. This is measurement, not judgement: the numbers say what \
+         differs and by how much, never which side is 'right'."
+    }
+
+    fn input_schema(&self) -> Value {
+        object(
+            &[
+                (
+                    "src",
+                    string(
+                        "Which reference to compare against. One of the \
+                         paths from `get_references`, matched exactly.",
+                    ),
+                ),
+                (
+                    "variant",
+                    string(
+                        "Which variant to render and compare. One of the \
+                         names from `get_variants`.",
+                    ),
+                ),
+            ],
+            &["src", "variant"],
+        )
+    }
+
+    fn call(&self, project: &mut Project, input: &Value) -> Result<ToolOutput> {
+        let src = PathBuf::from(required_str(self.name(), input, "src")?);
+        let variant = required_str(self.name(), input, "variant")?.to_owned();
+
+        let refuse = |reason: String| crate::Error::InvalidToolInput {
+            tool: self.name().to_owned(),
+            reason,
+        };
+
+        // Same resolution as the other reference tools: reported before
+        // anything is read, so an unattached name is a clear refusal, not a
+        // race.
+        let reference = project
+            .metadata()
+            .references
+            .iter()
+            .find(|reference| reference.src == src)
+            .cloned()
+            .ok_or_else(|| {
+                let known: Vec<String> = project
+                    .metadata()
+                    .references
+                    .iter()
+                    .map(|reference| reference.src.display().to_string())
+                    .collect();
+                refuse(format!(
+                    "`{}` is not an attached reference. {}",
+                    src.display(),
+                    if known.is_empty() {
+                        "Nothing is attached yet; call `set_reference` to attach one.".to_owned()
+                    } else {
+                        format!("Attached: {}", known.join(", "))
+                    }
+                ))
+            })?;
+
+        let resolved = project.resolve(&reference.src);
+
+        // Same extension-guessed mime type as `get_reference_image`, needed
+        // to label the reference image correctly rather than always
+        // claiming PNG — the render, overlay and difference images that
+        // follow it genuinely are PNG.
+        let mime_type = reference_mime_type(&resolved).ok_or_else(|| {
+            refuse(format!(
+                "`{}` is not an image format this tool recognises; expected \
+                 .png, .jpg, .jpeg, .gif, .webp or .bmp",
+                resolved.display()
+            ))
+        })?;
+
+        let reference_bytes =
+            std::fs::read(&resolved).map_err(|error| crate::Error::io(resolved.clone(), error))?;
+
+        // The canvas both images are compared on: the reference's own pixel
+        // dimensions, decided once here rather than left for the model to
+        // pick — see the `compare` module doc comment.
+        let reference_probe = crate::analysis::classify(&resolved, &reference_bytes)?;
+
+        let spec = RenderSpec {
+            name: variant.clone(),
+            variant: variant.clone(),
+            width: reference_probe.width,
+            height: reference_probe.height,
+            format: Format::Png,
+            // Always transparent, regardless of what the reference's own
+            // background looks like: `compare` classifies the render's
+            // foreground from its alpha channel, which only means something
+            // if nothing else was painted behind it.
+            background: Background::Transparent,
+        };
+        let asset = Renderer::new(project, RenderOptions::default())?.render(&spec)?;
+
+        // A synthetic label, never read: the render was just produced from
+        // bytes this call encoded itself, so a decode failure here would be
+        // a bug in `compare`, not a fact about the project.
+        let render_label = PathBuf::from(format!("<{variant} render>"));
+        let (comparison, images) =
+            crate::compare::compare(&resolved, &reference_bytes, &render_label, &asset.bytes)?;
+
+        Ok(ToolOutput::json(
+            serde_json::to_value(&comparison).expect("Comparison always serialises"),
+        )
+        .with_images([
+            ToolImage::new(
+                format!("{} ({})", reference.src.display(), reference.kind),
+                mime_type,
+                reference_bytes,
+            ),
+            ToolImage::png(
+                format!("{variant} rendered at {}x{}", spec.width, spec.height),
+                asset.bytes,
+            ),
+            ToolImage::png("overlay: reference vs. render silhouette", images.overlay),
+            ToolImage::png("difference heatmap", images.difference),
+        ]))
     }
 }
 
@@ -1694,6 +1843,95 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, Error::AnalysisDecode { .. }));
+    }
+
+    #[test]
+    fn compare_reference_returns_four_images_and_the_comparison_report() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        std::fs::write(directory.path().join("mockup.png"), ring_png(64)).unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        let output = Registry::new()
+            .call(
+                "compare_reference",
+                &mut project,
+                &json!({ "src": "mockup.png", "variant": "icon" }),
+            )
+            .unwrap();
+
+        assert_eq!(output.value["canvas"]["width"], 64);
+        assert_eq!(output.value["canvas"]["height"], 64);
+        assert!(output.value["foreground"]["intersection_over_union"].is_number());
+        assert!(output.value["perceptual_similarity"]["score"].is_number());
+
+        // Reference, render, overlay, difference — in that order, per the
+        // issue's own "Output" list.
+        let [reference, render, overlay, difference] = &output.images[..] else {
+            panic!("expected exactly four images, got {}", output.images.len());
+        };
+        assert_eq!(reference.mime_type, "image/png");
+        assert_eq!(reference.label, "mockup.png (source)");
+        assert_eq!(render.mime_type, "image/png");
+        assert_eq!(render.label, "icon rendered at 64x64");
+        assert_eq!(overlay.mime_type, "image/png");
+        assert_eq!(difference.mime_type, "image/png");
+
+        // No mutation: this is a `get_`-shaped, read-only tool.
+        assert!(!Registry::new().get("compare_reference").unwrap().mutates());
+    }
+
+    #[test]
+    fn compare_reference_of_an_unknown_src_lists_the_ones_that_are_attached() {
+        let mut project = fixtures::project();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        let error = Registry::new()
+            .call(
+                "compare_reference",
+                &mut project,
+                &json!({ "src": "watermark.png", "variant": "icon" }),
+            )
+            .unwrap_err();
+
+        let rendered = error.to_string();
+        assert!(rendered.contains("mockup.png"), "{rendered}");
+        assert!(matches!(error, Error::InvalidToolInput { .. }));
+    }
+
+    #[test]
+    fn compare_reference_of_an_unknown_variant_is_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        std::fs::write(directory.path().join("mockup.png"), ring_png(64)).unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        let error = Registry::new()
+            .call(
+                "compare_reference",
+                &mut project,
+                &json!({ "src": "mockup.png", "variant": "watermark" }),
+            )
+            .unwrap_err();
+
+        let rendered = format!("{:?}", miette::Report::new(error));
+        assert!(rendered.contains("icon"), "{rendered}");
+        assert!(rendered.contains("wordmark"), "{rendered}");
     }
 
     #[test]

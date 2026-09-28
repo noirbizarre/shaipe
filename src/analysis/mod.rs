@@ -199,10 +199,36 @@ pub struct Symmetry {
     pub vertical: f64,
 }
 
+/// Everything [`analyze`] and [`crate::compare`] both need from a decoded
+/// image before their reports diverge: the raw pixels and a foreground/
+/// background split. [`classify`] is that shared first step — see ADR 018
+/// for why `#5`'s comparison tool reuses this rather than reimplementing its
+/// own background/foreground split.
+pub(crate) struct Classified {
+    /// Image width, in pixels.
+    pub width: u32,
+    /// Image height, in pixels.
+    pub height: u32,
+    /// The decoded pixels, RGBA8, row-major — the same buffer
+    /// `image::DynamicImage::to_rgba8().into_raw()` produces.
+    pub pixels: Vec<u8>,
+    /// The colour sampled from the border, if any border pixel was opaque.
+    /// `None` when the whole border is transparent.
+    pub background_colour: Option<[u8; 3]>,
+    /// Fraction of every pixel below [`TRANSPARENT_ALPHA_THRESHOLD`].
+    pub transparent_fraction: f64,
+    /// Fraction of border pixels agreeing with `background_colour` — see
+    /// [`Background::border_uniformity`], which this becomes verbatim.
+    pub border_uniformity: f64,
+    /// Whether each pixel (row-major, same order as `pixels`) was classified
+    /// as foreground.
+    pub foreground_mask: Vec<bool>,
+}
+
 /// Decode `bytes` (PNG/JPEG/GIF/WEBP/BMP — the formats
-/// [`crate::tools`]'s `get_reference_image` already recognises) and measure
-/// it. `path` is only used to name the reference in an error; it is never
-/// read.
+/// [`crate::tools`]'s `get_reference_image` already recognises) and classify
+/// every pixel as background or foreground. `path` is only used to name the
+/// reference in an error; it is never read.
 ///
 /// The background is sampled from the image's own border, so artwork drawn
 /// all the way to the canvas edge — with no margin at all — corrupts the
@@ -212,7 +238,7 @@ pub struct Symmetry {
 /// # Errors
 ///
 /// Returns [`Error::AnalysisDecode`] if `bytes` is not a recognisable image.
-pub fn analyze(path: &Path, bytes: &[u8]) -> Result<Analysis> {
+pub(crate) fn classify(path: &Path, bytes: &[u8]) -> Result<Classified> {
     let decoded = image::load_from_memory(bytes).map_err(|source| Error::AnalysisDecode {
         path: path.to_path_buf(),
         source,
@@ -220,15 +246,7 @@ pub fn analyze(path: &Path, bytes: &[u8]) -> Result<Analysis> {
 
     let (width, height) = decoded.dimensions();
     let pixels = decoded.to_rgba8().into_raw();
-    let width_usize = width as usize;
-    let height_usize = height as usize;
-    let total_pixels = width_usize * height_usize;
-
-    let dimensions = Dimensions {
-        width,
-        height,
-        aspect_ratio: f64::from(width) / f64::from(height),
-    };
+    let total_pixels = (width as usize) * (height as usize);
 
     // --- background: sampled from the border, never the whole canvas ---
     let mut transparent_count: u64 = 0;
@@ -259,14 +277,7 @@ pub fn analyze(path: &Path, bytes: &[u8]) -> Result<Analysis> {
         None => 1.0,
     };
 
-    let background = Background {
-        transparent_fraction,
-        border_colour: border_colour.map(|(colour, _)| hex(colour)),
-        border_uniformity,
-    };
-
     // --- classify every pixel as background or foreground ---
-    let mut foreground_count: u64 = 0;
     let foreground_mask: Vec<bool> = pixels
         .as_chunks::<4>()
         .0
@@ -277,13 +288,58 @@ pub fn analyze(path: &Path, bytes: &[u8]) -> Result<Analysis> {
                 || border_colour.is_some_and(|(colour, _)| {
                     squared_distance(colour, rgb) <= BACKGROUND_DISTANCE_THRESHOLD
                 });
-            let is_foreground = !is_background;
-            if is_foreground {
-                foreground_count += 1;
-            }
-            is_foreground
+            !is_background
         })
         .collect();
+
+    Ok(Classified {
+        width,
+        height,
+        pixels,
+        background_colour: border_colour.map(|(colour, _)| colour),
+        transparent_fraction,
+        border_uniformity,
+        foreground_mask,
+    })
+}
+
+/// Measure a reference's pixels into a structured, typed report — dimensions,
+/// a background/foreground split, dominant colours, connected regions, holes
+/// and symmetry scores. See the module doc comment and ADR 018 for what each
+/// field means and why. `path` is only used to name the reference in an
+/// error; it is never read.
+///
+/// # Errors
+///
+/// Returns [`Error::AnalysisDecode`] if `bytes` is not a recognisable image.
+pub fn analyze(path: &Path, bytes: &[u8]) -> Result<Analysis> {
+    let Classified {
+        width,
+        height,
+        pixels,
+        background_colour,
+        transparent_fraction,
+        border_uniformity,
+        foreground_mask,
+    } = classify(path, bytes)?;
+
+    let width_usize = width as usize;
+    let height_usize = height as usize;
+    let total_pixels = width_usize * height_usize;
+
+    let dimensions = Dimensions {
+        width,
+        height,
+        aspect_ratio: f64::from(width) / f64::from(height),
+    };
+
+    let background = Background {
+        transparent_fraction,
+        border_colour: background_colour.map(hex),
+        border_uniformity,
+    };
+
+    let foreground_count = foreground_mask.iter().filter(|&&value| value).count() as u64;
 
     // --- dominant colours, among opaque pixels only ---
     let mut colour_counts: BTreeMap<[u8; 3], u64> = BTreeMap::new();
@@ -487,7 +543,11 @@ fn hex(colour: [u8; 3]) -> String {
 
 /// The bounding box of every `true` pixel in `mask` together, ignoring which
 /// component each belongs to. `None` when `mask` holds no `true` pixel.
-fn whole_bounding_box(mask: &[bool], width: usize) -> Option<BoundingBox> {
+///
+/// `pub(crate)` rather than private: [`crate::compare`] measures a
+/// foreground mask's bounding box the same way, against a second image, and
+/// reuses this rather than reimplementing it.
+pub(crate) fn whole_bounding_box(mask: &[bool], width: usize) -> Option<BoundingBox> {
     let (mut min_x, mut min_y, mut max_x, mut max_y) = (u32::MAX, u32::MAX, 0u32, 0u32);
     let mut any = false;
     for (index, &value) in mask.iter().enumerate() {
@@ -507,6 +567,30 @@ fn whole_bounding_box(mask: &[bool], width: usize) -> Option<BoundingBox> {
         y: min_y,
         width: max_x - min_x + 1,
         height: max_y - min_y + 1,
+    })
+}
+
+/// The mean pixel position of every `true` pixel in `mask` together. `None`
+/// when `mask` holds no `true` pixel — the same condition under which
+/// [`whole_bounding_box`] returns `None`.
+///
+/// `pub(crate)` for the same reason as [`whole_bounding_box`]: shared with
+/// [`crate::compare`].
+pub(crate) fn whole_centroid(mask: &[bool], width: usize) -> Option<Centroid> {
+    let mut sum_x = 0.0;
+    let mut sum_y = 0.0;
+    let mut count: u64 = 0;
+    for (index, &value) in mask.iter().enumerate() {
+        if !value {
+            continue;
+        }
+        count += 1;
+        sum_x += (index % width) as f64;
+        sum_y += (index / width) as f64;
+    }
+    (count > 0).then(|| Centroid {
+        x: sum_x / count as f64,
+        y: sum_y / count as f64,
     })
 }
 

@@ -332,6 +332,7 @@ mod tests {
         assert_eq!(
             Registry::new().names(),
             [
+                "compare_reference",
                 "get_palette",
                 "get_project",
                 "get_reference_analysis",

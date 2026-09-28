@@ -128,6 +128,7 @@ fn the_standalone_server_advertises_every_tool() {
     assert_eq!(
         names,
         [
+            "compare_reference",
             "get_palette",
             "get_project",
             "get_reference_analysis",
