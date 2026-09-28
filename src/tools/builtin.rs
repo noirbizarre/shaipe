@@ -403,11 +403,11 @@ fn reference_mime_type(path: &Path) -> Option<&'static str> {
 
 /// Trace an attached reference's pixels into vector paths, algorithmically.
 ///
-/// See [`crate::vectorize`] and ADR 014 for why this exists at all: an LLM
-/// writing `<path d="...">` from a prompt and an image can name the shapes
-/// present but cannot reproduce an exact curve or corner radius from it —
-/// that is a measurement, not a description, and this tool is what actually
-/// measures.
+/// See [`crate::vectorize`] and ADR 014/020 for why this exists at all: an
+/// LLM writing `<path d="...">` from a prompt and an image can name the
+/// shapes present but cannot reproduce an exact curve or corner radius from
+/// it — that is a measurement, not a description, and this tool is what
+/// actually measures.
 struct GetReferenceTrace;
 
 impl Tool for GetReferenceTrace {
@@ -420,17 +420,24 @@ impl Tool for GetReferenceTrace {
          — not by describing the shape, by measuring its pixels. Use this \
          before hand-writing a mark from a `source` reference: an LLM can name \
          the shapes in an image but cannot reproduce exact curves, corner \
-         radii or organic tapering from it; this can. Returns a small \
-         standalone SVG — one silhouette, holes cut by winding, no colour \
-         baked in — to inspect and then hand-graft into a variant with \
+         radii or organic tapering from it; this can. Two modes: `silhouette` \
+         (default) separates one foreground colour from one background into a \
+         single shape, holes cut by winding — good for a single-colour mark, \
+         not for photographs or multi-colour artwork. `colour` clusters the \
+         image into flat-colour regions, each its own path with its own fill \
+         — good for multi-colour artwork; the background becomes one more \
+         region rather than being separated out. Either way, returns a small \
+         standalone SVG, an overall bounding box, and up to 32 traced paths \
+         (bounding box, approximate area and fill colour each) plus the true \
+         path count, together with a rendered preview image — inspect the \
+         preview and the SVG, then hand-graft the markup into a variant with \
          `write_variant` or `write_svg`, the same way any other markup is \
-         merged. Only separates one foreground colour from one background; \
-         it is not for tracing photographs or multi-colour artwork. If the \
-         result is many small fragments instead of one coherent shape, the \
-         mark is probably a medium-brightness colour (a saturated green or \
-         blue reads as roughly as bright as its background to the default \
-         cutoff) rather than genuinely dark — raise `threshold` toward 200+ \
-         and try again."
+         merged. In `silhouette` mode, if the result is many small fragments \
+         instead of one coherent shape, the mark is probably a \
+         medium-brightness colour (a saturated green or blue reads as roughly \
+         as bright as its background to the default cutoff) rather than \
+         genuinely dark — raise `threshold` toward 200+ and try again, or \
+         switch to `colour` mode."
     }
 
     fn input_schema(&self) -> Value {
@@ -444,25 +451,51 @@ impl Tool for GetReferenceTrace {
                     ),
                 ),
                 (
+                    "mode",
+                    json!({
+                        "type": "string",
+                        "enum": ["silhouette", "colour"],
+                        "description": "`silhouette` (default): one dark/light \
+                         foreground vs. background, per ADR 014 — good for a \
+                         single-colour mark. `colour`: hierarchical colour \
+                         clustering, each flat-colour region traced \
+                         separately with its own fill — good for multi-colour \
+                         artwork. `threshold`/`invert` only affect \
+                         `silhouette`; `max_colors` only affects `colour`.",
+                    }),
+                ),
+                (
                     "threshold",
                     json!({
                         "type": "integer",
                         "minimum": 0,
                         "maximum": 255,
-                        "description": "Binary cutoff separating foreground from \
-                         background: pixels darker than this are traced. Lower \
-                         it if background is being traced instead of the mark, \
-                         raise it if part of the mark is being missed. Omit for \
-                         a sensible default (128).",
+                        "description": "`silhouette` mode only. Binary cutoff \
+                         separating foreground from background: pixels \
+                         darker than this are traced. Lower it if background \
+                         is being traced instead of the mark, raise it if \
+                         part of the mark is being missed. Omit for a \
+                         sensible default (128).",
                     }),
                 ),
                 (
                     "invert",
                     boolean(
-                        "Set when the reference is light artwork on a dark \
-                         background, so light pixels are traced as the \
-                         foreground instead of dark ones.",
+                        "`silhouette` mode only. Set when the reference is \
+                         light artwork on a dark background, so light pixels \
+                         are traced as the foreground instead of dark ones.",
                     ),
+                ),
+                (
+                    "max_colors",
+                    json!({
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "`colour` mode only. Caps how many \
+                         distinct colours the clustering keeps, merging the \
+                         rest into their nearest neighbour. Omit to let \
+                         vtracer's own clustering decide.",
+                    }),
                 ),
             ],
             &["src"],
@@ -471,6 +504,22 @@ impl Tool for GetReferenceTrace {
 
     fn call(&self, project: &mut Project, input: &Value) -> Result<ToolOutput> {
         let src = PathBuf::from(required_str(self.name(), input, "src")?);
+
+        let refuse = |reason: String| crate::Error::InvalidToolInput {
+            tool: self.name().to_owned(),
+            reason,
+        };
+
+        let mode = match input.get("mode").and_then(Value::as_str) {
+            None => crate::vectorize::TraceMode::default(),
+            Some("silhouette") => crate::vectorize::TraceMode::Silhouette,
+            Some("colour") => crate::vectorize::TraceMode::Colour,
+            Some(other) => {
+                return Err(refuse(format!(
+                    "`mode` must be `silhouette` or `colour`, got `{other}`"
+                )));
+            }
+        };
         let threshold = input
             .get("threshold")
             .and_then(Value::as_u64)
@@ -479,11 +528,10 @@ impl Tool for GetReferenceTrace {
             .get("invert")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-
-        let refuse = |reason: String| crate::Error::InvalidToolInput {
-            tool: self.name().to_owned(),
-            reason,
-        };
+        let max_colors = input
+            .get("max_colors")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok());
 
         // Same resolution as `get_reference_image`: reported before anything
         // is read, so an unattached name is a clear refusal, not a race.
@@ -516,19 +564,27 @@ impl Tool for GetReferenceTrace {
         let bytes =
             std::fs::read(&resolved).map_err(|error| crate::Error::io(resolved.clone(), error))?;
 
-        let svg = crate::vectorize::trace(
+        let traced = crate::vectorize::trace(
             &resolved,
             &bytes,
-            crate::vectorize::TraceOptions { threshold, invert },
+            crate::vectorize::TraceOptions {
+                mode,
+                threshold,
+                invert,
+                max_colors,
+            },
         )?;
-        let path_count = svg.matches("<path").count();
+        let preview = crate::vectorize::preview(&traced.svg);
 
         Ok(ToolOutput::json(json!({
             "src": reference.src.display().to_string(),
             "resolved": resolved.display().to_string(),
-            "svg": svg,
-            "path_count": path_count,
-        })))
+            "trace": serde_json::to_value(&traced).expect("Traced always serialises"),
+        }))
+        .with_image(ToolImage::png(
+            format!("{} traced ({mode} mode) preview", reference.src.display()),
+            preview,
+        )))
     }
 }
 
@@ -1623,6 +1679,36 @@ mod tests {
         bytes
     }
 
+    /// Two solid-colour discs, side by side on an opaque white background —
+    /// same shape [`crate::vectorize`]'s own colour-mode tests build, reused
+    /// here so this module does not need its own fixture file.
+    fn two_coloured_discs_png(size: u32) -> Vec<u8> {
+        let mut img = image::RgbaImage::from_pixel(size, size, image::Rgba([255, 255, 255, 255]));
+        let colours = [[220u8, 30, 30], [30, 90, 220]];
+        let cell = size / colours.len() as u32;
+        let radius = f64::from(cell) / 2.0 - 4.0;
+        for (index, &[r, g, b]) in colours.iter().enumerate() {
+            let cx = f64::from(index as u32 * cell) + f64::from(cell) / 2.0;
+            let cy = f64::from(size) / 2.0;
+            for y in 0..size {
+                for x in 0..size {
+                    let dx = f64::from(x) - cx;
+                    let dy = f64::from(y) - cy;
+                    if (dx * dx + dy * dy).sqrt() <= radius {
+                        img.put_pixel(x, y, image::Rgba([r, g, b, 255]));
+                    }
+                }
+            }
+        }
+        let mut bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        bytes
+    }
+
     #[test]
     fn get_reference_trace_returns_svg_markup_with_no_colour_baked_in() {
         let directory = tempfile::tempdir().unwrap();
@@ -1645,9 +1731,22 @@ mod tests {
             .unwrap();
 
         assert_eq!(output.value["src"], "mockup.png");
-        assert_eq!(output.value["path_count"], 1);
-        let svg = output.value["svg"].as_str().unwrap();
+        assert_eq!(output.value["trace"]["mode"], "silhouette");
+        assert_eq!(output.value["trace"]["path_count"], 1);
+        assert_eq!(output.value["trace"]["paths"].as_array().unwrap().len(), 1);
+        assert!(
+            output.value["trace"]["bounding_box"]["width"]
+                .as_f64()
+                .unwrap()
+                > 0.0
+        );
+        let svg = output.value["trace"]["svg"].as_str().unwrap();
         assert!(svg.contains("<path"), "{svg}");
+        // A rendered preview travels alongside the JSON, so an agent can
+        // inspect the result without first hand-grafting it into the
+        // project — see ADR 020.
+        assert_eq!(output.images.len(), 1);
+        assert_eq!(output.images[0].mime_type, "image/png");
         // No mutation: this is a `get_` tool, and the project is unread by
         // anything other than resolving where the reference lives.
         assert!(
@@ -1756,7 +1855,63 @@ mod tests {
             )
             .unwrap();
 
-        assert!(output.value["svg"].as_str().unwrap().contains("<path"));
+        assert!(
+            output.value["trace"]["svg"]
+                .as_str()
+                .unwrap()
+                .contains("<path")
+        );
+    }
+
+    #[test]
+    fn get_reference_trace_colour_mode_returns_multiple_paths_with_distinct_fills() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        std::fs::write(
+            directory.path().join("mockup.png"),
+            two_coloured_discs_png(96),
+        )
+        .unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        let output = Registry::new()
+            .call(
+                "get_reference_trace",
+                &mut project,
+                &json!({ "src": "mockup.png", "mode": "colour" }),
+            )
+            .unwrap();
+
+        assert_eq!(output.value["trace"]["mode"], "colour");
+        let path_count = output.value["trace"]["path_count"].as_u64().unwrap();
+        assert!(path_count >= 2, "{}", output.value["trace"]);
+        assert_eq!(output.images.len(), 1);
+    }
+
+    #[test]
+    fn get_reference_trace_of_an_invalid_mode_is_refused() {
+        let mut project = fixtures::project();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        let error = Registry::new()
+            .call(
+                "get_reference_trace",
+                &mut project,
+                &json!({ "src": "mockup.png", "mode": "watercolour" }),
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, Error::InvalidToolInput { .. }));
+        assert!(error.to_string().contains("mode"), "{error}");
     }
 
     #[test]

@@ -40,3 +40,4 @@ by editing the old one. The history is the value.
 - [ADR-017](017-vision-capability-from-models-dev.md) — Vision capability is read from models.dev, cached, never guessed
 - [ADR-018](018-structured-reference-measurement.md) — Measure a reference's pixels into facts, not a model's guess
 - [ADR-019](019-compare-reference.md) — Compare a reference and a render on a canvas the tool chooses, never the model
+- [ADR-020](020-richer-reference-tracing.md) — Richer tracing: colour regions, measured from the SVG a trace produces
