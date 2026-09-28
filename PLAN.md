@@ -256,6 +256,11 @@ see `docs/adr/004-tools-not-a-model.md`.
       dimensions and report foreground/edge overlap, bounding-box and
       centroid offsets, area difference, pixel error and perceptual
       similarity, plus an overlay and a difference heatmap — ADR-019
+- [x] `get_reference_trace` grows a `colour` mode (hierarchical colour
+      clustering, alongside the original single-colour silhouette), an
+      overall bounding box and per-path bounding box/area/fill-colour
+      metadata, and an always-attached rendered preview so a trace can be
+      inspected without first hand-grafting it into the project — ADR-020
 
 ## Artwork
 
