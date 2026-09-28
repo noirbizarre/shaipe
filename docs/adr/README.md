@@ -41,3 +41,4 @@ by editing the old one. The history is the value.
 - [ADR-018](018-structured-reference-measurement.md) — Measure a reference's pixels into facts, not a model's guess
 - [ADR-019](019-compare-reference.md) — Compare a reference and a render on a canvas the tool chooses, never the model
 - [ADR-020](020-richer-reference-tracing.md) — Richer tracing: colour regions, measured from the SVG a trace produces
+- [ADR-021](021-explicit-reconstruction-workflow.md) — Name the workflow's phases; do not track whether they happened

@@ -261,6 +261,12 @@ see `docs/adr/004-tools-not-a-model.md`.
       overall bounding box and per-path bounding box/area/fill-colour
       metadata, and an always-attached rendered preview so a trace can be
       inspected without first hand-grafting it into the project — ADR-020
+- [x] An explicit reconstruction workflow model — `from_scratch`, `reference`
+      and `hybrid`, each with its own ordered phases, `reference`/`hybrid`
+      structurally requiring a comparison before validation — and
+      `get_workflow`, which also recommends tracing vs. hand-construction
+      from a reference's own measurements; guidance, not a tracker of what an
+      agent actually did — ADR-021
 
 ## Artwork
 

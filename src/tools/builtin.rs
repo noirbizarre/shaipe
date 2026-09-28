@@ -35,6 +35,7 @@ pub fn all() -> Vec<Box<dyn Tool>> {
         Box::new(GetReferenceImage),
         Box::new(GetReferenceTrace),
         Box::new(CompareReference),
+        Box::new(GetWorkflow),
         Box::new(GetSvg),
         Box::new(RenderSvg),
         Box::new(RenderGrid),
@@ -733,6 +734,148 @@ impl Tool for CompareReference {
             ToolImage::png("overlay: reference vs. render silhouette", images.overlay),
             ToolImage::png("difference heatmap", images.difference),
         ]))
+    }
+}
+
+/// Name the reconstruction workflow's phases, and, for reference/hybrid
+/// work, recommend a construction strategy grounded in a reference's own
+/// measurements.
+///
+/// See [`crate::workflow`] and ADR 021: this is guidance, not enforcement —
+/// nothing here tracks whether a phase actually happened, and the agent
+/// still decides how the SVG gets constructed.
+struct GetWorkflow;
+
+impl Tool for GetWorkflow {
+    fn name(&self) -> &'static str {
+        "get_workflow"
+    }
+
+    fn description(&self) -> &'static str {
+        "Name the ordered phases of the reconstruction workflow for the kind \
+         of work this is, and recommend a construction strategy for \
+         reference/hybrid work. `from_scratch` (no reference exists): \
+         construct, render, inspect, refine, validate — tracing is never \
+         forced, and validating means checking the render itself. \
+         `reference` (reproducing an attached source) and `hybrid` (mixing a \
+         trace with hand-constructed geometry) share: inspect, analyse, \
+         choose_strategy, construct, render, compare, refine, validate — \
+         validate is only reachable after compare, since there is nothing to \
+         validate a reproduction against without one. This is guidance, not \
+         a checklist Shaipe enforces: it names the intended sequence and, \
+         when `src` is given, grounds `choose_strategy` in real measurements \
+         — it does not track which phases actually happened."
+    }
+
+    fn input_schema(&self) -> Value {
+        object(
+            &[
+                (
+                    "kind",
+                    json!({
+                        "type": "string",
+                        "enum": ["from_scratch", "reference", "hybrid"],
+                        "description": "Which kind of reconstruction work \
+                         this is. `from_scratch`: no reference exists, built \
+                         from a brief alone. `reference`: a `source` \
+                         reference exists and the point is to reproduce it. \
+                         `hybrid`: a reference exists, but the result is \
+                         expected to mix a deterministic trace with \
+                         hand-constructed geometry rather than reproduce it \
+                         exactly.",
+                    }),
+                ),
+                (
+                    "src",
+                    string(
+                        "Only meaningful for `reference`/`hybrid`. One of \
+                         the paths from `get_references`, matched exactly. \
+                         When given, the response includes a \
+                         `choose_strategy` recommendation grounded in that \
+                         reference's own measurements.",
+                    ),
+                ),
+            ],
+            &["kind"],
+        )
+    }
+
+    fn call(&self, project: &mut Project, input: &Value) -> Result<ToolOutput> {
+        let refuse = |reason: String| crate::Error::InvalidToolInput {
+            tool: self.name().to_owned(),
+            reason,
+        };
+
+        let kind = match required_str(self.name(), input, "kind")? {
+            "from_scratch" => crate::workflow::WorkflowKind::FromScratch,
+            "reference" => crate::workflow::WorkflowKind::Reference,
+            "hybrid" => crate::workflow::WorkflowKind::Hybrid,
+            other => {
+                return Err(refuse(format!(
+                    "`kind` must be one of `from_scratch`, `reference` or \
+                     `hybrid`, not `{other}`"
+                )));
+            }
+        };
+
+        let src = input.get("src").and_then(Value::as_str);
+
+        if let (crate::workflow::WorkflowKind::FromScratch, Some(src)) = (kind, src) {
+            return Err(refuse(format!(
+                "`src` (`{src}`) does not apply to `from_scratch` work: \
+                 there is no `choose_strategy` phase to recommend a \
+                 strategy for, since no reference is being reproduced."
+            )));
+        }
+
+        let workflow = crate::workflow::Workflow::for_kind(kind);
+        let mut output = json!({
+            "kind": kind.to_string(),
+            "phases": workflow.phases.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        });
+
+        if let Some(src) = src {
+            let src = PathBuf::from(src);
+
+            // Same resolution as the other reference tools: reported before
+            // anything is read, so an unattached name is a clear refusal,
+            // not a race.
+            let reference = project
+                .metadata()
+                .references
+                .iter()
+                .find(|reference| reference.src == src)
+                .cloned()
+                .ok_or_else(|| {
+                    let known: Vec<String> = project
+                        .metadata()
+                        .references
+                        .iter()
+                        .map(|reference| reference.src.display().to_string())
+                        .collect();
+                    refuse(format!(
+                        "`{}` is not an attached reference. {}",
+                        src.display(),
+                        if known.is_empty() {
+                            "Nothing is attached yet; call `set_reference` to attach one."
+                                .to_owned()
+                        } else {
+                            format!("Attached: {}", known.join(", "))
+                        }
+                    ))
+                })?;
+
+            let resolved = project.resolve(&reference.src);
+            let bytes = std::fs::read(&resolved)
+                .map_err(|error| crate::Error::io(resolved.clone(), error))?;
+            let analysis = crate::analysis::analyze(&resolved, &bytes)?;
+            let recommendation = crate::workflow::recommend_strategy(kind, &analysis);
+
+            output["strategy"] = serde_json::to_value(&recommendation)
+                .expect("StrategyRecommendation always serialises");
+        }
+
+        Ok(ToolOutput::json(output))
     }
 }
 
@@ -2087,6 +2230,139 @@ mod tests {
         let rendered = format!("{:?}", miette::Report::new(error));
         assert!(rendered.contains("icon"), "{rendered}");
         assert!(rendered.contains("wordmark"), "{rendered}");
+    }
+
+    #[test]
+    fn get_workflow_lists_from_scratch_phases_without_a_source() {
+        let value = value("get_workflow", json!({ "kind": "from_scratch" }));
+        assert_eq!(value["kind"], "from_scratch");
+        assert_eq!(
+            value["phases"],
+            json!(["construct", "render", "inspect", "refine", "validate"])
+        );
+        assert_eq!(value.get("strategy"), None);
+    }
+
+    #[test]
+    fn get_workflow_lists_reference_phases_including_compare_before_validate() {
+        let value = value("get_workflow", json!({ "kind": "reference" }));
+        assert_eq!(value["kind"], "reference");
+        let phases: Vec<&str> = value["phases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|phase| phase.as_str().unwrap())
+            .collect();
+        let compare = phases.iter().position(|phase| *phase == "compare").unwrap();
+        let validate = phases
+            .iter()
+            .position(|phase| *phase == "validate")
+            .unwrap();
+        assert!(compare < validate, "{phases:?}");
+        // No mutation: this is a `get_`-shaped, read-only tool.
+        assert!(!Registry::new().get("get_workflow").unwrap().mutates());
+    }
+
+    #[test]
+    fn get_workflow_recommends_tracing_a_measurable_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        std::fs::write(directory.path().join("mockup.png"), ring_png(64)).unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        let output = Registry::new()
+            .call(
+                "get_workflow",
+                &mut project,
+                &json!({ "kind": "reference", "src": "mockup.png" }),
+            )
+            .unwrap();
+
+        assert_eq!(output.value["strategy"]["recommended"], "trace");
+        assert_eq!(output.value["strategy"]["region_count"], 1);
+    }
+
+    #[test]
+    fn get_workflow_recommends_mixing_for_hybrid_work_regardless_of_measurements() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        std::fs::write(directory.path().join("mockup.png"), ring_png(64)).unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        let output = Registry::new()
+            .call(
+                "get_workflow",
+                &mut project,
+                &json!({ "kind": "hybrid", "src": "mockup.png" }),
+            )
+            .unwrap();
+
+        assert_eq!(output.value["strategy"]["recommended"], "hybrid");
+    }
+
+    #[test]
+    fn get_workflow_refuses_a_source_for_from_scratch_work() {
+        let mut project = fixtures::project();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        let error = Registry::new()
+            .call(
+                "get_workflow",
+                &mut project,
+                &json!({ "kind": "from_scratch", "src": "mockup.png" }),
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, Error::InvalidToolInput { .. }));
+    }
+
+    #[test]
+    fn get_workflow_refuses_an_unknown_kind() {
+        let error = Registry::new()
+            .call(
+                "get_workflow",
+                &mut fixtures::project(),
+                &json!({ "kind": "improvised" }),
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, Error::InvalidToolInput { .. }));
+    }
+
+    #[test]
+    fn get_workflow_refuses_an_unattached_reference() {
+        let mut project = fixtures::project();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        let error = Registry::new()
+            .call(
+                "get_workflow",
+                &mut project,
+                &json!({ "kind": "reference", "src": "watermark.png" }),
+            )
+            .unwrap_err();
+
+        let rendered = error.to_string();
+        assert!(rendered.contains("mockup.png"), "{rendered}");
+        assert!(matches!(error, Error::InvalidToolInput { .. }));
     }
 
     #[test]

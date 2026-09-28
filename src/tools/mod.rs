@@ -341,6 +341,7 @@ mod tests {
                 "get_references",
                 "get_svg",
                 "get_variants",
+                "get_workflow",
                 "render_grid",
                 "render_svg",
                 "set_generation",

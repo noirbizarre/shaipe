@@ -27,6 +27,7 @@ pub mod tools;
 pub mod tui;
 pub mod vectorize;
 pub mod vision;
+pub mod workflow;
 
 #[cfg(test)]
 pub(crate) mod fixtures;
