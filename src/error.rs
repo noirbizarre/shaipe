@@ -406,15 +406,17 @@ pub enum Error {
         path: PathBuf,
     },
 
-    /// A reference image could not be decoded for structured analysis.
+    /// A reference image could not be decoded for structured analysis or
+    /// comparison. Shared by `get_reference_analysis` and `compare_reference`
+    /// — both build on the same [`crate::analysis::classify`] — so the help
+    /// text names neither specifically.
     #[error("failed to decode `{}` as an image", path.display())]
     #[diagnostic(
         code(shaipe::analysis::decode),
         help(
-            "`get_reference_analysis` recognises the same formats as \
-             `get_reference_image` — .png, .jpg, .jpeg, .gif, .webp and \
-             .bmp — and needs the bytes to actually be one of them, not \
-             just named like one."
+            "The same raster formats `get_reference_image` recognises are \
+             accepted — .png, .jpg, .jpeg, .gif, .webp and .bmp — and the \
+             bytes need to actually be one of them, not just named like one."
         )
     )]
     AnalysisDecode {
@@ -423,6 +425,45 @@ pub enum Error {
         /// Why.
         #[source]
         source: image::ImageError,
+    },
+
+    /// `compare_reference` was handed two images of different pixel
+    /// dimensions. Unreachable through the tool itself — it renders the
+    /// variant at the reference's own dimensions before comparing — kept as
+    /// a typed error rather than an assertion because [`crate::compare::compare`]
+    /// is `pub(crate)` and a future caller within the crate should be told
+    /// what went wrong rather than hit an index panic in the comparison math.
+    #[error(
+        "cannot compare a {reference_width}x{reference_height} reference against a \
+         {render_width}x{render_height} render"
+    )]
+    #[diagnostic(
+        code(shaipe::compare::dimension_mismatch),
+        help(
+            "`compare_reference` renders the variant at the reference's own \
+             pixel dimensions before comparing; seeing this means that \
+             invariant was broken elsewhere, not that the reference or the \
+             variant is at fault."
+        )
+    )]
+    CompareDimensionMismatch {
+        /// The reference's width.
+        reference_width: u32,
+        /// The reference's height.
+        reference_height: u32,
+        /// The render's width.
+        render_width: u32,
+        /// The render's height.
+        render_height: u32,
+    },
+
+    /// The perceptual-similarity comparison itself failed.
+    #[error("perceptual similarity comparison failed: {source}")]
+    #[diagnostic(code(shaipe::compare::perceptual_similarity))]
+    PerceptualSimilarity {
+        /// What the comparison crate reported.
+        #[source]
+        source: image_compare::CompareError,
     },
 
     /// A tool was invoked that the registry does not know.

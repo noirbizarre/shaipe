@@ -211,6 +211,13 @@ image = { version = "0.25.10", default-features = false, features = [
 # Pinned to an exact pre-1.0 alpha; re-read its changelog before ever bumping.
 vtracer = "=1.0.0-alpha.4"
 
+# Perceptual similarity for `compare_reference` — see ADR 019. Already builds
+# on the `image` crate above rather than bringing its own decoder, and gives
+# both an SSIM-based score and a per-pixel diff image we reuse as the
+# difference heatmap. Simple pixel metrics (MAE/RMSE/changed-pixel fraction)
+# stay hand-rolled in `src/compare/`; only the SSIM math is borrowed.
+image-compare = "0.5.0"
+
 # The `render` tool returns its PNG to an agent base64-encoded.
 base64 = "0.23.1"
 

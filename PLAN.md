@@ -252,6 +252,10 @@ see `docs/adr/004-tools-not-a-model.md`.
       attached reference: dimensions, background/foreground split, dominant
       colours, connected regions, holes and symmetry scores, distinct from
       semantic interpretation — ADR-018
+- [x] `compare_reference` — render a variant at a reference's own pixel
+      dimensions and report foreground/edge overlap, bounding-box and
+      centroid offsets, area difference, pixel error and perceptual
+      similarity, plus an overlay and a difference heatmap — ADR-019
 
 ## Artwork
 
