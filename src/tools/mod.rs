@@ -257,6 +257,25 @@ pub(crate) fn optional_u32(input: &Value, name: &str, fallback: u32) -> u32 {
 }
 
 #[cfg(test)]
+/// Every backticked word in `text` that has the shape of a tool name.
+///
+/// By the closed verb set of ADR 007, so that `source` or `<image>` in the
+/// same prose are not mistaken for tools. Shared by every module whose prompt
+/// text names tools, so each is checked against the registry the same way.
+pub(crate) fn tool_names_in(text: &str) -> Vec<String> {
+    text.split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|word| {
+            ["get_", "render_", "write_", "set_", "compare_"]
+                .iter()
+                .any(|verb| word.starts_with(verb))
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+#[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
 
@@ -418,23 +437,6 @@ mod tests {
             assert_eq!(descriptor.input_schema, tool.input_schema());
             assert_eq!(descriptor.mutates, tool.mutates());
         }
-    }
-
-    /// Every backticked word in `text` that has the shape of a tool name.
-    ///
-    /// By the closed verb set of ADR 007, so that `source` or `<image>` in the
-    /// same prose are not mistaken for tools.
-    fn tool_names_in(text: &str) -> Vec<String> {
-        text.split('`')
-            .skip(1)
-            .step_by(2)
-            .filter(|word| {
-                ["get_", "render_", "write_", "set_", "compare_"]
-                    .iter()
-                    .any(|verb| word.starts_with(verb))
-            })
-            .map(str::to_owned)
-            .collect()
     }
 
     #[test]

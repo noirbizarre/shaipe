@@ -2310,6 +2310,28 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_tool_the_turn_names_exists() {
+        // The turn is prompt text that names tools. Both branches: the one
+        // with references is where it points at `get_workflow`.
+        let names = crate::tools::Registry::new().names();
+        let attached = [Reference::new(
+            "logo.png",
+            crate::project::ReferenceKind::Source,
+        )];
+
+        for text in [instruct("a mark", &[]), instruct("a mark", &attached)] {
+            let mentioned = crate::tools::tool_names_in(&text);
+            assert!(!mentioned.is_empty(), "the turn names no tool at all");
+            for name in mentioned {
+                assert!(
+                    names.contains(&name),
+                    "the turn names `{name}`, which is not a tool"
+                );
+            }
+        }
+    }
+
     use std::collections::HashMap;
 
     use pretty_assertions::assert_eq;

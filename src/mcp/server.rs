@@ -24,8 +24,8 @@ These tools operate on the Shaipe project the user currently has open — a \
 single SVG file that carries the artwork and, in its metadata, the palette, \
 variants and render specifications that describe it.
 
-Call `get_project` first, to learn what the project's variants and colours are \
-named. You cannot see the artwork by reading the SVG: call `render_svg` to \
+`get_project` tells you what the project's variants and colours are named. \
+You cannot see the artwork by reading the SVG: call `render_svg` to \
 look at it, and `render_grid` to check that it still reads when small.
 
 Edit by calling `get_svg`, changing the whole document, and sending it back \
@@ -37,8 +37,9 @@ person watching it.
 
 For a change contained to one variant, prefer `write_variant` over `write_svg`: \
 it replaces just that element and is validated the same way, without \
-resending the whole document. `set_palette_colour` and `set_generation` edit \
-the project's metadata directly and need no document at all.";
+resending the whole document. `set_palette_colour`, `set_reference` and \
+`set_generation` edit the project's metadata directly and need no document \
+at all.";
 
 /// An MCP server over one Shaipe session.
 ///
@@ -265,7 +266,43 @@ mod tests {
 
     use super::*;
     use crate::fixtures;
-    use crate::tools::Registry;
+    use crate::tools::{Registry, tool_names_in};
+
+    #[test]
+    fn every_tool_the_preamble_names_exists() {
+        // Prompt text that names tools, like the workflow instructions: one
+        // renamed without it would send an agent to call something absent.
+        let names = Registry::new().names();
+        let mentioned = tool_names_in(PREAMBLE);
+
+        assert!(!mentioned.is_empty(), "the preamble names no tool at all");
+        for name in mentioned {
+            assert!(
+                names.contains(&name),
+                "the preamble names `{name}`, which is not a tool"
+            );
+        }
+    }
+
+    #[test]
+    fn the_preamble_names_every_tool_that_edits_the_project() {
+        // `set_reference` was missing, so an agent told to change an attached
+        // reference was told nothing about the tool that does it.
+        for tool in Registry::new().tools().filter(|tool| tool.mutates()) {
+            assert!(
+                PREAMBLE.contains(&format!("`{}`", tool.name())),
+                "the preamble does not name `{}`",
+                tool.name()
+            );
+        }
+    }
+
+    #[test]
+    fn the_preamble_does_not_claim_a_first_step() {
+        // The phrasing ADR 023 bans from tool descriptions, which this text
+        // had been exempt from only because nothing checked it.
+        assert!(!PREAMBLE.to_lowercase().contains("call `get_project` first"));
+    }
 
     /// A real client talking to a real server over an in-process duplex.
     ///
