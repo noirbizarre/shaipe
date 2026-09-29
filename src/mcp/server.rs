@@ -169,10 +169,29 @@ fn present(output: ToolOutput) -> Vec<ContentBlock> {
 fn explain(error: &Error) -> String {
     use miette::Diagnostic as _;
 
-    match error.help() {
+    let mut text = match error.help() {
         Some(help) => format!("{error}\n\n{help}"),
         None => error.to_string(),
+    };
+
+    // The cause travels too. Without it a rejected write says only that the
+    // SVG "is not a valid Shaipe project", and a file that could not be read
+    // says only which file — never whether it was missing, unreadable or
+    // malformed, which are the three things a model would do differently.
+    // A cause that is itself one of Shaipe's errors brings its own advice.
+    let mut cause = std::error::Error::source(error);
+    while let Some(current) = cause {
+        text.push_str(&format!("\n\nCaused by: {current}"));
+        if let Some(help) = current
+            .downcast_ref::<Error>()
+            .and_then(miette::Diagnostic::help)
+        {
+            text.push_str(&format!("\n{help}"));
+        }
+        cause = current.source();
     }
+
+    text
 }
 
 impl ServerHandler for Server {
@@ -463,6 +482,63 @@ mod tests {
             .unwrap();
 
         assert_eq!(before.content, after.content);
+    }
+
+    #[tokio::test]
+    async fn a_rejected_write_says_why_it_was_rejected() {
+        // "Not a valid Shaipe project" alone leaves a model to guess between
+        // a truncated document, a lost metadata block and a bad version, and
+        // the fixes differ. The cause is the error's source, and only the
+        // adapter can put it on the wire.
+        let client = client().await;
+        let result = client
+            .call_tool(
+                rmcp::model::CallToolRequestParams::new("write_svg").with_arguments(
+                    json!({
+                        "source": "<svg xmlns=\"http://www.w3.org/2000/svg\"><circle r=\"5\"/></svg>"
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.is_error, Some(true));
+        let text = result
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text(text) => Some(text.text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+
+        assert!(text.contains("not a valid Shaipe project"), "{text}");
+        assert!(text.contains("Caused by:"), "{text}");
+        assert!(text.to_lowercase().contains("metadata"), "{text}");
+    }
+
+    #[test]
+    fn an_error_with_no_cause_is_explained_without_one() {
+        let text = explain(&Error::UnknownTool {
+            tool: "vectorise".to_owned(),
+            known: vec!["render_svg".to_owned()],
+        });
+
+        assert!(!text.contains("Caused by:"), "{text}");
+    }
+
+    #[test]
+    fn a_file_that_could_not_be_read_says_whether_it_was_missing() {
+        let text = explain(&Error::io(
+            "mockup.png",
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+        ));
+
+        assert!(text.contains("mockup.png"), "{text}");
+        assert!(text.contains("Caused by:"), "{text}");
     }
 
     #[tokio::test]

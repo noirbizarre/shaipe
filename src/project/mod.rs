@@ -202,6 +202,17 @@ impl Project {
         Ok(())
     }
 
+    /// How many elements' attributes are bound to a palette colour.
+    ///
+    /// The number of attributes [`Project::restyle`] would rewrite for `name`.
+    ///
+    /// # Errors
+    ///
+    /// As [`document::count_bindings`].
+    pub fn bindings_of(&self, name: &str) -> Result<usize> {
+        document::count_bindings(&self.source, name, &self.path)
+    }
+
     /// The bytes this project would be written as.
     ///
     /// Identical to [`Project::source`] apart from the metadata element, and

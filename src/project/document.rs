@@ -212,6 +212,32 @@ pub fn apply_binding(source: &str, name: &str, value: Rgba, path: &Path) -> Resu
     Ok(output)
 }
 
+/// How many `shaipe:fill`/`shaipe:stroke` attributes name a palette colour.
+///
+/// What [`apply_binding`] would rewrite, counted without rewriting it, so
+/// `set_palette_colour` can say how much artwork a change reached. Zero is
+/// otherwise indistinguishable from success: the palette changes either way,
+/// and an agent that expected the drawing to follow would never learn it did
+/// not.
+///
+/// # Errors
+///
+/// As [`apply_binding`].
+pub fn count_bindings(source: &str, name: &str, path: &Path) -> Result<usize> {
+    let document = parse(source, path)?;
+
+    Ok(document
+        .descendants()
+        .filter(Node::is_element)
+        .flat_map(|node| {
+            ["fill", "stroke"]
+                .into_iter()
+                .filter_map(move |attribute| node.attribute((NAMESPACE, attribute)))
+        })
+        .filter(|binding| *binding == name)
+        .count())
+}
+
 /// Escape the five characters XML will not accept as text or in an attribute.
 fn escape(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());

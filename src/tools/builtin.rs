@@ -59,6 +59,77 @@ const DEFAULT_GRID: [u32; 5] = [512, 128, 64, 32, 16];
 /// is a context window spent on the model's own typo.
 const MAX_GRID: usize = 8;
 
+/// What every write tool says about the artwork it has just accepted.
+///
+/// Acceptance means the document is valid, not that it looks right, and an
+/// agent that has just been told `ok` is inclined to stop. The pointer to the
+/// next step travels in the result rather than only in the description, which
+/// the model read many turns ago.
+const AFTER_A_WRITE: &str = "Valid is not finished: call `render_svg` to look at the result. \
+    For a `source` reference, call `compare_reference` as well and fix the largest difference.";
+
+/// What every write tool says about where the change went.
+///
+/// Says what *this call* did rather than what the project is: under
+/// `shaipe mcp --write` the session saves after a mutating call, so a flat
+/// "nothing was written" would be false there.
+const IN_MEMORY: &str = "The project has changed in memory. This call did not write to disk; \
+    that happens only if the server was started with `--write` or the user saves.";
+
+/// The attached reference a `src` names, or the refusal that lists the ones
+/// there are.
+///
+/// One place rather than one copy per reference tool: five tools resolve a
+/// `src` and the wording that tells a model how to recover should not differ
+/// between them. Matched exactly against what is recorded, never against the
+/// resolved path, so the only spelling that works is the one `get_references`
+/// prints.
+fn attached_reference(tool: &str, project: &Project, src: &Path) -> Result<Reference> {
+    let references = &project.metadata().references;
+
+    references
+        .iter()
+        .find(|reference| reference.src == src)
+        .cloned()
+        .ok_or_else(|| crate::Error::InvalidToolInput {
+            tool: tool.to_owned(),
+            reason: format!(
+                "`{}` is not an attached reference. {}",
+                src.display(),
+                if references.is_empty() {
+                    "Nothing is attached yet; call `set_reference` to attach one.".to_owned()
+                } else {
+                    format!(
+                        "Attached: {}. Pass one of these exactly as `get_references` lists it, \
+                         or attach a new file with `set_reference`.",
+                        references
+                            .iter()
+                            .map(|reference| reference.src.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
+            ),
+        })
+}
+
+/// Turn a colour that would not parse into a refusal that says how to fix it.
+///
+/// The parse error carries the accepted formats as its help, and re-wrapping
+/// it as an `InvalidToolInput` by `Display` alone used to throw that away: the
+/// model was told its colour was wrong and not what a right one looks like.
+fn bad_colour(tool: &str, argument: &str, error: &crate::Error) -> crate::Error {
+    use miette::Diagnostic as _;
+
+    crate::Error::InvalidToolInput {
+        tool: tool.to_owned(),
+        reason: match error.help() {
+            Some(help) => format!("`{argument}`: {error}. {help}"),
+            None => format!("`{argument}`: {error}"),
+        },
+    }
+}
+
 /// Describe the whole project.
 struct GetProject;
 
@@ -68,9 +139,11 @@ impl Tool for GetProject {
     }
 
     fn description(&self) -> &'static str {
-        "Describe a Shaipe project: its prompt, palette, fonts, variants, \
-         references and the assets it declares. Call this first — it is the \
-         only way to learn what the project's variants and colours are named."
+        "Describe the whole project in one call: its prompt, palette, fonts, \
+         variants, references and the assets it declares. A good first call, \
+         to learn what the project contains and what its variants and colours \
+         are named; `get_variants`, `get_palette` and `get_references` return \
+         the same parts on their own."
     }
 
     fn input_schema(&self) -> Value {
@@ -95,7 +168,10 @@ impl Tool for GetVariants {
     fn description(&self) -> &'static str {
         "List the project's variants: the named parts of the SVG that can be \
          rendered on their own, such as an icon or a wordmark, and the element \
-         id in the document that draws each one."
+         id in the document that draws each one. The names are what \
+         `render_svg`, `compare_reference` and `write_variant` take; the \
+         element id is what a rewritten element must keep. `primary` marks \
+         the variant the document root draws."
     }
 
     fn input_schema(&self) -> Value {
@@ -131,7 +207,7 @@ impl Tool for GetPalette {
     fn description(&self) -> &'static str {
         "List the project's colours: each one's name, CSS hex value and \
          semantic role. Use these values rather than inventing colours when \
-         editing the artwork."
+         editing the artwork, and change one with `set_palette_colour`."
     }
 
     fn input_schema(&self) -> Value {
@@ -167,9 +243,12 @@ impl Tool for GetReferences {
 
     fn description(&self) -> &'static str {
         "List the files attached to the project for context: images or \
-         documents recorded as a source to reproduce, inspiration to take \
-         cues from, or a baseline rendering to compare against. Each entry \
-         reports whether the file actually exists."
+         documents recorded as a `source` to reproduce, `inspiration` to take \
+         cues from, or a `baseline` rendering to compare against. Each entry \
+         reports whether the file exists (`present`) but not what it shows: \
+         call `get_reference_image` to look at one. The reference tools take \
+         a `src` exactly as listed here, and only for a present raster image; \
+         `set_reference` attaches another."
     }
 
     fn input_schema(&self) -> Value {
@@ -212,20 +291,19 @@ impl Tool for GetReferenceAnalysis {
     }
 
     fn description(&self) -> &'static str {
-        "Measure an attached reference image's pixels into objective facts: \
+        "Measure an attached raster reference's pixels into objective facts: \
          dimensions, a background/foreground split, dominant colours, \
          connected regions with bounding boxes and centroids, holes, and \
-         left-right/top-bottom symmetry scores. This is measurement, not \
-         semantic interpretation — it cannot say a region is a \"castle\" or \
-         a \"letter A\", only where it is, how big it is and what colour \
-         sits near it; naming what a region is remains the vision model's \
-         job. Use this before `get_reference_trace` or hand-composing a \
-         variant, to ground layout and colour guesses in actual pixels. \
-         Only separates one background colour, sampled from the image \
-         border, from everything else — unreliable for photographs, busy \
-         multi-region backgrounds, or artwork drawn all the way to the \
-         canvas edge with no margin, the same caveat `get_reference_trace` \
-         gives for its own threshold."
+         left-right/top-bottom symmetry scores, all in the reference's own \
+         pixels. This is measurement, not interpretation — it cannot say a \
+         region is a \"castle\" or a \"letter A\", only where it is, how big \
+         and what colour; naming it remains your job. Call it after \
+         `get_reference_image` and before `get_reference_trace` or \
+         constructing a variant by hand, to ground layout and colour in real \
+         pixels rather than in a guess. Not for photographs, busy \
+         backgrounds, or artwork that touches the canvas edge: it separates \
+         only one background colour, sampled from the border, from \
+         everything else."
     }
 
     fn input_schema(&self) -> Value {
@@ -244,36 +322,9 @@ impl Tool for GetReferenceAnalysis {
     fn call(&self, project: &mut Project, input: &Value) -> Result<ToolOutput> {
         let src = PathBuf::from(required_str(self.name(), input, "src")?);
 
-        let refuse = |reason: String| crate::Error::InvalidToolInput {
-            tool: self.name().to_owned(),
-            reason,
-        };
-
-        // Same resolution as `get_reference_image`: reported before anything
-        // is read, so an unattached name is a clear refusal, not a race.
-        let reference = project
-            .metadata()
-            .references
-            .iter()
-            .find(|reference| reference.src == src)
-            .cloned()
-            .ok_or_else(|| {
-                let known: Vec<String> = project
-                    .metadata()
-                    .references
-                    .iter()
-                    .map(|reference| reference.src.display().to_string())
-                    .collect();
-                refuse(format!(
-                    "`{}` is not an attached reference. {}",
-                    src.display(),
-                    if known.is_empty() {
-                        "Nothing is attached yet; call `set_reference` to attach one.".to_owned()
-                    } else {
-                        format!("Attached: {}", known.join(", "))
-                    }
-                ))
-            })?;
+        // Reported before anything is read, so an unattached name is a clear
+        // refusal, not a race.
+        let reference = attached_reference(self.name(), project, &src)?;
 
         let resolved = project.resolve(&reference.src);
 
@@ -300,10 +351,13 @@ impl Tool for GetReferenceImage {
     }
 
     fn description(&self) -> &'static str {
-        "Read an attached reference file's bytes and look at it. Use this \
-         before tracing or matching a `source` reference — `get_references` \
-         only reports whether the file exists, not what it shows. Supports \
-         PNG, JPEG, GIF, WEBP and BMP."
+        "Look at an attached raster reference (PNG, JPEG, GIF, WEBP or BMP): \
+         returns the image itself and, when the header can be read, its pixel \
+         dimensions. `get_references` only says a file exists, not what it \
+         shows, so look before you measure, trace or write anything. Cannot \
+         show an SVG or PDF reference. The image is returned as it is, \
+         unresized; its dimensions are the size `compare_reference` will \
+         render at."
     }
 
     fn input_schema(&self) -> Value {
@@ -322,38 +376,18 @@ impl Tool for GetReferenceImage {
     fn call(&self, project: &mut Project, input: &Value) -> Result<ToolOutput> {
         let src = PathBuf::from(required_str(self.name(), input, "src")?);
 
-        let refuse = |reason: String| crate::Error::InvalidToolInput {
-            tool: self.name().to_owned(),
-            reason,
-        };
-
         // Resolved before anything is read, so a name that was never attached
         // is reported without ever touching the filesystem.
-        let reference = project
-            .metadata()
-            .references
-            .iter()
-            .find(|reference| reference.src == src)
-            .cloned()
-            .ok_or_else(|| {
-                let known: Vec<String> = project
-                    .metadata()
-                    .references
-                    .iter()
-                    .map(|reference| reference.src.display().to_string())
-                    .collect();
-                refuse(format!(
-                    "`{}` is not an attached reference. {}",
-                    src.display(),
-                    if known.is_empty() {
-                        "Nothing is attached yet; call `set_reference` to attach one.".to_owned()
-                    } else {
-                        format!("Attached: {}", known.join(", "))
-                    }
-                ))
-            })?;
+        let reference = attached_reference(self.name(), project, &src)?;
 
         let resolved = project.resolve(&reference.src);
+
+        // Checked before the file is read: an SVG or PDF reference is refused
+        // for what it is, rather than for whatever reading it happened to
+        // say first. Guessed from the extension, never sniffed from the
+        // bytes, so an agent that attaches a mislabelled file gets a
+        // mislabelled image — its mistake to notice, not Shaipe's to fix.
+        let mime_type = reference_mime_type_or_refuse(self.name(), &resolved)?;
 
         // Missing or unreadable reads exactly like any other file-access
         // failure in the crate — `get_references`' `present` already told the
@@ -362,25 +396,17 @@ impl Tool for GetReferenceImage {
         let bytes =
             std::fs::read(&resolved).map_err(|error| crate::Error::io(resolved.clone(), error))?;
 
-        // Guessed from the extension, never sniffed from the bytes: Shaipe
-        // reads nothing about the file's content here, the same way
-        // `get_references`' `present` only checks existence. An agent that
-        // attaches a mislabelled file gets a mislabelled image, which is its
-        // mistake to notice, not Shaipe's to fix.
-        let mime_type = reference_mime_type(&resolved).ok_or_else(|| {
-            refuse(format!(
-                "`{}` is not an image format this tool recognises; expected \
-                 .png, .jpg, .jpeg, .gif, .webp or .bmp",
-                resolved.display()
-            ))
-        })?;
-
         Ok(ToolOutput::json(json!({
             "src": reference.src.display().to_string(),
             "resolved": resolved.display().to_string(),
             "kind": reference.kind.to_string(),
             "note": reference.note,
             "mime_type": mime_type,
+            // What `compare_reference` will render at, and so what a model
+            // should size its own renders to. Null rather than an error for
+            // bytes that do not decode: this tool has never refused those, and
+            // `get_reference_analysis` is where a bad image is reported.
+            "dimensions": pixel_dimensions(&bytes),
         }))
         .with_image(ToolImage::new(
             format!("{} ({})", reference.src.display(), reference.kind),
@@ -402,6 +428,37 @@ fn reference_mime_type(path: &Path) -> Option<&'static str> {
     }
 }
 
+/// [`reference_mime_type`], or the refusal that lists what is accepted.
+///
+/// Shared by the two tools that hand a reference to a model as an image, so
+/// the message that tells it what to do instead is one message.
+fn reference_mime_type_or_refuse(tool: &str, resolved: &Path) -> Result<&'static str> {
+    reference_mime_type(resolved).ok_or_else(|| crate::Error::InvalidToolInput {
+        tool: tool.to_owned(),
+        reason: format!(
+            "`{}` is not an image format this tool recognises; expected .png, .jpg, .jpeg, \
+             .gif, .webp or .bmp. An SVG or PDF reference cannot be shown; export a raster \
+             image of it and attach that with `set_reference`.",
+            resolved.display()
+        ),
+    })
+}
+
+/// A raster's width and height from its header, or null when it has none.
+///
+/// The header only: the image is not decoded, so this costs nothing next to
+/// reading the file.
+fn pixel_dimensions(bytes: &[u8]) -> Value {
+    image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()
+        .and_then(|reader| reader.into_dimensions().ok())
+        .map_or(
+            Value::Null,
+            |(width, height)| json!({ "width": width, "height": height }),
+        )
+}
+
 /// Trace an attached reference's pixels into vector paths, algorithmically.
 ///
 /// See [`crate::vectorize`] and ADR 014/020 for why this exists at all: an
@@ -417,28 +474,22 @@ impl Tool for GetReferenceTrace {
     }
 
     fn description(&self) -> &'static str {
-        "Trace an attached reference image into vector paths, algorithmically \
-         — not by describing the shape, by measuring its pixels. Use this \
-         before hand-writing a mark from a `source` reference: an LLM can name \
-         the shapes in an image but cannot reproduce exact curves, corner \
-         radii or organic tapering from it; this can. Two modes: `silhouette` \
-         (default) separates one foreground colour from one background into a \
-         single shape, holes cut by winding — good for a single-colour mark, \
-         not for photographs or multi-colour artwork. `colour` clusters the \
-         image into flat-colour regions, each its own path with its own fill \
-         — good for multi-colour artwork; the background becomes one more \
-         region rather than being separated out. Either way, returns a small \
-         standalone SVG, an overall bounding box, and up to 32 traced paths \
-         (bounding box, approximate area and fill colour each) plus the true \
-         path count, together with a rendered preview image — inspect the \
-         preview and the SVG, then hand-graft the markup into a variant with \
-         `write_variant` or `write_svg`, the same way any other markup is \
-         merged. In `silhouette` mode, if the result is many small fragments \
-         instead of one coherent shape, the mark is probably a \
-         medium-brightness colour (a saturated green or blue reads as roughly \
-         as bright as its background to the default cutoff) rather than \
-         genuinely dark — raise `threshold` toward 200+ and try again, or \
-         switch to `colour` mode."
+        "Trace an attached raster reference into vector paths by measuring \
+         its pixels, not by describing its shape: exact curves, corner radii \
+         and tapering that cannot be reproduced by eye. Call it after \
+         `get_reference_analysis`, and only for a clean, flat-colour mark; \
+         construct photographs and busy artwork yourself. `silhouette` \
+         (default) separates one foreground colour from one background into \
+         a single shape with holes, for a single-colour mark. `colour` \
+         traces each flat-colour region as its own path with its own fill, \
+         for multi-colour artwork; the background becomes one more region. \
+         Returns a standalone SVG in the reference's own pixel space with no \
+         `viewBox` — give a grafted element a `viewBox` or a transform — an \
+         overall bounding box, up to 32 paths (bounding box, approximate area \
+         and fill) with the true path count, and a preview image. The trace \
+         is raw material, not the deliverable: graft it into a variant with \
+         `write_variant` or `write_svg`, keeping the variant's element `id`, \
+         then look with `render_svg`."
     }
 
     fn input_schema(&self) -> Value {
@@ -456,13 +507,15 @@ impl Tool for GetReferenceTrace {
                     json!({
                         "type": "string",
                         "enum": ["silhouette", "colour"],
-                        "description": "`silhouette` (default): one dark/light \
-                         foreground vs. background, per ADR 014 — good for a \
-                         single-colour mark. `colour`: hierarchical colour \
-                         clustering, each flat-colour region traced \
-                         separately with its own fill — good for multi-colour \
-                         artwork. `threshold`/`invert` only affect \
-                         `silhouette`; `max_colors` only affects `colour`.",
+                        "description": "`silhouette` (default): one foreground \
+                         colour against one background, as a single shape — \
+                         for a single-colour mark. `colour`: flat-colour \
+                         regions, each traced separately with its own fill — \
+                         choose it when `get_reference_analysis` finds more \
+                         than one dominant colour, or when `silhouette` \
+                         returns fragments. `threshold` and `invert` only \
+                         affect `silhouette`; `max_colors` only affects \
+                         `colour`.",
                     }),
                 ),
                 (
@@ -474,9 +527,12 @@ impl Tool for GetReferenceTrace {
                         "description": "`silhouette` mode only. Binary cutoff \
                          separating foreground from background: pixels \
                          darker than this are traced. Lower it if background \
-                         is being traced instead of the mark, raise it if \
-                         part of the mark is being missed. Omit for a \
-                         sensible default (128).",
+                         is being traced instead of the mark; raise it if \
+                         part of the mark is missed. Many small fragments \
+                         instead of one shape usually mean a mid-brightness \
+                         mark (a saturated green or blue is about as bright \
+                         as its background): try 200 or more, or switch to \
+                         `colour` mode. Omit for the default, 128.",
                     }),
                 ),
                 (
@@ -521,44 +577,36 @@ impl Tool for GetReferenceTrace {
                 )));
             }
         };
-        let threshold = input
-            .get("threshold")
-            .and_then(Value::as_u64)
-            .and_then(|value| u8::try_from(value).ok());
+        // Refused rather than clamped or dropped: the schema promises these
+        // bounds, so a value outside them is a mistake the model should be
+        // told about, not one it should have quietly corrected to a
+        // different trace than the one it asked for.
+        let threshold = match input.get("threshold").and_then(Value::as_u64) {
+            None => None,
+            Some(value) => Some(u8::try_from(value).map_err(|_| {
+                refuse(format!(
+                    "`threshold` must be between 0 and 255, got {value}"
+                ))
+            })?),
+        };
         let invert = input
             .get("invert")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let max_colors = input
-            .get("max_colors")
-            .and_then(Value::as_u64)
-            .and_then(|value| usize::try_from(value).ok());
+        let max_colors = match input.get("max_colors").and_then(Value::as_u64) {
+            None => None,
+            Some(0) => {
+                return Err(refuse(
+                    "`max_colors` must be at least 1; omit it to let the clustering decide"
+                        .to_owned(),
+                ));
+            }
+            Some(value) => usize::try_from(value).ok(),
+        };
 
-        // Same resolution as `get_reference_image`: reported before anything
-        // is read, so an unattached name is a clear refusal, not a race.
-        let reference = project
-            .metadata()
-            .references
-            .iter()
-            .find(|reference| reference.src == src)
-            .cloned()
-            .ok_or_else(|| {
-                let known: Vec<String> = project
-                    .metadata()
-                    .references
-                    .iter()
-                    .map(|reference| reference.src.display().to_string())
-                    .collect();
-                refuse(format!(
-                    "`{}` is not an attached reference. {}",
-                    src.display(),
-                    if known.is_empty() {
-                        "Nothing is attached yet; call `set_reference` to attach one.".to_owned()
-                    } else {
-                        format!("Attached: {}", known.join(", "))
-                    }
-                ))
-            })?;
+        // Reported before anything is read, so an unattached name is a clear
+        // refusal, not a race.
+        let reference = attached_reference(self.name(), project, &src)?;
 
         let resolved = project.resolve(&reference.src);
 
@@ -603,18 +651,20 @@ impl Tool for CompareReference {
     }
 
     fn description(&self) -> &'static str {
-        "Compare an attached reference image against a rendered variant, in \
-         one call. Renders `variant` at the reference's own pixel dimensions \
-         — nothing is resampled, so the two are compared on a canvas this \
-         tool established rather than one either side had to guess at — and \
-         reports foreground-mask overlap, bounding-box and centroid offsets, \
-         area difference, whole-canvas pixel error, an SSIM-based \
-         perceptual-similarity score and edge/contour overlap, each named \
-         separately rather than folded into one opaque score. Returns four \
-         images: the reference, the current render, an overlay showing where \
-         the two silhouettes agree and disagree, and a colourised difference \
-         heatmap. This is measurement, not judgement: the numbers say what \
-         differs and by how much, never which side is 'right'."
+        "Compare an attached raster reference against a variant you have \
+         written, in one call. Renders `variant` on a transparent background \
+         at the reference's own pixel size — nothing is resampled — and \
+         reports foreground-mask overlap, bounding-box and centroid offsets \
+         (render minus reference), area difference, pixel error, an \
+         SSIM-based perceptual similarity and edge overlap, each separately \
+         rather than as one score. Returns four images, in order: the \
+         reference, the render, an overlay (only in the reference: red \
+         `#ff2060`; only in the render: cyan `#20c8ff`; in both: white) and a \
+         difference heatmap. Measurement, not judgement: it says what \
+         differs and by how much, never that you are finished. Use it after \
+         each `write_variant` or `write_svg` when reproducing a `source` \
+         reference, fix the largest offset, and call it again; use \
+         `render_svg` when there is nothing to compare against."
     }
 
     fn input_schema(&self) -> Value {
@@ -643,37 +693,10 @@ impl Tool for CompareReference {
         let src = PathBuf::from(required_str(self.name(), input, "src")?);
         let variant = required_str(self.name(), input, "variant")?.to_owned();
 
-        let refuse = |reason: String| crate::Error::InvalidToolInput {
-            tool: self.name().to_owned(),
-            reason,
-        };
-
         // Same resolution as the other reference tools: reported before
         // anything is read, so an unattached name is a clear refusal, not a
         // race.
-        let reference = project
-            .metadata()
-            .references
-            .iter()
-            .find(|reference| reference.src == src)
-            .cloned()
-            .ok_or_else(|| {
-                let known: Vec<String> = project
-                    .metadata()
-                    .references
-                    .iter()
-                    .map(|reference| reference.src.display().to_string())
-                    .collect();
-                refuse(format!(
-                    "`{}` is not an attached reference. {}",
-                    src.display(),
-                    if known.is_empty() {
-                        "Nothing is attached yet; call `set_reference` to attach one.".to_owned()
-                    } else {
-                        format!("Attached: {}", known.join(", "))
-                    }
-                ))
-            })?;
+        let reference = attached_reference(self.name(), project, &src)?;
 
         let resolved = project.resolve(&reference.src);
 
@@ -681,13 +704,7 @@ impl Tool for CompareReference {
         // to label the reference image correctly rather than always
         // claiming PNG — the render, overlay and difference images that
         // follow it genuinely are PNG.
-        let mime_type = reference_mime_type(&resolved).ok_or_else(|| {
-            refuse(format!(
-                "`{}` is not an image format this tool recognises; expected \
-                 .png, .jpg, .jpeg, .gif, .webp or .bmp",
-                resolved.display()
-            ))
-        })?;
+        let mime_type = reference_mime_type_or_refuse(self.name(), &resolved)?;
 
         let reference_bytes =
             std::fs::read(&resolved).map_err(|error| crate::Error::io(resolved.clone(), error))?;
@@ -761,10 +778,16 @@ impl Tool for GetWorkflow {
          trace with hand-constructed geometry) share: inspect, analyse, \
          choose_strategy, construct, render, compare, refine, validate — \
          validate is only reachable after compare, since there is nothing to \
-         validate a reproduction against without one. This is guidance, not \
-         a checklist Shaipe enforces: it names the intended sequence and, \
-         when `src` is given, grounds `choose_strategy` in real measurements \
-         — it does not track which phases actually happened."
+         validate a reproduction against without one. The tools for the \
+         phases are `get_reference_image` (inspect), \
+         `get_reference_analysis` (analyse), `get_reference_trace`, \
+         `write_variant` and `write_svg` (construct), `render_svg` (render) \
+         and `compare_reference` (compare). Call it before writing anything \
+         for a `source` reference, with `src` so `strategy.recommended` \
+         (`trace`, `construct` or `hybrid`) comes from that image's own \
+         measurements; `hybrid` work always recommends `hybrid`. This is \
+         guidance, not a checklist Shaipe enforces, and it does not track \
+         which phases actually happened."
     }
 
     fn input_schema(&self) -> Value {
@@ -840,30 +863,7 @@ impl Tool for GetWorkflow {
             // Same resolution as the other reference tools: reported before
             // anything is read, so an unattached name is a clear refusal,
             // not a race.
-            let reference = project
-                .metadata()
-                .references
-                .iter()
-                .find(|reference| reference.src == src)
-                .cloned()
-                .ok_or_else(|| {
-                    let known: Vec<String> = project
-                        .metadata()
-                        .references
-                        .iter()
-                        .map(|reference| reference.src.display().to_string())
-                        .collect();
-                    refuse(format!(
-                        "`{}` is not an attached reference. {}",
-                        src.display(),
-                        if known.is_empty() {
-                            "Nothing is attached yet; call `set_reference` to attach one."
-                                .to_owned()
-                        } else {
-                            format!("Attached: {}", known.join(", "))
-                        }
-                    ))
-                })?;
+            let reference = attached_reference(self.name(), project, &src)?;
 
             let resolved = project.resolve(&reference.src);
             let bytes = std::fs::read(&resolved)
@@ -890,8 +890,11 @@ impl Tool for RenderSvg {
     fn description(&self) -> &'static str {
         "Render a variant of the project to a PNG and look at it. Rendering is \
          local and exact, so the image returned is the asset a build would \
-         produce, not an approximation of it. This is the only way to find out \
-         what the artwork actually looks like."
+         produce, not an approximation of it. The SVG source cannot tell you \
+         what the artwork looks like, so look after every write. When \
+         reproducing a `source` reference, `compare_reference` renders at the \
+         reference's size and measures the difference, which this does not; \
+         for small sizes use `render_grid`."
     }
 
     fn input_schema(&self) -> Value {
@@ -904,7 +907,10 @@ impl Tool for RenderSvg {
                 ("width", integer("Canvas width in pixels. Defaults to 512.")),
                 (
                     "height",
-                    integer("Canvas height in pixels. Defaults to the width, giving a square."),
+                    integer(
+                        "Canvas height in pixels. Defaults to the width, giving a \
+                         square; set both for any other shape.",
+                    ),
                 ),
                 (
                     "background",
@@ -951,6 +957,10 @@ fn render_one(project: &Project, spec: &RenderSpec) -> Result<ToolOutput> {
         "variant": spec.variant,
         "width": spec.width,
         "height": spec.height,
+        // Echoed, as `render_grid` does: a transparent PNG shows as black or
+        // white depending on the viewer, and the model should know which
+        // background it asked for when a mark looks wrong.
+        "background": spec.background.to_string(),
     }))
     .with_image(ToolImage::png(
         format!("{} at {}x{}", spec.variant, spec.width, spec.height),
@@ -964,14 +974,9 @@ fn background(tool: &str, input: &Value) -> Result<Background> {
         None => Ok(Background::Transparent),
         // The parse error names the bad value but not the argument it came
         // from, and a model correcting itself needs both.
-        Some(value) => {
-            value
-                .parse()
-                .map_err(|error: crate::Error| crate::Error::InvalidToolInput {
-                    tool: tool.to_owned(),
-                    reason: format!("`background`: {error}"),
-                })
-        }
+        Some(value) => value
+            .parse()
+            .map_err(|error: crate::Error| bad_colour(tool, "background", &error)),
     }
 }
 
@@ -985,9 +990,12 @@ impl Tool for GetSvg {
 
     fn description(&self) -> &'static str {
         "Return the project's SVG source exactly as it is, including the \
-         `<metadata>` block that makes it a Shaipe project. Read this before \
-         calling `write_svg`: an edit that was not based on the current source \
-         will silently discard whatever else the file contains."
+         `<metadata>` block that makes it a Shaipe project. Read it before \
+         any write: an edit not based on the current source silently discards \
+         whatever else the file contains. To change one variant, find its \
+         element by the `id` `get_variants` lists and send only that element \
+         to `write_variant`; send the whole document back through \
+         `write_svg` only for wider changes."
     }
 
     fn input_schema(&self) -> Value {
@@ -1031,10 +1039,12 @@ impl Tool for RenderGrid {
     }
 
     fn description(&self) -> &'static str {
-        "Render one variant at several sizes at once and look at all of them. \
-         Use this to check that a mark still reads when it is small: a logo \
-         that works at 512 pixels often becomes an unreadable smudge at 16, \
-         and the only way to know is to look at it at 16."
+        "Render one variant at several square sizes at once and look at all \
+         of them. Use it to check that a mark still reads when it is small: a \
+         logo that works at 512 pixels often becomes an unreadable smudge at \
+         16, and you learn that only by looking at it at 16. Not for \
+         matching a reference, which `compare_reference` does at the \
+         reference's own size."
     }
 
     fn input_schema(&self) -> Value {
@@ -1047,8 +1057,8 @@ impl Tool for RenderGrid {
                 (
                     "sizes",
                     integers(
-                        "The square sizes to render, in pixels. Defaults to \
-                         512, 128, 64, 32 and 16.",
+                        "The square sizes to render, in pixels. Omit it, or send \
+                         an empty list, for 512, 128, 64, 32 and 16.",
                         MAX_GRID,
                     ),
                 ),
@@ -1150,13 +1160,19 @@ impl Tool for WriteSvg {
     }
 
     fn description(&self) -> &'static str {
-        "Replace the project's SVG source. Send the whole document, not a \
-         fragment: call `get_svg` first and return the complete file with your \
-         edit applied. The result is validated before anything is replaced, so \
-         a document that does not parse, or that has lost its \
-         `<shaipe:project>` metadata, is rejected and the project is left \
-         exactly as it was. This changes the project in memory; it does not \
-         write to disk."
+        "Replace the project's whole SVG source: to add a variant, or to change \
+         several elements at once. To change one variant, `write_variant` is \
+         smaller and safer. Send the whole document, not a fragment: call \
+         `get_svg` first and return the complete file with your edit \
+         applied. It is checked before anything is replaced, so a document \
+         that does not parse, or that has lost its `<shaipe:project>` \
+         metadata, is rejected and the project left exactly as it was. That \
+         check parses; it does not render, so a variant whose element has \
+         vanished is only found by the next `render_svg`. Accepted means \
+         valid, not right: look at the result with `render_svg`, and for a \
+         `source` reference run `compare_reference`. It changes the project \
+         in memory, and reaches disk only if the server runs with `--write` \
+         or the user saves."
     }
 
     fn input_schema(&self) -> Value {
@@ -1193,11 +1209,12 @@ impl Tool for WriteSvg {
         // `Project::open` would reject.
         let candidate = Project::from_source(project.path(), source.to_owned()).map_err(invalid)?;
 
-        // And it must be renderable. A document that parses but whose primary
-        // variant points at an element that no longer exists is broken in
-        // precisely the way an editing model breaks things, and constructing a
-        // renderer is cheap enough to pay for catching it. Not a full render
-        // of every variant: seconds, to re-establish what this already has.
+        // A renderer must be constructible: this parses the XML and builds
+        // the font database. It does *not* resolve or rasterise a variant, so
+        // a document whose variant element has vanished is accepted here and
+        // only fails at the next render — which is why the description says
+        // so and the result points at `render_svg`. Rendering every variant
+        // would be seconds to re-establish what an edit rarely breaks.
         Renderer::new(&candidate, RenderOptions::default()).map_err(invalid)?;
 
         *project = candidate;
@@ -1207,7 +1224,8 @@ impl Tool for WriteSvg {
             // Said out loud, every time. An agent that assumes it has saved
             // and has not will report work it did not do.
             "saved": false,
-            "note": "The project has changed in memory. Nothing has been written to disk.",
+            "note": IN_MEMORY,
+            "next": AFTER_A_WRITE,
         })))
     }
 }
@@ -1222,15 +1240,18 @@ impl Tool for WriteVariant {
 
     fn description(&self) -> &'static str {
         "Replace one variant's element in the document, without resending the \
-         whole project. Send the complete replacement for that element — its \
-         opening tag, attributes and closing tag, with the same `id` it \
-         already has — from `get_svg`. The result is validated by rendering \
-         the variant before anything is replaced, so a fragment that does not \
-         parse, that drops the element's `id`, or that leaves the variant \
-         unrenderable is rejected and the project is left exactly as it was. \
-         This only replaces an already-declared variant — use `write_svg` to \
-         add a new one, or to change more than one element at once. This \
-         changes the project in memory; it does not write to disk."
+         whole project. `variant` must already be declared (`get_variants`); \
+         use `write_svg` to add one, or to change more than one element at \
+         once. Send the complete replacement for that element — its opening \
+         tag, attributes and closing tag, with the same `id` it already has — \
+         found in `get_svg`. It is checked by isolating the variant before \
+         anything is replaced, so a fragment that does not parse, that drops \
+         the element's `id`, or that leaves the variant unrenderable is \
+         rejected and the project left exactly as it was. Accepted means \
+         valid, not right: look at the result with `render_svg`, and for a \
+         `source` reference run `compare_reference`. It changes the project \
+         in memory, and reaches disk only if the server runs with `--write` \
+         or the user saves."
     }
 
     fn input_schema(&self) -> Value {
@@ -1294,7 +1315,8 @@ impl Tool for WriteVariant {
             "variant": name,
             "bytes": svg.len(),
             "saved": false,
-            "note": "The project has changed in memory. Nothing has been written to disk.",
+            "note": IN_MEMORY,
+            "next": AFTER_A_WRITE,
         })))
     }
 }
@@ -1316,9 +1338,12 @@ impl Tool for SetPaletteColour {
          artwork: any element already bound to this colour with \
          `shaipe:fill=\"name\"` or `shaipe:stroke=\"name\"`, alongside its \
          ordinary `fill`/`stroke`, has that attribute rewritten to the new \
-         value. Bind an element yourself with `write_variant` or `write_svg` \
-         by adding that attribute next to its `fill`/`stroke`; nothing \
-         restyles until an element names a colour this way."
+         value; `restyled` in the result says how many attributes that was, \
+         so 0 means the palette changed and no artwork followed. Bind an \
+         element yourself with `write_variant` or `write_svg` by adding that \
+         attribute, naming a colour already in the palette, next to its \
+         `fill`/`stroke`; nothing restyles until an element names a colour \
+         this way. Look at the result with `render_svg`."
     }
 
     fn input_schema(&self) -> Value {
@@ -1375,13 +1400,19 @@ impl Tool for SetPaletteColour {
         let value = value
             .map(str::parse::<Rgba>)
             .transpose()
-            .map_err(|error| refuse(format!("`value`: {error}")))?;
+            .map_err(|error| bad_colour(self.name(), "value", &error))?;
 
         // Restyled before the palette records the new value, so a failure
         // here — unreachable in practice, see `Project::restyle` — leaves the
         // document and the palette in their old, matching state rather than
         // updating one and not the other.
+        //
+        // Counted first, from the same binding rule the rewrite uses, so the
+        // result can say how much artwork followed. Zero is otherwise
+        // indistinguishable from success.
+        let mut restyled = 0;
         if let Some(value) = value {
+            restyled = project.bindings_of(name)?;
             project.restyle(name, value)?;
         }
 
@@ -1422,6 +1453,7 @@ impl Tool for SetPaletteColour {
             "value": colour.value.to_string(),
             "role": colour.role.as_ref().map(ToString::to_string),
             "created": created,
+            "restyled": restyled,
         })))
     }
 }
@@ -1437,10 +1469,12 @@ impl Tool for SetReference {
     fn description(&self) -> &'static str {
         "Attach a file to the project for context, or update one already \
          attached by matching `src` exactly. A new reference defaults to \
-         `inspiration` when `kind` is not given. Only the fields given are \
-         changed on an existing reference — give an empty `note` to clear \
-         it. The file does not need to exist yet; the response's `present` \
-         says whether it currently does."
+         `inspiration` when `kind` is not given; use `source` for the thing \
+         to reproduce. Only the fields given are changed on an existing \
+         reference — give an empty `note` to clear it. The file does not \
+         need to exist yet; the response's `present` says whether it \
+         currently does, and the reference tools need it to. Once attached, \
+         look at it with `get_reference_image`."
     }
 
     fn input_schema(&self) -> Value {
@@ -1545,7 +1579,8 @@ impl Tool for SetGeneration {
          the artwork, describing what happened rather than what is about to. \
          Only the fields given are changed; the others keep whatever was \
          recorded before. Nothing here is invented by Shaipe — if you do not \
-         know one of these, leave it out rather than guessing."
+         know one of these, in particular the time, leave it out rather than \
+         guessing."
     }
 
     fn input_schema(&self) -> Value {
@@ -2909,6 +2944,299 @@ mod tests {
             .unwrap();
 
         assert!(project.source().contains(r##"fill="#f05032""##));
+    }
+
+    #[test]
+    fn set_palette_colour_says_how_many_bindings_it_restyled() {
+        // Zero is what a colour nothing is bound to reports, and without the
+        // count it is indistinguishable from the palette and the drawing
+        // having both followed.
+        let mut project = Project::from_source("logo.svg", BOUND_PROJECT.to_owned()).unwrap();
+
+        let output = Registry::new()
+            .call(
+                "set_palette_colour",
+                &mut project,
+                &json!({ "name": "accent", "value": "#0066ff" }),
+            )
+            .unwrap();
+        assert_eq!(output.value["restyled"], 1);
+
+        let output = Registry::new()
+            .call(
+                "set_palette_colour",
+                &mut project,
+                &json!({ "name": "unbound", "value": "#123456" }),
+            )
+            .unwrap();
+        assert_eq!(output.value["restyled"], 0);
+
+        let output = Registry::new()
+            .call(
+                "set_palette_colour",
+                &mut project,
+                &json!({ "name": "accent", "role": "primary" }),
+            )
+            .unwrap();
+        assert_eq!(output.value["restyled"], 0);
+    }
+
+    #[test]
+    fn a_colour_that_is_refused_says_what_a_colour_looks_like() {
+        // The parser's help names the accepted formats. Re-wrapping the error
+        // by its message alone used to drop it.
+        for (tool, input, argument) in [
+            (
+                "render_svg",
+                json!({ "variant": "icon", "background": "octarine" }),
+                "background",
+            ),
+            (
+                "set_palette_colour",
+                json!({ "name": "accent", "value": "octarine" }),
+                "value",
+            ),
+        ] {
+            let rendered = call(tool, input).unwrap_err().to_string();
+            assert!(rendered.contains(argument), "{rendered}");
+            assert!(rendered.contains("#rrggbb"), "{tool}: {rendered}");
+        }
+    }
+
+    #[test]
+    fn a_write_points_at_the_render_that_will_show_whether_it_worked() {
+        // The step after a write is a look, and the result is what the model
+        // has in front of it when it decides whether to take that step.
+        let mut project = fixtures::project();
+        let registry = Registry::new();
+        let names = registry.names();
+
+        for (tool, input) in [
+            ("write_svg", json!({ "source": fixtures::PROJECT })),
+            (
+                "write_variant",
+                json!({
+                    "variant": "icon",
+                    "svg": r##"<symbol id="icon" viewBox="0 0 64 64"><circle r="32" cx="32" cy="32" fill="#f05032"/></symbol>"##,
+                }),
+            ),
+        ] {
+            let output = registry.call(tool, &mut project, &input).unwrap();
+            let next = output.value["next"]
+                .as_str()
+                .expect("a write says what is next");
+
+            assert!(next.contains("`render_svg`"), "{tool}: {next}");
+            assert!(next.contains("`compare_reference`"), "{tool}: {next}");
+            // `source` is a kind of reference, not a tool; every tool name has
+            // an underscore.
+            for name in next
+                .split('`')
+                .skip(1)
+                .step_by(2)
+                .filter(|n| n.contains('_'))
+            {
+                assert!(names.iter().any(|n| n == name), "{tool} names `{name}`");
+            }
+        }
+    }
+
+    #[test]
+    fn a_write_does_not_claim_the_file_was_not_written_when_the_server_may_save() {
+        // Under `shaipe mcp --write` the session saves after a mutating call,
+        // so "nothing has been written" would be false there. The note says
+        // what this call did and when the file is touched.
+        let output = Registry::new()
+            .call(
+                "write_svg",
+                &mut fixtures::project(),
+                &json!({ "source": fixtures::PROJECT }),
+            )
+            .unwrap();
+
+        let note = output.value["note"].as_str().unwrap();
+        assert!(note.contains("--write"), "{note}");
+        assert!(!note.contains("Nothing has been written"), "{note}");
+    }
+
+    #[test]
+    fn write_variant_asks_for_the_element_and_not_the_document() {
+        // The one help text used to tell every writer to resend the whole
+        // document, which is the opposite of what `write_variant` wants.
+        let mut project = fixtures::project();
+        let error = Registry::new()
+            .call(
+                "write_variant",
+                &mut project,
+                &json!({ "variant": "icon", "svg": "<symbol id=\"icon\"" }),
+            )
+            .unwrap_err();
+        let rendered = format!("{:?}", miette::Report::new(error));
+        assert!(rendered.contains("only the"), "{rendered}");
+        assert!(rendered.contains("element"), "{rendered}");
+        assert!(!rendered.contains("all of it back"), "{rendered}");
+
+        let error = Registry::new()
+            .call(
+                "write_svg",
+                &mut project,
+                &json!({ "source": "<svg><circle r=\"5\"" }),
+            )
+            .unwrap_err();
+        let rendered = format!("{:?}", miette::Report::new(error));
+        assert!(rendered.contains("all of it back"), "{rendered}");
+    }
+
+    #[test]
+    fn render_svg_says_which_background_it_drew_on() {
+        let value = value(
+            "render_svg",
+            json!({ "variant": "icon", "width": 16, "background": "#ffffff" }),
+        );
+        assert_eq!(value["background"], "#ffffff");
+
+        let value = self::value("render_svg", json!({ "variant": "icon", "width": 16 }));
+        assert_eq!(value["background"], "transparent");
+    }
+
+    #[test]
+    fn get_reference_image_reports_the_pixel_dimensions_of_a_real_image() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        std::fs::write(directory.path().join("mockup.png"), ring_png(48)).unwrap();
+        std::fs::write(directory.path().join("broken.png"), b"not a png").unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        for src in ["mockup.png", "broken.png"] {
+            project
+                .metadata_mut()
+                .references
+                .push(Reference::new(src, ReferenceKind::Source));
+        }
+
+        let output = Registry::new()
+            .call(
+                "get_reference_image",
+                &mut project,
+                &json!({ "src": "mockup.png" }),
+            )
+            .unwrap();
+        assert_eq!(output.value["dimensions"]["width"], 48);
+        assert_eq!(output.value["dimensions"]["height"], 48);
+
+        // Bytes that do not decode are still handed over, as they always
+        // were; the dimensions are simply absent.
+        let output = Registry::new()
+            .call(
+                "get_reference_image",
+                &mut project,
+                &json!({ "src": "broken.png" }),
+            )
+            .unwrap();
+        assert_eq!(output.value["dimensions"], Value::Null);
+    }
+
+    #[test]
+    fn a_reference_that_cannot_be_shown_is_refused_for_that_before_it_is_read() {
+        // A PDF that is not on disk is refused for what it is, not for
+        // whatever reading it said first.
+        let mut project = fixtures::project();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("brief.pdf", ReferenceKind::Source));
+
+        for tool in ["get_reference_image", "compare_reference"] {
+            let error = Registry::new()
+                .call(
+                    tool,
+                    &mut project,
+                    &json!({ "src": "brief.pdf", "variant": "icon" }),
+                )
+                .unwrap_err();
+
+            assert!(
+                matches!(error, Error::InvalidToolInput { .. }),
+                "{tool}: {error:?}"
+            );
+            assert!(error.to_string().contains("set_reference"), "{error}");
+        }
+    }
+
+    #[test]
+    fn get_reference_trace_refuses_bounds_its_schema_promises() {
+        // Dropped silently, a threshold of 300 traced at the default and told
+        // the model nothing about it.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        std::fs::write(directory.path().join("mockup.png"), ring_png(64)).unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        for (input, argument) in [
+            (
+                json!({ "src": "mockup.png", "threshold": 300 }),
+                "threshold",
+            ),
+            (
+                json!({ "src": "mockup.png", "max_colors": 0 }),
+                "max_colors",
+            ),
+        ] {
+            let error = Registry::new()
+                .call("get_reference_trace", &mut project, &input)
+                .unwrap_err();
+
+            assert!(matches!(error, Error::InvalidToolInput { .. }), "{error:?}");
+            assert!(error.to_string().contains(argument), "{error}");
+        }
+    }
+
+    #[test]
+    fn an_unattached_reference_says_where_the_attached_ones_and_the_way_to_add_one_are() {
+        let mut project = fixtures::project();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        for tool in [
+            "get_reference_image",
+            "get_reference_analysis",
+            "get_reference_trace",
+            "compare_reference",
+        ] {
+            let error = Registry::new()
+                .call(
+                    tool,
+                    &mut project,
+                    &json!({ "src": "watermark.png", "variant": "icon" }),
+                )
+                .unwrap_err();
+
+            let rendered = error.to_string();
+            assert!(rendered.contains("mockup.png"), "{tool}: {rendered}");
+            assert!(rendered.contains("set_reference"), "{tool}: {rendered}");
+            assert!(rendered.contains("get_references"), "{tool}: {rendered}");
+        }
+    }
+
+    #[test]
+    fn a_trace_of_nothing_offers_advice_that_holds_in_either_mode() {
+        let rendered = format!(
+            "{:?}",
+            miette::Report::new(Error::EmptyTrace {
+                path: PathBuf::from("mockup.png"),
+            })
+        );
+        assert!(rendered.contains("silhouette"), "{rendered}");
+        assert!(rendered.contains("colour"), "{rendered}");
     }
 
     #[test]

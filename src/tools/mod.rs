@@ -319,7 +319,15 @@ mod tests {
 
     #[test]
     fn the_tool_list_is_in_a_stable_order() {
-        assert_eq!(Registry::new().names(), Registry::new().names());
+        // Sorted, not merely equal to itself: a list that reorders between
+        // runs becomes prompt text that does too, and alphabetical is the one
+        // order nobody has to remember.
+        let names = Registry::new().names();
+        let mut sorted = names.clone();
+        sorted.sort();
+
+        assert_eq!(names, sorted);
+        assert_eq!(names, Registry::new().names());
     }
 
     #[test]
@@ -495,6 +503,192 @@ mod tests {
             assert!(
                 instructions.contains(&order),
                 "the instructions disagree about {kind}: {order}"
+            );
+        }
+    }
+
+    /// Everything a model reads about a tool before calling it: its
+    /// description, then each argument's.
+    fn prompt_text(tool: &dyn Tool) -> Vec<(String, String)> {
+        let mut texts = vec![(tool.name().to_owned(), tool.description().to_owned())];
+
+        let schema = tool.input_schema();
+        for (argument, property) in schema["properties"].as_object().into_iter().flatten() {
+            texts.push((
+                format!("{}.{argument}", tool.name()),
+                property["description"].as_str().unwrap_or("").to_owned(),
+            ));
+        }
+        texts
+    }
+
+    #[test]
+    fn every_tool_a_contract_names_exists() {
+        // Descriptions and argument text name other tools ("call
+        // `get_reference_image` next"). The instructions are checked for this
+        // already; the contracts are the text a model reads on every listing,
+        // and a tool renamed without them would send it to call nothing.
+        let registry = Registry::new();
+        let names = registry.names();
+
+        let mut checked = 0;
+        for tool in registry.tools() {
+            for (place, text) in prompt_text(tool) {
+                for mentioned in tool_names_in(&text) {
+                    checked += 1;
+                    assert!(
+                        names.contains(&mentioned),
+                        "`{place}` names `{mentioned}`, which is not a tool"
+                    );
+                }
+            }
+        }
+        assert!(
+            checked > 20,
+            "only {checked} tool names were found to check"
+        );
+    }
+
+    #[test]
+    fn the_reconstruction_loop_is_followable_from_the_contracts_alone() {
+        // Each contract names the tool a model should reach for next. Without
+        // these links a description is an island, and the loop — look, measure,
+        // construct, render, compare, fix — exists only in the instructions,
+        // which not every agent reads. Kept as a table so the loop can be read
+        // here as well as followed.
+        let registry = Registry::new();
+
+        for (tool, next) in [
+            ("get_references", &["get_reference_image"][..]),
+            (
+                "get_reference_analysis",
+                &["get_reference_image", "get_reference_trace"],
+            ),
+            (
+                "get_reference_trace",
+                &["get_reference_analysis", "write_variant", "render_svg"],
+            ),
+            (
+                "get_workflow",
+                &[
+                    "get_reference_analysis",
+                    "write_variant",
+                    "render_svg",
+                    "compare_reference",
+                ],
+            ),
+            ("get_svg", &["write_variant", "write_svg"]),
+            (
+                "write_variant",
+                &["write_svg", "render_svg", "compare_reference"],
+            ),
+            (
+                "write_svg",
+                &["write_variant", "render_svg", "compare_reference"],
+            ),
+            ("render_svg", &["compare_reference", "render_grid"]),
+            (
+                "compare_reference",
+                &["write_variant", "write_svg", "render_svg"],
+            ),
+            ("set_reference", &["get_reference_image"]),
+        ] {
+            let description = registry
+                .get(tool)
+                .unwrap_or_else(|| panic!("`{tool}` is not a tool"))
+                .description();
+            let mentioned = tool_names_in(description);
+
+            for name in next {
+                assert!(
+                    mentioned.iter().any(|mentioned| mentioned == name),
+                    "`{tool}` never points at `{name}`, so the loop breaks there"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_contract_but_the_workflows_restates_the_phase_order() {
+        // The order of the phases has one home in prose — `get_workflow`, whose
+        // description is checked against the instructions — and one at run
+        // time. A second copy in another description is a second place to
+        // forget to update.
+        use crate::workflow::WorkflowKind;
+        use crate::workflow::instructions::sequence;
+
+        for tool in Registry::new()
+            .tools()
+            .filter(|t| t.name() != "get_workflow")
+        {
+            for (place, text) in prompt_text(tool) {
+                for kind in [WorkflowKind::FromScratch, WorkflowKind::Reference] {
+                    assert!(
+                        !text.contains(&sequence(kind)),
+                        "`{place}` repeats the {kind} phase order; point at `get_workflow`"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_contract_claims_to_be_the_only_way_or_the_only_first_step() {
+        // Both were said, both were false — `get_variants` lists the variant
+        // names `get_project` claimed to be the only way to learn, and
+        // `render_grid` and `compare_reference` also show the artwork — and a
+        // model that believes one skips the tool that would have helped.
+        for tool in Registry::new().tools() {
+            for (place, text) in prompt_text(tool) {
+                let text = text.to_lowercase();
+                for phrase in ["only way", "call this first"] {
+                    assert!(
+                        !text.contains(phrase),
+                        "`{place}` says \"{phrase}\", which overclaims"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_src_or_variant_argument_says_which_tool_lists_its_values() {
+        // The value is one the model cannot invent: an attached path, or a
+        // declared name. Saying where to get it is the difference between
+        // one call and a refusal followed by another.
+        for tool in Registry::new().tools() {
+            let schema = tool.input_schema();
+            for (argument, listing) in [("src", "get_references"), ("variant", "get_variants")] {
+                let Some(property) = schema["properties"].get(argument) else {
+                    continue;
+                };
+                // `set_reference` takes a `src` that is new by design.
+                if tool.name() == "set_reference" {
+                    continue;
+                }
+                assert!(
+                    property["description"]
+                        .as_str()
+                        .is_some_and(|text| text.contains(listing)),
+                    "`{}.{argument}` never says the value comes from `{listing}`",
+                    tool.name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_description_stays_short_enough_to_be_read_on_every_listing() {
+        // Every description is in the model's context on every turn, for every
+        // tool. The bound is set just above the longest today, so growth has
+        // to be a decision made here rather than an accretion.
+        for tool in Registry::new().tools() {
+            let length = tool.description().len();
+            assert!(
+                length <= 1_200,
+                "`{}` is {length} characters; move guidance that is not about \
+                 this tool into the instructions or an argument",
+                tool.name()
             );
         }
     }
