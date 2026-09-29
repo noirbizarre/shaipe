@@ -1255,10 +1255,11 @@ impl Tool for WriteVariant {
          once. Send the complete replacement for that element — its opening \
          tag, attributes and closing tag, with the same `id` it already has — \
          found in `get_svg`. It is checked by isolating the variant before \
-         anything is replaced, so a fragment that does not parse, that drops \
-         the element's `id`, or that leaves the variant unrenderable is \
-         rejected and the project left exactly as it was. Accepted means \
-         valid, not right: look at the result with `render_svg`, and for a \
+         anything is replaced, so a fragment that does not parse or that drops \
+         the element's `id` is rejected and the project left exactly as it \
+         was. Nothing is rasterised, so a fragment that isolates but draws \
+         nothing, or draws the wrong thing, is accepted. Accepted means \
+         well-formed, not right: look at the result with `render_svg`, and for a \
          `source` reference run `compare_reference`. It changes the project \
          in memory, and reaches disk only if the server runs with `--write` \
          or the user saves."
@@ -1311,10 +1312,13 @@ impl Tool for WriteVariant {
 
         let candidate = Project::from_source(project.path(), updated).map_err(invalid)?;
 
-        // The touched variant must still isolate and parse as SVG — this
-        // catches a dropped or renamed `id`, and a fragment `usvg` refuses.
-        // `Format::Svg` because isolation is what this needs to prove; there
-        // is nothing to gain from rasterising it too.
+        // The touched variant must still isolate — this catches a dropped or
+        // renamed `id` and a fragment that does not parse. It does not run
+        // `usvg`: `Format::Svg` returns the isolated document unrasterised.
+        // Probed, not assumed: nine deliberately hostile fragments (a zero
+        // `viewBox`, a self-referencing `<use>`, garbage CSS, a singular
+        // transform…) all pass `usvg` too, so rasterising here would cost a
+        // render and catch nothing this does not.
         let probe = RenderSpec {
             format: Format::Svg,
             ..RenderSpec::square(name, name, 64)
