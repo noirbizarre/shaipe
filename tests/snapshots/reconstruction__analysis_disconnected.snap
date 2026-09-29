@@ -1,0 +1,86 @@
+---
+source: tests/reconstruction.rs
+expression: "snapshot_text(analysis, 4)"
+---
+{
+  "dimensions": {
+    "width": 64,
+    "height": 64,
+    "aspect_ratio": 1.0
+  },
+  "background": {
+    "transparent_fraction": 0.0,
+    "border_colour": "#ffffff",
+    "border_uniformity": 1.0
+  },
+  "dominant_colours": [
+    {
+      "colour": "#f0f0f0",
+      "fraction": 0.9189
+    },
+    {
+      "colour": "#101010",
+      "fraction": 0.0811
+    }
+  ],
+  "foreground": {
+    "pixel_fraction": 0.0811,
+    "bounding_box": {
+      "x": 6,
+      "y": 6,
+      "width": 44,
+      "height": 44
+    }
+  },
+  "region_count": 3,
+  "regions": [
+    {
+      "id": 0,
+      "bounding_box": {
+        "x": 6,
+        "y": 6,
+        "width": 14,
+        "height": 14
+      },
+      "area": 196,
+      "centroid": {
+        "x": 12.5,
+        "y": 12.5
+      }
+    },
+    {
+      "id": 1,
+      "bounding_box": {
+        "x": 34,
+        "y": 10,
+        "width": 10,
+        "height": 10
+      },
+      "area": 100,
+      "centroid": {
+        "x": 38.5,
+        "y": 14.5
+      }
+    },
+    {
+      "id": 2,
+      "bounding_box": {
+        "x": 44,
+        "y": 44,
+        "width": 6,
+        "height": 6
+      },
+      "area": 36,
+      "centroid": {
+        "x": 46.5,
+        "y": 46.5
+      }
+    }
+  ],
+  "hole_count": 0,
+  "holes": [],
+  "symmetry": {
+    "horizontal": 0.0,
+    "vertical": 0.0
+  }
+}

@@ -50,6 +50,19 @@ const MEASURABLE_MAX_REGIONS: usize = 6;
 /// this even when it happens to form few large regions.
 const MEASURABLE_MAX_COLOURS: usize = 4;
 
+/// The smallest share of a reference's opaque pixels that makes a colour worth
+/// counting when choosing a strategy.
+///
+/// [`Analysis::dominant_colours`] buckets every opaque pixel, and an
+/// anti-aliased edge is made of intermediate colours: a clean, flat, one-colour
+/// disc on white reports six or more buckets, none of them larger than a
+/// percent or two. Counting those made a trivially traceable mark look like a
+/// busy one. Measured on `tests/reconstruction.rs`'s corpus, edge buckets top
+/// out at about 1.4%, so this sits above them. It also drops a 1.2% speck
+/// colour in the noisy fixture, which is told apart by its region count and
+/// its other colours instead.
+const SIGNIFICANT_COLOUR_FRACTION: f64 = 0.02;
+
 /// Which kind of reconstruction work this is.
 ///
 /// The agent chooses this; Shaipe never infers it silently — the same
@@ -225,8 +238,10 @@ pub struct StrategyRecommendation {
     pub recommended: ConstructionStrategy,
     /// [`Analysis::region_count`] the recommendation was computed from.
     pub region_count: usize,
-    /// [`Analysis::dominant_colours`]'s length the recommendation was
-    /// computed from.
+    /// How many of [`Analysis::dominant_colours`] cover at least
+    /// [`SIGNIFICANT_COLOUR_FRACTION`] of the opaque pixels — the count the
+    /// recommendation was computed from. Anti-aliasing fringes are excluded, so
+    /// this can be smaller than the analysis's own list.
     pub dominant_colour_count: usize,
     /// [`Analysis::hole_count`] the recommendation was computed from.
     pub hole_count: usize,
@@ -258,7 +273,11 @@ pub struct StrategyRecommendation {
 #[must_use]
 pub fn recommend_strategy(kind: WorkflowKind, analysis: &Analysis) -> StrategyRecommendation {
     let region_count = analysis.region_count;
-    let dominant_colour_count = analysis.dominant_colours.len();
+    let dominant_colour_count = analysis
+        .dominant_colours
+        .iter()
+        .filter(|colour| colour.fraction >= SIGNIFICANT_COLOUR_FRACTION)
+        .count();
     let hole_count = analysis.hole_count;
 
     let measurable =
@@ -366,6 +385,23 @@ mod tests {
         assert_eq!(recommendation.recommended, ConstructionStrategy::Trace);
         assert_eq!(recommendation.region_count, 1);
         assert_eq!(recommendation.dominant_colour_count, 1);
+    }
+
+    #[test]
+    fn an_anti_aliased_edge_is_not_counted_as_a_colour() {
+        // A flat one-colour mark: two real colours and six fringe buckets that
+        // together are under 1% of the pixels. Counted, they made a disc look
+        // as busy as a photograph.
+        let mut analysis = analysis_with(1, 2, 0);
+        analysis
+            .dominant_colours
+            .extend((0..6).map(|index| crate::analysis::DominantColour {
+                colour: format!("#{index:02x}{index:02x}{index:02x}"),
+                fraction: 0.001,
+            }));
+        let recommendation = recommend_strategy(WorkflowKind::Reference, &analysis);
+        assert_eq!(recommendation.dominant_colour_count, 2);
+        assert_eq!(recommendation.recommended, ConstructionStrategy::Trace);
     }
 
     #[test]

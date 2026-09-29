@@ -44,3 +44,4 @@ by editing the old one. The history is the value.
 - [ADR-021](021-explicit-reconstruction-workflow.md) — Name the workflow's phases; do not track whether they happened
 - [ADR-022](022-reconstruction-instructions.md) — Reconstruction instructions are Shaipe's own, generated from the workflow
 - [ADR-023](023-tool-contract-conventions.md) — Tool contracts name what comes next and leave the phases to one place
+- [ADR-024](024-reconstruction-fixtures-and-evaluation-loop.md) — Reconstruction is tested with computed fixtures, no model
