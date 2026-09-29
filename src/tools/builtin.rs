@@ -328,6 +328,11 @@ impl Tool for GetReferenceAnalysis {
 
         let resolved = project.resolve(&reference.src);
 
+        // Before the file is read, like the other reference tools: an
+        // unsupported format is refused for what it is, not for a decode
+        // failure that says less.
+        reference_mime_type_or_refuse(self.name(), &resolved)?;
+
         let bytes =
             std::fs::read(&resolved).map_err(|error| crate::Error::io(resolved.clone(), error))?;
 
@@ -430,14 +435,15 @@ fn reference_mime_type(path: &Path) -> Option<&'static str> {
 
 /// [`reference_mime_type`], or the refusal that lists what is accepted.
 ///
-/// Shared by the two tools that hand a reference to a model as an image, so
-/// the message that tells it what to do instead is one message.
+/// Shared by every tool that reads a reference's pixels, so the message that
+/// tells a model what to do instead is one message, and an unusable reference
+/// is refused for what it is before any of them touches the file.
 fn reference_mime_type_or_refuse(tool: &str, resolved: &Path) -> Result<&'static str> {
     reference_mime_type(resolved).ok_or_else(|| crate::Error::InvalidToolInput {
         tool: tool.to_owned(),
         reason: format!(
             "`{}` is not an image format this tool recognises; expected .png, .jpg, .jpeg, \
-             .gif, .webp or .bmp. An SVG or PDF reference cannot be shown; export a raster \
+             .gif, .webp or .bmp. An SVG or PDF reference cannot be used here; export a raster \
              image of it and attach that with `set_reference`.",
             resolved.display()
         ),
@@ -609,6 +615,9 @@ impl Tool for GetReferenceTrace {
         let reference = attached_reference(self.name(), project, &src)?;
 
         let resolved = project.resolve(&reference.src);
+
+        // Before the file is read, for the reason `get_reference_image` gives.
+        reference_mime_type_or_refuse(self.name(), &resolved)?;
 
         let bytes =
             std::fs::read(&resolved).map_err(|error| crate::Error::io(resolved.clone(), error))?;
@@ -866,6 +875,7 @@ impl Tool for GetWorkflow {
             let reference = attached_reference(self.name(), project, &src)?;
 
             let resolved = project.resolve(&reference.src);
+            reference_mime_type_or_refuse(self.name(), &resolved)?;
             let bytes = std::fs::read(&resolved)
                 .map_err(|error| crate::Error::io(resolved.clone(), error))?;
             let analysis = crate::analysis::analyze(&resolved, &bytes)?;
@@ -3191,12 +3201,21 @@ mod tests {
             .references
             .push(Reference::new("brief.pdf", ReferenceKind::Source));
 
-        for tool in ["get_reference_image", "compare_reference"] {
+        // All five tools that read a reference's pixels, not only the two that
+        // hand it to a model as an image: ADR 023 promises the refusal for
+        // every one of them.
+        for tool in [
+            "get_reference_image",
+            "get_reference_analysis",
+            "get_reference_trace",
+            "compare_reference",
+            "get_workflow",
+        ] {
             let error = Registry::new()
                 .call(
                     tool,
                     &mut project,
-                    &json!({ "src": "brief.pdf", "variant": "icon" }),
+                    &json!({ "src": "brief.pdf", "variant": "icon", "kind": "reference" }),
                 )
                 .unwrap_err();
 
