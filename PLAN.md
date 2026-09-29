@@ -281,6 +281,11 @@ see `docs/adr/004-tools-not-a-model.md`.
       on every comparison metric, and a loop that improves from a bad start;
       it found that anti-aliasing fringes inflated the strategy's colour
       count, now fixed — ADR-024
+- [x] The reconstruction architecture documented where its decisions already
+      live: ADR-014 gains the overview (tracing as measurement, the three
+      workflows, analysis, the loop, deterministic vs. model, SVG as source of
+      truth, the three texts), ADR-001 and ADR-004 point at it, and the README
+      says so. No UX change — that is the next epic's
 
 ## Artwork
 
