@@ -11,12 +11,15 @@ Shaipe does not host a model, and will not. Bring your own agent.
 
 ## Installation
 
+Shaipe has not had its first release yet, so there is no crates.io package or
+binary download to point at. Install it from source:
+
 ```bash
-cargo install shaipe
+cargo install --git https://github.com/noirbizarre/shaipe
 ```
 
-Or download a binary for your platform from the
-[latest release](https://github.com/noirbizarre/shaipe/releases/latest).
+Or, from a checkout, `mise run setup`. Releases are tracked in
+[PLAN.md](https://github.com/noirbizarre/shaipe/blob/main/PLAN.md); this section changes when the first one ships.
 
 ## The project file
 

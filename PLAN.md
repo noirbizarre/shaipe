@@ -1,6 +1,6 @@
 # Plan
 
-Where Shaipe is and where it is going. Checked means done and shipped.
+Where Shaipe is and where it is going. Checked means done in the tree; the release items below say what has shipped.
 
 ## How to edit this file
 
