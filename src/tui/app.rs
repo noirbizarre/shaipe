@@ -60,12 +60,6 @@ const MIN_PREVIEW_SIZE: u32 = 32;
 /// immediate.
 const DEBOUNCE: Duration = Duration::from_millis(120);
 
-/// Where a double-clicked render specification is written.
-///
-/// The conventional output directory, matching `shaipe render`'s default, so
-/// the workspace and the command line do not disagree about where assets go.
-const EXPORT_DIRECTORY: &str = "dist";
-
 /// Which pane the keyboard is talking to.
 ///
 /// Three, not four: the variants and the render specifications are the
@@ -2258,7 +2252,8 @@ impl App {
         self.selected[index] = next as usize;
     }
 
-    /// Render the specification on screen and write it to `dist/`.
+    /// Render the specification on screen and write it to the project's
+    /// output directory — `dist/` beside the project unless it declares another.
     ///
     /// The result goes to the status line rather than being returned: an
     /// export that fails must not close the workspace, and a project mid-edit
@@ -2275,11 +2270,13 @@ impl App {
             return;
         };
 
-        let directory = std::path::Path::new(EXPORT_DIRECTORY);
+        // Where `shaipe render` would write, not a private choice of the
+        // workspace's: the same export must not land in two places.
+        let directory = self.project.render_output_directory(None);
         self.notice = Some(
             match Renderer::new(&self.project, RenderOptions::default())
                 .and_then(|renderer| renderer.render(&spec))
-                .and_then(|asset| asset.write_to(directory))
+                .and_then(|asset| asset.write_to(&directory))
             {
                 Ok(path) => Notice::info(format!("wrote {}", path.display())),
                 Err(error) => Notice::warning(format!("export failed: {error}")),

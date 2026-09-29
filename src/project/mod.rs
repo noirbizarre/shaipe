@@ -30,6 +30,10 @@ pub use variant::Variant;
 
 use crate::error::{Error, Result};
 
+/// Where assets are written when neither the command line nor the project
+/// says. Relative to the project file, like every other path in a project.
+pub const DEFAULT_RENDER_OUTPUT: &str = "dist";
+
 /// The bytes of a freshly created project, before its variant is declared.
 ///
 /// A self-closing placeholder `<shaipe:project>` gives
@@ -183,6 +187,21 @@ impl Project {
         } else {
             self.base_directory().join(relative)
         }
+    }
+
+    /// Where rendered assets are written.
+    ///
+    /// The explicit choice if there is one — `--output` on the command line —
+    /// then the project's own `<shaipe:renders output="...">`, then
+    /// [`DEFAULT_RENDER_OUTPUT`]; resolved against the project's directory,
+    /// not the shell's. One answer for the CLI and the workspace, so the same
+    /// export cannot land in two places depending on who asked for it.
+    #[must_use]
+    pub fn render_output_directory(&self, explicit: Option<&Path>) -> PathBuf {
+        let chosen = explicit
+            .or(self.metadata.render_output.as_deref())
+            .unwrap_or_else(|| Path::new(DEFAULT_RENDER_OUTPUT));
+        self.resolve(chosen)
     }
 
     /// Restyle every element bound to a palette colour, to a given value.
@@ -372,6 +391,30 @@ mod tests {
         assert_eq!(
             project.resolve(Path::new("fonts/Inter.ttf")),
             Path::new("assets/brand/fonts/Inter.ttf")
+        );
+    }
+
+    #[test]
+    fn assets_go_to_dist_beside_the_project_unless_something_says_otherwise() {
+        let project = Project::from_source("assets/logo.svg", FIXTURE.to_owned()).unwrap();
+        assert_eq!(
+            project.render_output_directory(None),
+            Path::new("assets/dist")
+        );
+    }
+
+    #[test]
+    fn the_projects_declared_output_beats_the_default_and_an_explicit_one_beats_both() {
+        let mut project = Project::from_source("assets/logo.svg", FIXTURE.to_owned()).unwrap();
+        project.metadata_mut().render_output = Some(PathBuf::from("declared"));
+
+        assert_eq!(
+            project.render_output_directory(None),
+            Path::new("assets/declared")
+        );
+        assert_eq!(
+            project.render_output_directory(Some(Path::new("flag"))),
+            Path::new("assets/flag")
         );
     }
 

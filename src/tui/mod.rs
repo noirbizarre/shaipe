@@ -1956,6 +1956,35 @@ mod tests {
     }
 
     #[test]
+    fn exporting_a_render_honours_the_output_directory_the_project_declares() {
+        // The workspace used to hard-code `dist/` relative to wherever it was
+        // started, so the same export landed somewhere else than
+        // `shaipe render` put it. An absolute project path means this needs
+        // no change of working directory.
+        let directory = tempfile::tempdir().unwrap();
+        let mut project = Project::from_source(
+            directory.path().join("logo.svg"),
+            fixtures::PROJECT.to_owned(),
+        )
+        .unwrap();
+        project.metadata_mut().render_output = Some(std::path::PathBuf::from("declared-assets"));
+
+        let mut app = App::new(project, "blocks");
+        app.toggle_mode();
+        app.export_selected_render();
+
+        assert!(
+            directory
+                .path()
+                .join("declared-assets/favicon-32.png")
+                .is_file(),
+            "{:?}",
+            app.notice.as_ref().and_then(app::Notice::text)
+        );
+        assert!(!directory.path().join("dist").exists());
+    }
+
+    #[test]
     fn double_clicking_the_prompt_opens_it_for_editing() {
         let mut app = laid_out();
         let prompt = app.area(Focus::Prompt);
