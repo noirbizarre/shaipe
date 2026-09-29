@@ -155,10 +155,10 @@ pub fn serve(command: SessionCommand, registry: &Registry, project: &mut Project
             Applied { mutated: false }
         }
         SessionCommand::Call { name, input, reply } => {
-            // Read before the call, because the tool is about to be consumed
-            // by it, and asked of the tool rather than inferred from the
-            // result: a failed `write_svg` changed nothing, and this is the
-            // conservative answer for one that succeeded.
+            // Asked of the tool rather than inferred from the result, and
+            // combined with whether the call succeeded below: a failed
+            // `write_svg` changed nothing, so only a successful call to a
+            // tool that mutates counts.
             let mutated = registry.get(&name).is_some_and(|tool| tool.mutates());
             let result = registry.call(&name, project, &input);
             let mutated = mutated && result.is_ok();

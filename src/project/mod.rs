@@ -141,7 +141,12 @@ impl Project {
         document::base_directory(&self.path)
     }
 
-    /// The document's bytes, exactly as they were read.
+    /// The document's bytes as of the last read, save or palette restyle.
+    ///
+    /// Not the document as it now stands: metadata edited since is only in
+    /// [`Project::metadata`] until saving, so anything that must see it —
+    /// serving the document, splicing into it — goes through
+    /// [`Project::to_svg`].
     #[must_use]
     pub fn source(&self) -> &str {
         &self.source

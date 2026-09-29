@@ -7,6 +7,8 @@
 //! │                       │                                                │
 //! ├───────────────────────┤            preview or source                   │
 //! │ palette               │                                                │
+//! ├───────────────────────┤                                                │
+//! │ references            │                                                │
 //! └───────────────────────┴────────────────────────────────────────────────┘
 //! ```
 //!
@@ -16,8 +18,8 @@
 //! and it renders through [`crate::render`], so it shows exactly what
 //! `shaipe render` would write — not an approximation of it.
 //!
-//! Both panes are editable, in one shared edit mode: `enter` hands the
-//! keyboard to the focused pane, `esc` gives it back, `tab` and the arrows
+//! The prompt, the palette and the references are editable, in one shared
+//! edit mode: `enter` hands the keyboard to the focused pane, `esc` gives it back, `tab` and the arrows
 //! move around the workspace — up and down between the panes, left and right
 //! between the tabs — and once a pane is being edited the arrows belong to it
 //! instead. The variants and the render specifications are the preview's tabs
@@ -1094,7 +1096,10 @@ mod tests {
         control(&mut app, KeyCode::Char('c'));
 
         assert_eq!(app.pending_agent_request, Some(AgentRequest::Cancel));
-        assert!(app.is_editing(), "stopping a turn does not leave the editor");
+        assert!(
+            app.is_editing(),
+            "stopping a turn does not leave the editor"
+        );
     }
 
     #[test]

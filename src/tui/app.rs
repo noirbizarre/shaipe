@@ -5,8 +5,8 @@
 //! would rasterise a 512-pixel SVG four times a second for no reason.
 //!
 //! This is where editing lives. The prompt editor holds its draft and the
-//! dirty flag here rather than spread through the drawing code, and a colour
-//! picker or an agent conversation would land beside them.
+//! dirty flag here rather than spread through the drawing code, and the colour
+//! picker and the agent conversation sit beside them.
 
 use std::time::{Duration, Instant};
 

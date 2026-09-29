@@ -122,8 +122,9 @@ miette = { version = "7", features = ["fancy"] }
 # CLI
 clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 
-# Serialisation. Only `inspect --format json` and the tool registry use it:
-# the project format itself is XML, because the project format is an SVG.
+# Serialisation. `inspect --format json`, the tool registry and the two small
+# JSON files the workspace keeps (`settings.json`, `vision.json`) use it: the
+# project format itself is XML, because the project format is an SVG.
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 
@@ -193,8 +194,9 @@ ratatui-image = { version = "11.0.6", default-features = false, features = ["cro
 ratatui-textarea = "0.9.2"
 
 # `ratatui-image` speaks `DynamicImage`, so `preview::Image` needs the type to
-# hand it one. Codecs are enabled only for `src/vectorize/`, which is the one
-# place pixels *do* come from a file rather than `tiny-skia` — matching
+# hand it one. Codecs are enabled for the modules that decode a reference file
+# (`src/vectorize/`, `src/analysis/`, `src/compare/` and the tools that read
+# one), the places pixels come from a file rather than `tiny-skia` — matching
 # exactly the raster formats `get_reference_image`'s `reference_mime_type`
 # already advertises, so the two tools recognise the same files.
 image = { version = "0.25.10", default-features = false, features = [
@@ -218,7 +220,7 @@ vtracer = "=1.0.0-alpha.4"
 # stay hand-rolled in `src/compare/`; only the SSIM math is borrowed.
 image-compare = "0.5.0"
 
-# The `render` tool returns its PNG to an agent base64-encoded.
+# `render_svg` and `render_grid` return their PNGs to an agent base64-encoded.
 base64 = "0.23.1"
 
 # Warnings the user should see but that must not fail a render — an unresolved

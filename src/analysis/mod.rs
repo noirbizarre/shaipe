@@ -32,8 +32,7 @@ use serde::Serialize;
 
 use crate::error::{Error, Result};
 
-/// Pixels darker (or, on alpha, more transparent) than this are still
-/// counted as fully transparent — real anti-aliased edges rarely land
+/// A pixel whose alpha is below this is still counted as fully transparent — real anti-aliased edges rarely land
 /// exactly at 0.
 const TRANSPARENT_ALPHA_THRESHOLD: u8 = 16;
 

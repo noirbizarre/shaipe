@@ -433,8 +433,8 @@ pub enum Error {
     /// dimensions. Unreachable through the tool itself — it renders the
     /// variant at the reference's own dimensions before comparing — kept as
     /// a typed error rather than an assertion because [`crate::compare::compare`]
-    /// is `pub(crate)` and a future caller within the crate should be told
-    /// what went wrong rather than hit an index panic in the comparison math.
+    /// is `pub`, so a caller that is not the tool should be told what went
+    /// wrong rather than hit an index panic in the comparison math.
     #[error(
         "cannot compare a {reference_width}x{reference_height} reference against a \
          {render_width}x{render_height} render"

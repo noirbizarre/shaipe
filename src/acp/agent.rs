@@ -75,8 +75,8 @@ pub enum Policy {
 
 /// The tool kinds [`Policy::Guarded`] refuses.
 ///
-/// Everything that writes. The project is changed through `write_svg`, which
-/// validates the document and leaves the file alone until someone saves; a
+/// Everything that writes. The project is changed through Shaipe's own tools
+/// (`write_svg`, `write_variant` and the rest), which validate the document and leaves the file alone until someone saves; a
 /// direct write goes around all of it, against a workspace that is holding the
 /// same document in memory.
 const REFUSED: [ToolKind; 4] = [
@@ -922,8 +922,9 @@ fn decide(
     let permit = match policy {
         Policy::AllowAll => true,
         // Shaipe's own tools are the *sanctioned* way to change the project.
-        // Refusing `write_svg` for being an edit would leave the agent no way
-        // to do the one thing the workspace exists to have it do.
+        // Refusing `write_svg` or `write_variant` for being an edit would leave
+        // the agent no way to do the one thing the workspace exists to have it
+        // do.
         Policy::Guarded => ours || !kind.is_some_and(|kind| REFUSED.contains(&kind)),
         Policy::DenyAll => false,
     };
@@ -956,7 +957,7 @@ fn decide(
         // Note this is *not* the same as refusing: an agent reads `Cancelled`
         // as "the user went away" and a rejection as "no, try something else",
         // which is the difference between it giving up and it reaching for
-        // `write_svg` instead.
+        // one of Shaipe's own tools instead.
         None => RequestPermissionOutcome::Cancelled,
     };
 
@@ -1221,8 +1222,8 @@ mod tests {
 
     #[test]
     fn the_agents_own_edit_is_refused() {
-        // The project is changed through `write_svg`, which validates the
-        // document and leaves the file alone until somebody saves. A direct
+        // The project is changed through Shaipe's own tools, which validate the
+        // document and leave the file alone until somebody saves. A direct
         // write goes around all of it.
         for kind in [
             ToolKind::Edit,
@@ -1290,8 +1291,8 @@ mod tests {
     #[test]
     fn a_refusal_says_no_rather_than_pretending_the_user_left() {
         // An agent reads `Cancelled` as "the user went away" and a rejection
-        // as "no, try something else". Only the second makes it reach for
-        // `write_svg`.
+        // as "no, try something else". Only the second makes it reach for one
+        // of Shaipe's own tools.
         let response = decide(
             Policy::Guarded,
             Some(ToolKind::Edit),
