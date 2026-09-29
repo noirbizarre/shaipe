@@ -1,0 +1,49 @@
+---
+source: tests/reconstruction.rs
+expression: "snapshot_text(trace, 1)"
+---
+{
+  "mode": "colour",
+  "paths": [
+    {
+      "id": 0,
+      "bounding_box": {
+        "x": 6.7,
+        "y": 24.7,
+        "width": 14.7,
+        "height": 14.7
+      },
+      "area": 215.6,
+      "fill_colour": "#dc1e1e"
+    },
+    {
+      "id": 1,
+      "bounding_box": {
+        "x": 24.7,
+        "y": 24.7,
+        "width": 14.7,
+        "height": 14.7
+      },
+      "area": 215.6,
+      "fill_colour": "#1ea03c"
+    },
+    {
+      "id": 2,
+      "bounding_box": {
+        "x": 42.7,
+        "y": 24.7,
+        "width": 14.7,
+        "height": 14.7
+      },
+      "area": 215.6,
+      "fill_colour": "#1e5adc"
+    }
+  ],
+  "bounding_box": {
+    "x": 6.7,
+    "y": 24.7,
+    "width": 50.7,
+    "height": 14.7
+  },
+  "path_count": 3
+}

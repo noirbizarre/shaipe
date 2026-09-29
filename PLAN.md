@@ -276,6 +276,11 @@ see `docs/adr/004-tools-not-a-model.md`.
       point at `render_svg`/`compare_reference`, and an MCP error carries its
       cause; guarded by tests that fail on a dangling name, an overclaim or a
       copy of the phase order — ADR-023
+- [x] The reconstruction loop proven without a model: seven computed reference
+      fixtures, insta goldens for analysis and tracing, known-behaviour checks
+      on every comparison metric, and a loop that improves from a bad start;
+      it found that anti-aliasing fringes inflated the strategy's colour
+      count, now fixed — ADR-024
 
 ## Artwork
 

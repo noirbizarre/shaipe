@@ -178,6 +178,14 @@ that always run: `src/mcp/server.rs` drives a real MCP client over a duplex,
 `src/mcp/bridge.rs` carries a call over a real socket, and `tests/mcp_stdio.rs`
 runs the binary. Never add a test that needs a network to `mise run ci`.
 
+The reconstruction loop itself — analyse, trace, construct, render, compare — is
+covered without a model by `tests/reconstruction.rs`, over references that
+`tests/reconstruction/corpus.rs` *computes* (ADR 024). A fixture is generated,
+not committed, and its goldens are `insta` snapshots in `tests/snapshots/` that
+record measured facts rather than image bytes: review a changed one with
+`mise run snapshots`, never edit it by hand. A change to a threshold in
+`src/analysis/`, `src/compare/` or `src/workflow/` is proven or refuted there.
+
 Three kinds of text reach an agent and they must not be confused. The project's
 `<shaipe:prompt>` is the user's brief: metadata, edited in the prompt pane with
 `enter` and committed to the document. The turn is what `a` sends, which is that

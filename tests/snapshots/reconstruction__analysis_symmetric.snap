@@ -1,0 +1,58 @@
+---
+source: tests/reconstruction.rs
+expression: "snapshot_text(analysis, 4)"
+---
+{
+  "dimensions": {
+    "width": 64,
+    "height": 64,
+    "aspect_ratio": 1.0
+  },
+  "background": {
+    "transparent_fraction": 0.0,
+    "border_colour": "#ffffff",
+    "border_uniformity": 1.0
+  },
+  "dominant_colours": [
+    {
+      "colour": "#f0f0f0",
+      "fraction": 0.7539
+    },
+    {
+      "colour": "#101010",
+      "fraction": 0.2461
+    }
+  ],
+  "foreground": {
+    "pixel_fraction": 0.2461,
+    "bounding_box": {
+      "x": 8,
+      "y": 8,
+      "width": 48,
+      "height": 48
+    }
+  },
+  "region_count": 1,
+  "regions": [
+    {
+      "id": 0,
+      "bounding_box": {
+        "x": 8,
+        "y": 8,
+        "width": 48,
+        "height": 48
+      },
+      "area": 1008,
+      "centroid": {
+        "x": 31.5,
+        "y": 31.5
+      }
+    }
+  ],
+  "hole_count": 0,
+  "holes": [],
+  "symmetry": {
+    "horizontal": 1.0,
+    "vertical": 1.0
+  }
+}

@@ -1,0 +1,10 @@
+---
+source: tests/reconstruction.rs
+expression: "snapshot_text(json!(history), 2)"
+---
+[
+  0.0,
+  0.16,
+  0.91,
+  1.0
+]

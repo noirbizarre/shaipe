@@ -1,0 +1,82 @@
+---
+source: tests/reconstruction.rs
+expression: "snapshot_text(analysis, 4)"
+---
+{
+  "dimensions": {
+    "width": 64,
+    "height": 64,
+    "aspect_ratio": 1.0
+  },
+  "background": {
+    "transparent_fraction": 0.0,
+    "border_colour": "#101840",
+    "border_uniformity": 1.0
+  },
+  "dominant_colours": [
+    {
+      "colour": "#101050",
+      "fraction": 0.7393
+    },
+    {
+      "colour": "#f0f0f0",
+      "fraction": 0.2383
+    },
+    {
+      "colour": "#d0d0d0",
+      "fraction": 0.0068
+    },
+    {
+      "colour": "#103050",
+      "fraction": 0.0039
+    },
+    {
+      "colour": "#707090",
+      "fraction": 0.0039
+    },
+    {
+      "colour": "#303050",
+      "fraction": 0.002
+    },
+    {
+      "colour": "#505070",
+      "fraction": 0.002
+    },
+    {
+      "colour": "#b0b0b0",
+      "fraction": 0.002
+    }
+  ],
+  "foreground": {
+    "pixel_fraction": 0.2549,
+    "bounding_box": {
+      "x": 10,
+      "y": 16,
+      "width": 36,
+      "height": 36
+    }
+  },
+  "region_count": 1,
+  "regions": [
+    {
+      "id": 0,
+      "bounding_box": {
+        "x": 10,
+        "y": 16,
+        "width": 36,
+        "height": 36
+      },
+      "area": 1044,
+      "centroid": {
+        "x": 27.5,
+        "y": 33.5
+      }
+    }
+  ],
+  "hole_count": 0,
+  "holes": [],
+  "symmetry": {
+    "horizontal": 0.5676,
+    "vertical": 0.7576
+  }
+}
