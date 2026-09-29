@@ -178,14 +178,17 @@ that always run: `src/mcp/server.rs` drives a real MCP client over a duplex,
 `src/mcp/bridge.rs` carries a call over a real socket, and `tests/mcp_stdio.rs`
 runs the binary. Never add a test that needs a network to `mise run ci`.
 
-The prompt pane's editor serves two purposes and they must not be confused.
-`enter` edits the project's `<shaipe:prompt>`, which is metadata and is
-committed to the document on every keystroke; `a` composes a message to the
-agent, which is committed nowhere. A single buffer with a mode rather than two
-widgets, because one pane with two text fields in it is worse than one pane
-with two states. `EditorMode` is what keeps them apart, and
-`a_message_to_the_agent_never_reaches_the_projects_prompt` is what stops them
-merging back.
+Three kinds of text reach an agent and they must not be confused. The project's
+`<shaipe:prompt>` is the user's brief: metadata, edited in the prompt pane with
+`enter` and committed to the document. The turn is what `a` sends, which is that
+prompt wrapped by `instruct()` in `src/tui/app.rs`; there is no separate chat
+message. Shaipe's own instructions for how to use its tools live in
+`src/workflow/instructions.rs` and travel as the MCP server's `instructions`
+(ADR 022). They never go into the prompt, and `instruct()` carries none of them
+— `the_sent_prompt_carries_no_workflow_instructions` and
+`sending_leaves_the_prompt_where_it_was` are what keep the three apart. The
+instructions name tools, so renaming a tool means editing them; a test fails
+otherwise.
 
 An ACP client cannot restrict an agent — permission is resolved inside the
 agent, and OpenCode's defaults never ask, so `src/acp/`'s `Policy` is correct

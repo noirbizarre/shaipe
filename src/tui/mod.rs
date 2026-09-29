@@ -1003,8 +1003,8 @@ mod tests {
     #[test]
     fn the_sent_prompt_mentions_attached_references_when_there_are_any() {
         // An agent that does not know a reference exists cannot decide to
-        // look at it — `get_reference_image` is opt-in, so the turn has to
-        // say what there is to opt into.
+        // look at it — the tools are opt-in, so the turn has to say what
+        // there is to opt into, and where the workflow for it is.
         let mut app = app();
         app.agent = AgentStatus::Ready;
         app.focus = Focus::Prompt;
@@ -1021,8 +1021,42 @@ mod tests {
         let Some(AgentRequest::Prompt(sent)) = &app.pending_agent_request else {
             panic!("nothing was sent");
         };
-        assert!(sent.contains("get_reference_image"), "{sent}");
+        assert!(sent.contains("get_workflow"), "{sent}");
         assert!(sent.contains("get_references"), "{sent}");
+    }
+
+    #[test]
+    fn the_sent_prompt_carries_no_workflow_instructions() {
+        // The workflow is Shaipe's own text, carried by the MCP server's
+        // instructions. Repeating it in the turn would mix it into what the
+        // user is asking for, and it would drift from the one copy that is
+        // tested against `get_workflow`.
+        let mut app = app();
+        app.agent = AgentStatus::Ready;
+        app.focus = Focus::Prompt;
+        app.project
+            .metadata_mut()
+            .references
+            .push(crate::project::Reference::new(
+                "logo.png",
+                crate::project::ReferenceKind::Source,
+            ));
+
+        press(&mut app, KeyCode::Char('a'));
+
+        let Some(AgentRequest::Prompt(sent)) = &app.pending_agent_request else {
+            panic!("nothing was sent");
+        };
+        for phase in [
+            "choose_strategy",
+            "compare_reference",
+            "get_reference_analysis",
+        ] {
+            assert!(
+                !sent.contains(phase),
+                "the turn repeats the workflow: {phase}"
+            );
+        }
     }
 
     #[test]
@@ -1039,7 +1073,8 @@ mod tests {
         let Some(AgentRequest::Prompt(sent)) = &app.pending_agent_request else {
             panic!("nothing was sent");
         };
-        assert!(!sent.contains("get_reference_image"), "{sent}");
+        assert!(!sent.contains("get_references"), "{sent}");
+        assert!(!sent.contains("get_workflow"), "{sent}");
     }
 
     #[test]

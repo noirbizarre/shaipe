@@ -163,6 +163,12 @@ fn the_standalone_server_introduces_itself_as_shaipe() {
             .is_some_and(|text| text.contains("render_svg")),
         "the server did not tell the model how to see the artwork"
     );
+    assert!(
+        responses[0]["result"]["instructions"]
+            .as_str()
+            .is_some_and(|text| text.contains("get_workflow") && text.contains("compare_reference")),
+        "the server did not tell the model how to reconstruct from a reference"
+    );
 }
 
 #[test]

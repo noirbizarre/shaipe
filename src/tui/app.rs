@@ -358,19 +358,26 @@ impl Notice {
 /// says what to do with it, and names the tools, because the preamble is read
 /// once and this is read every turn.
 ///
+/// It carries no workflow. How to reconstruct from a reference — what to
+/// measure, when to trace, how to compare, when to stop — is Shaipe's own
+/// text in [`crate::workflow::instructions`], sent as the MCP server's
+/// `instructions`, so it is neither mixed into what the user wrote nor
+/// repeated in every turn. What this does is point at it: an agent that never
+/// surfaced those instructions still learns, here, to ask `get_workflow`.
+///
 /// `references` names attached files, regardless of kind — `get_references`
-/// already reports each one's kind and the agent decides relevance from
-/// that. Omitted entirely when nothing is attached, so an untouched project
-/// sends the same turn it always did.
+/// already reports each one's kind and the agent decides which is a `source`
+/// to reproduce. Omitted entirely when nothing is attached, so an untouched
+/// project sends the same turn it always did.
 fn instruct(prompt: &str, references: &[Reference]) -> String {
     let attachments = if references.is_empty() {
         String::new()
     } else {
         format!(
             "\n\nThis project has {count} file{plural} attached for context — \
-             call `get_references` to see what and why, and \
-             `get_reference_image` to look at any relevant to the prompt \
-             below before you write the SVG.",
+             call `get_references` to see what each is for. If one is a \
+             `source` to reproduce, call `get_workflow` with kind `reference` \
+             before you write the SVG, and follow it.",
             count = references.len(),
             plural = if references.len() == 1 { "" } else { "s" },
         )
