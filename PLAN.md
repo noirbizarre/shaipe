@@ -271,6 +271,11 @@ see `docs/adr/004-tools-not-a-model.md`.
       as the MCP server's `instructions` rather than in the prompt or a turn:
       when to inspect, measure, trace or construct, the render-and-compare
       loop, and that a valid SVG is not a finished one — ADR-022
+- [x] The reference, render and write tools reviewed as one agent-facing API:
+      each contract names its preconditions and the tool to call next, writes
+      point at `render_svg`/`compare_reference`, and an MCP error carries its
+      cause; guarded by tests that fail on a dangling name, an overclaim or a
+      copy of the phase order — ADR-023
 
 ## Artwork
 

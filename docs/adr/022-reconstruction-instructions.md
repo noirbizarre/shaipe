@@ -84,5 +84,5 @@ piece of prose and would change what an agent is told when a file is attached.
   test like `tests/acp_opencode.rs`, not in `mise run ci`.
 - Renaming a tool now means editing the instructions too; the test says so.
 - The instructions are guidance, as ADR-021's phases are. Nothing enforces them.
-- Tool descriptions are unchanged. Reviewing them for consistency with the
-  instructions, and for sequencing hints, is issue `#9`.
+- Tool descriptions were unchanged by this ADR. Reviewing them for consistency
+  with the instructions, and for sequencing hints, is [ADR-023](023-tool-contract-conventions.md).

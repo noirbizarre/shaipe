@@ -395,10 +395,12 @@ pub enum Error {
     #[diagnostic(
         code(shaipe::vectorize::empty),
         help(
-            "Nothing was darker than the threshold (default 128), so there \
-             was no foreground to trace. Pass a higher `threshold`, or \
-             `invert: true` if the reference is light artwork on a dark \
-             background."
+            "There was no foreground to trace. In `silhouette` mode (the \
+             default) nothing was darker than `threshold` (default 128): pass \
+             a higher `threshold`, or `invert: true` if the reference is light \
+             artwork on a dark background. In `colour` mode the image is \
+             probably a single flat colour; look at it with \
+             `get_reference_image` to check it contains a mark."
         )
     )]
     EmptyTrace {
@@ -496,14 +498,7 @@ pub enum Error {
     /// nothing was changed, and how to produce a document that would be
     /// accepted.
     #[error("`{tool}` was given an SVG that is not a valid Shaipe project")]
-    #[diagnostic(
-        code(shaipe::tools::invalid_svg),
-        help(
-            "Nothing was changed; the project is exactly as it was. Call \
-             `get_svg` for the current document, apply the edit to the whole \
-             of it — `<metadata>` included — and send all of it back."
-        )
-    )]
+    #[diagnostic(code(shaipe::tools::invalid_svg), help("{}", invalid_svg_help(tool)))]
     InvalidSvgFromTool {
         /// The tool that refused.
         tool: String,
@@ -671,6 +666,25 @@ pub enum Error {
         /// What went wrong.
         reason: String,
     },
+}
+
+/// What to do after `tool` refused an SVG.
+///
+/// Per tool because the two writers ask for different things: the one help
+/// text used to tell `write_variant` to resend the whole document, which is
+/// the opposite of what it wants. The cause of the refusal travels in the
+/// error's source, and the MCP adapter appends it.
+fn invalid_svg_help(tool: &str) -> String {
+    match tool {
+        "write_variant" => "Nothing was changed; the project is exactly as it was. Send only the \
+             variant's element, from its opening tag to its closing tag, with the `id` \
+             `get_variants` lists for it. To change more than one element, use `write_svg`."
+            .to_owned(),
+        _ => "Nothing was changed; the project is exactly as it was. Call `get_svg` for the \
+             current document, apply the edit to the whole of it — `<metadata>` included — and \
+             send all of it back."
+            .to_owned(),
+    }
 }
 
 impl Error {

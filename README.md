@@ -296,14 +296,14 @@ model answered. Your agent is configured and authenticated in your agent. See
 | `get_palette` | The colours, with their names and roles |
 | `get_references` | Files attached for context, and whether they exist |
 | `get_reference_analysis` | Measure a reference's pixels into objective facts — dimensions, colours, regions, holes, symmetry |
-| `get_reference_image` | Read an attached reference's bytes and look at it |
+| `get_reference_image` | Look at an attached raster reference, with its pixel dimensions |
 | `get_reference_trace` | Trace a reference's pixels into vector paths, algorithmically |
 | `compare_reference` | Render a variant at a reference's size and report how they differ, with an overlay and a difference image |
 | `get_workflow` | Name the reconstruction workflow's phases for `from_scratch`/`reference`/`hybrid` work, and recommend a construction strategy |
 | `get_svg` | The document, exactly as it is |
 | `render_svg` | Draw one variant and **look at it** |
 | `render_grid` | Draw one variant at several sizes, to check it still reads small |
-| `write_svg` | Replace the document, validated first |
+| `write_svg` | Replace the document, checked first; to add a variant or change several elements |
 | `write_variant` | Replace one variant's element, without resending the whole document |
 | `set_palette_colour` | Set a colour's value or role by name, or declare a new one |
 | `set_reference` | Attach a file for context, or update one already attached |
@@ -313,7 +313,10 @@ The server also tells the agent how to use them for reconstruction — inspect a
 reference before editing, measure rather than estimate, trace or construct, then
 render and compare until it matches. That text is Shaipe's own, sent as the MCP
 server's `instructions`; it is never added to your project's prompt
-([ADR-022](docs/adr/022-reconstruction-instructions.md)).
+([ADR-022](docs/adr/022-reconstruction-instructions.md)). Each tool's own
+description names what it needs first and which tool to call next, so the loop
+can be followed from the tool list alone
+([ADR-023](docs/adr/023-tool-contract-conventions.md)).
 
 The names are a public interface; renaming one is a breaking change
 ([ADR-007](docs/adr/007-tool-names.md)). `render_svg` and `render_grid` return
@@ -323,7 +326,9 @@ only read the SVG cannot tell you the mark is illegible at 16 pixels.
 `write_svg`, `write_variant`, `set_palette_colour`, `set_reference` and
 `set_generation` all change the project **in memory** only. None of them write
 to your working tree; that takes a `Ctrl-S`, or `shaipe mcp --write` if the
-agent is the only one using the project.
+agent is the only one using the project. A write's result says so, and points
+the agent at `render_svg` and `compare_reference`: an accepted document is a
+valid one, not a finished one.
 
 ### Two ways to reach them
 
