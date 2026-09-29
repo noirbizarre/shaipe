@@ -1291,9 +1291,13 @@ impl Tool for WriteVariant {
             source: Box::new(error),
         };
 
-        let updated =
-            document::replace_element(project.source(), name, &element, svg, project.path())
-                .map_err(invalid)?;
+        // Spliced into the document as it now stands, not as it was read:
+        // `source()` keeps the old metadata until saving, so splicing into it
+        // and adopting the result would silently revert an unsaved prompt or
+        // palette edit — the same data loss `get_svg` documents.
+        let current = project.to_svg()?;
+        let updated = document::replace_element(&current, name, &element, svg, project.path())
+            .map_err(invalid)?;
 
         let candidate = Project::from_source(project.path(), updated).map_err(invalid)?;
 
@@ -2700,6 +2704,46 @@ mod tests {
             .unwrap();
 
         assert_eq!(output.value["saved"], false);
+    }
+
+    #[test]
+    fn write_variant_preserves_metadata_edited_since_the_project_was_read() {
+        // `source()` still carries the metadata as it was read, so splicing
+        // into it and adopting the result reverted every unsaved metadata
+        // edit: the same data loss `get_svg` documents for `write_svg`.
+        let mut project = fixtures::project();
+        project.metadata_mut().prompt = Some("a wordless circular mark".to_owned());
+
+        let registry = Registry::new();
+        registry
+            .call(
+                "set_palette_colour",
+                &mut project,
+                &json!({ "name": "accent", "value": "#0066ff" }),
+            )
+            .unwrap();
+
+        registry
+            .call(
+                "write_variant",
+                &mut project,
+                &json!({
+                    "variant": "icon",
+                    "svg": r##"<symbol id="icon" viewBox="0 0 64 64"><circle r="32" cx="32" cy="32" fill="#f05032"/></symbol>"##,
+                }),
+            )
+            .unwrap();
+
+        assert_eq!(
+            project.metadata().prompt.as_deref(),
+            Some("a wordless circular mark"),
+            "writing a variant reverted the prompt"
+        );
+        assert_eq!(
+            project.metadata().palette.colours()[0].value.to_string(),
+            "#0066ff",
+            "writing a variant reverted a palette edit"
+        );
     }
 
     #[test]
