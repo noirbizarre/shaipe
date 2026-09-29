@@ -54,12 +54,17 @@ add a provider, an API key or a `generate` command that calls one, read
    under a pty that impersonates a Kitty terminal.
 
 7. **Nothing but JSON-RPC reaches standard output while `shaipe mcp` serves.**
-   A single `log::warn!` about a missing font in the middle of the stream is a
-   frame the client cannot parse, and it looks like Shaipe speaking a broken
-   protocol rather than like a warning. `logging::suppress()` is held for the
-   whole session — the stdio twin of invariant 6 — and
-   `nothing_but_json_rpc_is_written_to_standard_output` in
-   `tests/mcp_stdio.rs` runs the binary under `-vv` and parses every line.
+   The logger writes to standard error, so a `log::warn!` cannot land in the
+   stream by itself; what would is anything in the library printing to standard
+   output, which `write_lines` in `src/main.rs` exists to keep out. Separately,
+   `logging::suppress()` is held for the whole session — the stdio twin of
+   invariant 6 — so the server is silent on standard error too, and the one
+   thing it does write there is a failed `--write` save, which is reported
+   directly because a silent one is an agent claiming edits that are not on
+   disk. `nothing_but_json_rpc_is_written_to_standard_output` in
+   `tests/mcp_stdio.rs` runs the binary under `-vv`, parses every line of
+   standard output, and asserts standard error is empty: the second half is what
+   fails if `suppress()` is dropped.
 
 8. **The workspace never waits for an agent's handshake.** An agent starts the
    MCP servers it is given in `session/new` and calls `tools/list` on them

@@ -17,11 +17,12 @@ use crate::cli::McpArgs;
 ///
 /// Returns whatever opening the project or serving the transport returns.
 pub async fn run(args: &McpArgs) -> shaipe::Result<()> {
-    // Held for the whole session, and this is not optional. Standard output is
-    // a JSON-RPC stream; a single `log::warn!` about an unresolved font in the
-    // middle of it is a frame the client cannot parse, and the failure looks
-    // like Shaipe speaking a broken protocol rather than like a warning. This
-    // is the stdio twin of the alternate-screen rule in the workspace.
+    // Held for the whole session. The logger writes to standard error, so a
+    // warning cannot corrupt the JSON-RPC stream on standard output — but the
+    // server is not the place a font warning is for, and the process that
+    // spawned it owns standard error. Silent by construction, then, apart from
+    // a failed `--write` save, which `SessionHandle::detached` reports itself.
+    // This is the stdio twin of the alternate-screen rule in the workspace.
     let _quiet = shaipe::logging::suppress();
 
     // The bridge opens no project and serves no protocol: it is a pipe to a
