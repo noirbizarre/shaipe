@@ -47,9 +47,12 @@ nine separate squares, so the region threshold is ever the deciding factor.
 **Goldens record facts, not bytes.** Analyses, traces and the improvement
 history are `insta` snapshots with floats rounded, in `tests/snapshots/`. A PNG
 byte-for-byte comparison would fail on an encoder upgrade that changed no
-measurement. The one exception is the traced silhouette's SVG text, pinned by
-the `=` version on `vtracer`; if a platform's float formatting disagrees it
-should be reduced to a summary like the others.
+measurement. This is not hypothetical: a first version also snapshotted the
+traced silhouette's SVG text, and macOS fitted one curve segment of the outline
+differently from Linux (`c-.01-.57-.01-.57` against `c-.01-1.13-.02-2.27`)
+with `vtracer` already pinned by `=`. The same shape, different bytes. The text
+is asserted structurally instead, and the geometry is snapshotted rounded to one
+decimal, which all three platforms agree on.
 
 **Comparison metrics are held to known behaviour**, on a transparent-background
 fixture so every metric can reach a near-perfect score: an exact construction

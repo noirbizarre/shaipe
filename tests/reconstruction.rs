@@ -240,12 +240,18 @@ fn every_fixtures_trace_matches_its_golden() {
         let mut trace = session.trace(&options);
 
         if name == "silhouette" {
-            // One full document, once: the whole `vtracer` output, pinned by
-            // the `=` version in Cargo.toml. If a platform's float formatting
-            // ever disagrees, this is the snapshot to drop to a summary.
-            insta::assert_snapshot!(
-                "trace_svg_silhouette",
-                trace["svg"].as_str().expect("markup")
+            // The document's text is deliberately not a golden. `vtracer`'s
+            // curve fitting is floating point, and macOS fitted one segment of
+            // this outline differently from Linux (`c-.01-.57-.01-.57` against
+            // `c-.01-1.13-.02-2.27`): the same shape, different bytes, with
+            // the version already pinned. What is stable is the structure, and
+            // the measured geometry snapshotted below.
+            let svg = trace["svg"].as_str().expect("markup");
+            assert_eq!(svg.matches("<path").count(), 1, "{svg}");
+            assert!(svg.contains(r##"fill="#000000""##), "{svg}");
+            assert!(
+                !svg.contains("viewBox"),
+                "a trace carries no viewBox: {svg}"
             );
         }
 
