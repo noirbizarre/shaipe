@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted
+Accepted. Its scope was extended by [ADR-018](018-structured-reference-measurement.md)
+to [ADR-024](024-reconstruction-fixtures-and-evaluation-loop.md); see
+*Update: where this fits now* at the end, which corrects three statements
+below that are no longer true.
 
 ## Context
 
@@ -157,3 +160,89 @@ than guessing.
   other hand-composed fragment already needs; adding a standalone rasterise
   path that does not touch a `Project` is a reasonable follow-up, not a
   requirement of shipping this.
+
+## Update: where this fits now
+
+This record was written when `get_reference_trace` was the only reference tool.
+The decision stands; its surroundings grew. Nothing above was edited, so three
+statements in it are now history rather than description:
+
+- *"A brand mark is one colour"* and *"never its colour-cluster frontend"* —
+  `get_reference_trace` has a `colour` mode beside the silhouette it was
+  written for ([ADR-020](020-richer-reference-tracing.md)). Silhouette is still
+  the default.
+- *"No preview image travels with the tool's answer"* — one always does, and
+  the answer carries an overall bounding box and per-path metadata
+  ([ADR-020](020-richer-reference-tracing.md)).
+- *"Nothing here could measure one"* — a reference can now be measured
+  ([ADR-018](018-structured-reference-measurement.md)), a render compared to it
+  ([ADR-019](019-compare-reference.md)), and the loop proven without a model
+  ([ADR-024](024-reconstruction-fixtures-and-evaluation-loop.md)).
+
+**Tracing is measurement, not generation.** This is the argument the whole
+reconstruction workflow rests on, so it is restated where the workflow is
+described. A tracer reads pixels and returns geometry the pixels imply; the same
+bytes and options give the same output. What a model does — decide what the
+mark *is*, whether the trace is faithful, what to keep, recolour or redraw — is
+not something Shaipe does for it. That is why the tool returns a *candidate*
+and never grafts it into a variant: it would be making the model's decision.
+
+**The three workflows.** [ADR-021](021-explicit-reconstruction-workflow.md)
+names them and the agent chooses; Shaipe never infers one from what is attached.
+
+| Workflow | When | Phases |
+|---|---|---|
+| `from_scratch` | No reference. There is nothing to measure or compare against. | `construct, render, inspect, refine, validate` |
+| `reference` | A `source` reference is to be reproduced. | `inspect, analyse, choose_strategy, construct, render, compare, refine, validate` |
+| `hybrid` | A reference exists, but exact reproduction is not the goal. | the same as `reference`; `get_workflow` always recommends mixing a trace with hand-built geometry |
+
+**What reference analysis is for.** `get_reference_analysis`
+([ADR-018](018-structured-reference-measurement.md)) turns pixels into facts —
+dimensions, background and foreground, dominant colours, regions, holes,
+symmetry — before anyone chooses how to draw. Its measurements are the only
+input to `get_workflow`'s trace-or-construct recommendation, which is why a
+reference is analysed before it is traced: a photograph traces into noise, and
+the region and colour counts say so before that is discovered.
+
+**The loop.** Construct or trace, `write_svg`/`write_variant`, `render_svg`,
+`compare_reference`, refine. `compare_reference` renders the variant at the
+reference's own pixel size ([ADR-019](019-compare-reference.md)) and reports
+overlap, bounding-box and centroid offsets, area difference and pixel error, so
+the agent steers by numbers instead of an impression. A write that is accepted
+is a valid document, not a finished one, and its result says so
+([ADR-023](023-tool-contract-conventions.md)).
+
+**Who owns what.**
+
+| Deterministic Rust | Model reasoning |
+|---|---|
+| Decoding and measuring a reference (`analysis`) | Deciding what the mark depicts |
+| Tracing pixels into paths (`vectorize`) | Whether to trace, construct or mix, given the measurements |
+| Rendering and comparing (`render`, `compare`) | Reading the overlay and heatmap, and what to change next |
+| The phase list and the strategy recommendation (`workflow`) | Whether to follow them — nothing enforces it |
+| Validating a write, never saving it (`tools`) | The SVG itself: structure, palette use, what to redraw |
+
+The left column is reproducible byte for byte and tested without a model
+([ADR-024](024-reconstruction-fixtures-and-evaluation-loop.md)). Nothing in the
+right column is tested without one, and the tests that try are `#[ignore]`d.
+
+**SVG stays the source of truth.** A trace, a comparison and a workflow are
+all *derived*: none is written into the project. The reference is a path in the
+metadata ([ADR-001](001-svg-as-source-of-truth.md)); the work is an SVG the
+agent lands with `write_variant`/`write_svg`, held in memory until the user
+saves. No workflow state is persisted, so opening and saving a project still
+changes nothing (invariant 2), and a project reconstructed from a reference is
+an ordinary editable SVG, not a wrapper around the raster.
+
+**Three texts, three owners.** The project's `<shaipe:prompt>` is the user's
+brief, committed with the document. The turn is that prompt wrapped by
+`instruct()`, sent when the user presses `a`, and it carries no workflow, only a
+pointer to `get_references` and `get_workflow` when references are attached.
+Shaipe's own instructions for using its tools are generated in
+`src/workflow/instructions.rs` and sent as the MCP server's `instructions`
+([ADR-022](022-reconstruction-instructions.md)). They never enter the prompt.
+
+**What this update does not change.** The workspace's controls, panes and
+prompts are as before. Any user-facing change to how a reconstruction is
+started, watched or reviewed belongs to the UX epic that follows, not to this
+one.

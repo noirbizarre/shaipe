@@ -90,3 +90,11 @@ ADR-003.
 **The schema has to be versioned forever.** The cost of putting the format in
 the artefact is that the artefact outlives the code. That is the trade being
 made deliberately.
+
+## Update: reconstruction leaves this untouched
+
+Reconstructing artwork from a reference adds no project state. An analysis, a
+trace, a comparison and a workflow are computed on request and returned to the
+agent; the result is only ever an SVG landed with `write_variant` or
+`write_svg`, and the reference itself is one more path in the metadata. See the
+*Update* at the end of [ADR-014](014-deterministic-raster-to-vector-tracing.md).

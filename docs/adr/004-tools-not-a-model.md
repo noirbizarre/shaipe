@@ -82,3 +82,12 @@ Everything currently registered is read-only: `inspect_project`,
 - Rendering stays completely independent of all of this. `shaipe render` in CI
   never constructs a registry, and nothing in `src/render/` knows the module
   exists.
+
+## Update: the boundary, drawn by the reference workflow
+
+This ADR's line — Shaipe measures and renders; the agent decides — is where
+reference reconstruction sits. Analysing, tracing and comparing a reference
+are measurement, and a `workflow` model that names phases and recommends a
+strategy is guidance; none of it generates. The full account of which parts are
+deterministic Rust and which are the model's is the *Update* at the end of
+[ADR-014](014-deterministic-raster-to-vector-tracing.md).

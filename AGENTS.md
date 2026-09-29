@@ -178,6 +178,10 @@ that always run: `src/mcp/server.rs` drives a real MCP client over a duplex,
 `src/mcp/bridge.rs` carries a call over a real socket, and `tests/mcp_stdio.rs`
 runs the binary. Never add a test that needs a network to `mise run ci`.
 
+The architecture of reference reconstruction — tracing as measurement, the three
+workflows, and what is Rust versus the model's job — is the *Update* at the end
+of `docs/adr/014-deterministic-raster-to-vector-tracing.md`.
+
 The reconstruction loop itself — analyse, trace, construct, render, compare — is
 covered without a model by `tests/reconstruction.rs`, over references that
 `tests/reconstruction/corpus.rs` *computes* (ADR 024). A fixture is generated,

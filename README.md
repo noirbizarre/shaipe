@@ -318,6 +318,31 @@ description names what it needs first and which tool to call next, so the loop
 can be followed from the tool list alone
 ([ADR-023](docs/adr/023-tool-contract-conventions.md)).
 
+### Reconstructing from a reference
+
+When a project has a `source` reference, the loop is: measure it
+(`get_reference_analysis`), choose between tracing it and drawing it
+(`get_workflow` recommends one from those measurements), write the SVG, render
+it, and `compare_reference` until it matches. Three workflows exist —
+`from_scratch`, `reference` and `hybrid` — and the agent picks one; Shaipe never
+infers it from what is attached.
+
+- **Tracing is measurement, not generation.** `get_reference_trace` reads pixels
+  into paths, the same bytes giving the same output. It returns a candidate; the
+  agent decides what to keep and lands it with `write_variant`.
+- **Deterministic Rust** decodes, measures, traces, renders, compares and
+  validates a write. **The model** decides what the mark is, whether to trace,
+  and what to change next. Nothing enforces the phases; they are guidance.
+- **The SVG is still the source of truth.** No analysis, trace or workflow state
+  is stored in the project, so opening and saving it still changes nothing.
+- **Three texts stay apart:** your project's prompt, the turn sent with `a`, and
+  Shaipe's own tool instructions, which travel as the MCP server's
+  `instructions`.
+
+The reasoning is in [ADR-014](docs/adr/014-deterministic-raster-to-vector-tracing.md),
+whose final section is the overview. The workspace itself does not yet do
+anything special for a reconstruction; that is left to a later UX pass.
+
 The names are a public interface; renaming one is a breaking change
 ([ADR-007](docs/adr/007-tool-names.md)). `render_svg` and `render_grid` return
 real images as MCP image content, which is the entire point — a model that can
@@ -510,7 +535,7 @@ Early, but real. Nothing described above is a mock.
   regenerates this repository's own artwork from `logo.svg` and fails if it
   drifted.
 - The terminal workspace, with Kitty, Sixel, iTerm2 and half-block previews.
-- Seven tools, over MCP: `shaipe mcp` serves any MCP client, and the workspace
+- Seventeen tools, over MCP: `shaipe mcp` serves any MCP client, and the workspace
   serves a session-scoped server to an agent it drives over ACP. Verified
   against OpenCode 1.18.18 — it calls `get_variants` and answers with the
   project's real names, and `render_svg` puts a genuine PNG on the wire.
