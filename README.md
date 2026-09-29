@@ -298,6 +298,7 @@ model answered. Your agent is configured and authenticated in your agent. See
 | `get_reference_analysis` | Measure a reference's pixels into objective facts — dimensions, colours, regions, holes, symmetry |
 | `get_reference_image` | Read an attached reference's bytes and look at it |
 | `get_reference_trace` | Trace a reference's pixels into vector paths, algorithmically |
+| `get_workflow` | Name the reconstruction workflow's phases for `from_scratch`/`reference`/`hybrid` work, and recommend a construction strategy |
 | `get_svg` | The document, exactly as it is |
 | `render_svg` | Draw one variant and **look at it** |
 | `render_grid` | Draw one variant at several sizes, to check it still reads small |

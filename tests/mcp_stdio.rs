@@ -137,6 +137,7 @@ fn the_standalone_server_advertises_every_tool() {
             "get_references",
             "get_svg",
             "get_variants",
+            "get_workflow",
             "render_grid",
             "render_svg",
             "set_generation",
