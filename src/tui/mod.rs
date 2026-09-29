@@ -716,18 +716,22 @@ fn handle(app: &mut App, key: KeyEvent) {
     // a save that only works from outside the editor would be a save nobody
     // reaches for.
     let save = key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL);
-    if app.is_editing() && !save {
-        app.edit_key(key);
-        return;
-    }
 
     // While the agent is working, `ctrl-c` stops the turn rather than the
-    // workspace. Pressing it again quits, because by then it is not working.
+    // workspace. Asked before the editor, like saving: the footer offers
+    // "ctrl-c stop" *while a pane is being edited* — that is when a prompt was
+    // just sent with `alt+a` — and the editor would otherwise swallow it as a
+    // key it has no binding for. When no turn is running it does nothing.
     if key.code == KeyCode::Char('c')
         && key.modifiers.contains(KeyModifiers::CONTROL)
         && app.transcript.is_busy()
     {
         app.cancel_turn();
+        return;
+    }
+
+    if app.is_editing() && !save {
+        app.edit_key(key);
         return;
     }
 
@@ -1075,6 +1079,22 @@ mod tests {
         };
         assert!(!sent.contains("get_references"), "{sent}");
         assert!(!sent.contains("get_workflow"), "{sent}");
+    }
+
+    #[test]
+    fn control_c_stops_the_turn_even_from_inside_the_editor() {
+        // The footer offers "ctrl-c stop" while a pane is being edited, and
+        // the editor used to be asked first, so the offer was a lie.
+        let mut app = app();
+        app.focus = Focus::Prompt;
+        press(&mut app, KeyCode::Enter);
+        app.transcript.push_user("a minimalist logo".to_owned());
+        assert!(app.transcript.is_busy());
+
+        control(&mut app, KeyCode::Char('c'));
+
+        assert_eq!(app.pending_agent_request, Some(AgentRequest::Cancel));
+        assert!(app.is_editing(), "stopping a turn does not leave the editor");
     }
 
     #[test]

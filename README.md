@@ -212,7 +212,7 @@ shaipe tui logo.svg
 ```
 
 ```text
-┌ Shaipe  [Transcript] [Source] [Renders] [Edit renders] ───────────────────┐
+┌ Shaipe  [Transcript] [Source] [Renders] [Edit variants] ──────────────────┐
 ├───────────────────────────────┬───────────────────────────────────────────┤
 │ prompt, or the transcript     │ ‹ icon │ wordmark ›                       │
 │                               │                                           │
