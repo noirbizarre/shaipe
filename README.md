@@ -298,6 +298,7 @@ model answered. Your agent is configured and authenticated in your agent. See
 | `get_reference_analysis` | Measure a reference's pixels into objective facts — dimensions, colours, regions, holes, symmetry |
 | `get_reference_image` | Read an attached reference's bytes and look at it |
 | `get_reference_trace` | Trace a reference's pixels into vector paths, algorithmically |
+| `compare_reference` | Render a variant at a reference's size and report how they differ, with an overlay and a difference image |
 | `get_workflow` | Name the reconstruction workflow's phases for `from_scratch`/`reference`/`hybrid` work, and recommend a construction strategy |
 | `get_svg` | The document, exactly as it is |
 | `render_svg` | Draw one variant and **look at it** |
@@ -307,6 +308,12 @@ model answered. Your agent is configured and authenticated in your agent. See
 | `set_palette_colour` | Set a colour's value or role by name, or declare a new one |
 | `set_reference` | Attach a file for context, or update one already attached |
 | `set_generation` | Record which agent and model produced the current state, and when |
+
+The server also tells the agent how to use them for reconstruction — inspect a
+reference before editing, measure rather than estimate, trace or construct, then
+render and compare until it matches. That text is Shaipe's own, sent as the MCP
+server's `instructions`; it is never added to your project's prompt
+([ADR-022](docs/adr/022-reconstruction-instructions.md)).
 
 The names are a public interface; renaming one is a breaking change
 ([ADR-007](docs/adr/007-tool-names.md)). `render_svg` and `render_grid` return

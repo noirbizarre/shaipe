@@ -42,3 +42,4 @@ by editing the old one. The history is the value.
 - [ADR-019](019-compare-reference.md) — Compare a reference and a render on a canvas the tool chooses, never the model
 - [ADR-020](020-richer-reference-tracing.md) — Richer tracing: colour regions, measured from the SVG a trace produces
 - [ADR-021](021-explicit-reconstruction-workflow.md) — Name the workflow's phases; do not track whether they happened
+- [ADR-022](022-reconstruction-instructions.md) — Reconstruction instructions are Shaipe's own, generated from the workflow

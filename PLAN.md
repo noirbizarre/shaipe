@@ -267,6 +267,10 @@ see `docs/adr/004-tools-not-a-model.md`.
       `get_workflow`, which also recommends tracing vs. hand-construction
       from a reference's own measurements; guidance, not a tracker of what an
       agent actually did — ADR-021
+- [x] Reconstruction instructions, generated from the workflow model and sent
+      as the MCP server's `instructions` rather than in the prompt or a turn:
+      when to inspect, measure, trace or construct, the render-and-compare
+      loop, and that a valid SVG is not a finished one — ADR-022
 
 ## Artwork
 

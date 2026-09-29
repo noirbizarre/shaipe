@@ -179,7 +179,14 @@ impl ServerHandler for Server {
     fn get_info(&self) -> ServerConfig {
         let mut info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build());
         info.server_info = Implementation::new("shaipe", env!("CARGO_PKG_VERSION"));
-        info.instructions = Some(PREAMBLE.to_owned());
+        // The reconstruction workflow is Shaipe's own text and lives with the
+        // workflow model; this adapter only carries it. Sent here rather than
+        // in the user's prompt or a chat turn, so it reaches every agent that
+        // reads `instructions` and never ends up in the project's metadata.
+        info.instructions = Some(format!(
+            "{PREAMBLE}\n\n{}",
+            crate::workflow::instructions::reconstruction()
+        ));
         info
     }
 
@@ -484,5 +491,29 @@ mod tests {
 
         assert!(instructions.contains("render_svg"), "{instructions}");
         assert!(instructions.contains("cannot see"), "{instructions}");
+    }
+
+    #[tokio::test]
+    async fn the_server_tells_the_agent_how_to_reconstruct_from_a_reference() {
+        // Without this an agent handed a reference has no reason to measure it
+        // or compare against it, and the tools for doing so go unused.
+        let client = client().await;
+        let instructions = client
+            .peer_info()
+            .and_then(|info| info.instructions.clone())
+            .expect("the server introduces itself");
+
+        for needle in [
+            "get_workflow",
+            "get_reference_analysis",
+            "compare_reference",
+        ] {
+            assert!(
+                instructions.contains(needle),
+                "{needle} missing: {instructions}"
+            );
+        }
+        // The mechanics preamble is kept alongside, not replaced by it.
+        assert!(instructions.contains("write_svg"), "{instructions}");
     }
 }

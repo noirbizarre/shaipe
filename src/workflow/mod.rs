@@ -37,6 +37,8 @@ use serde::Serialize;
 
 use crate::analysis::Analysis;
 
+pub mod instructions;
+
 /// A region count at or below this, together with [`MEASURABLE_MAX_COLOURS`],
 /// is treated as "clean enough to trace" — a judgement call, tuned toward a
 /// single-colour mark or simple multi-colour logo rather than a busy or

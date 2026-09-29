@@ -412,6 +412,93 @@ mod tests {
         }
     }
 
+    /// Every backticked word in `text` that has the shape of a tool name.
+    ///
+    /// By the closed verb set of ADR 007, so that `source` or `<image>` in the
+    /// same prose are not mistaken for tools.
+    fn tool_names_in(text: &str) -> Vec<String> {
+        text.split('`')
+            .skip(1)
+            .step_by(2)
+            .filter(|word| {
+                ["get_", "render_", "write_", "set_", "compare_"]
+                    .iter()
+                    .any(|verb| word.starts_with(verb))
+            })
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn every_tool_the_instructions_name_exists() {
+        // The instructions are prompt text that names tools. One renamed
+        // without them would send an agent to call something that is not there.
+        let names = Registry::new().names();
+        let mentioned = tool_names_in(&crate::workflow::instructions::reconstruction());
+
+        assert!(
+            !mentioned.is_empty(),
+            "the instructions name no tool at all"
+        );
+        for name in mentioned {
+            assert!(
+                names.contains(&name),
+                "the instructions name `{name}`, which is not a tool"
+            );
+        }
+    }
+
+    #[test]
+    fn the_instructions_name_every_tool_the_reconstruction_loop_uses() {
+        let mentioned = tool_names_in(&crate::workflow::instructions::reconstruction());
+
+        for name in [
+            "get_references",
+            "get_reference_image",
+            "get_reference_analysis",
+            "get_reference_trace",
+            "compare_reference",
+            "get_workflow",
+            "render_svg",
+            "write_svg",
+            "write_variant",
+        ] {
+            assert!(
+                mentioned.iter().any(|mentioned| mentioned == name),
+                "the loop needs `{name}` and the instructions never mention it"
+            );
+        }
+    }
+
+    #[test]
+    fn the_instructions_and_get_workflows_description_state_the_same_phase_order() {
+        // Two places tell a model the order of the phases. Each is generated
+        // from or checked against `WorkflowKind::phases`, so they cannot
+        // diverge without this failing.
+        use crate::workflow::WorkflowKind;
+        use crate::workflow::instructions::{reconstruction, sequence};
+
+        let registry = Registry::new();
+        let description = registry
+            .tools()
+            .find(|tool| tool.name() == "get_workflow")
+            .expect("get_workflow is registered")
+            .description();
+        let instructions = reconstruction();
+
+        for kind in [WorkflowKind::FromScratch, WorkflowKind::Reference] {
+            let order = sequence(kind);
+            assert!(
+                description.contains(&order),
+                "get_workflow disagrees about {kind}: {order}"
+            );
+            assert!(
+                instructions.contains(&order),
+                "the instructions disagree about {kind}: {order}"
+            );
+        }
+    }
+
     #[test]
     fn an_optional_dimension_falls_back_rather_than_rendering_nothing() {
         // Zero is the interesting case: it is a number, so a naive read
