@@ -221,7 +221,10 @@ fn project_asking_for_an_unsupplied_font(directory: &std::path::Path) -> std::pa
         r##"<symbol id="icon" viewBox="0 0 64 64"><rect width="64" height="64" fill="#f05032"/></symbol>"##,
         r##"<symbol id="icon" viewBox="0 0 64 64"><text font-family="Nobody Supplied This" y="32">S</text></symbol>"##,
     );
-    assert!(source.contains("Nobody Supplied This"), "the fixture changed");
+    assert!(
+        source.contains("Nobody Supplied This"),
+        "the fixture changed"
+    );
     std::fs::write(&path, source).expect("the copy is writable");
     path
 }
