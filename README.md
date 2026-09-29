@@ -288,8 +288,10 @@ gives that agent the one thing it does not have: the ability to *see* an SVG.
          Shaipe's asset tools
 ```
 
-Shaipe never sees an API key, never names a provider, and cannot tell you which
-model answered. Your agent is configured and authenticated in your agent. See
+Shaipe never sees an API key and never chooses a provider or a model. It can
+show, and relay, the model names your agent advertises — the status line names
+the one in use, and `M` asks the agent to switch — but which model answers is
+decided in your agent. Your agent is configured and authenticated in your agent. See
 [ADR-011](docs/adr/011-driving-an-agent-is-still-not-a-model.md).
 
 ### The tools

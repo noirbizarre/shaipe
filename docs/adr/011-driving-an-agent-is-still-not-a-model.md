@@ -120,3 +120,19 @@ degrade to doing nothing on an agent that does not have them.
 - The end-to-end path cannot be tested in CI without someone's credentials, so
   it is not. `tests/acp_opencode.rs` is `#[ignore]`d and requires an installed,
   authenticated agent; `scripts/smoke-acp.sh` is the manual version.
+
+## Update: two statements that no longer hold
+
+**"It does not name a provider or a model."** Shaipe still never chooses one,
+and never sees a key. But the workspace now displays the model the agent
+reports (the status line), relays a request to switch to one the agent itself
+offers (`--model`, `M`, [ADR-016](016-remembering-a-chosen-model.md)), and reads
+which models accept images from models.dev, keyed by `provider/model-id`
+([ADR-017](017-vision-capability-from-models-dev.md)). The accurate claim is that Shaipe
+never *decides* the model; naming one back to the user is something it does.
+
+**"The only OpenCode-specific things in the tree are a default command string
+and a list of session mode names."** Since [ADR-013](013-restrict-the-agent-through-its-environment.md),
+`src/acp/opencode.rs` starts OpenCode with `edit` and `bash` denied. That is a
+module, not a string, and it is the one place Shaipe knows how to restrict a
+particular product. `src/acp/` otherwise still speaks only ACP.

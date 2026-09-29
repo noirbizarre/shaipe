@@ -230,7 +230,9 @@ agent, and OpenCode's defaults never ask, so `src/acp/`'s `Policy` is correct
 code a default install never reaches. But Shaipe *spawns* the agent, and a
 parent chooses its child's environment: `src/acp/opencode.rs` starts OpenCode
 with `edit` and `bash` denied, merged into whatever config the user already
-has. That is the only product-specific module in the crate, and it earns it.
+has. That is the only module that restricts a particular product, and it earns
+it. (`src/acp/agent.rs` also carries OpenCode's default command and its working
+mode names, which degrade to nothing on another agent — see ADR 011's Update.)
 
 ADR 012 concluded the opposite and is superseded by ADR 013. The mistake is
 worth remembering: it reasoned about the protocol and concluded about the

@@ -134,3 +134,9 @@ Shaipe's own tools — `write_svg`, `write_variant`, `set_palette_colour`,
 `set_reference` and `set_generation` — and none of them saves. The decision is
 unchanged: the agent's own editor and shell stay denied, so those tools remain
 the only route by which an agent changes the project.
+
+**"The only product-specific module in the crate."** `src/acp/opencode.rs` is
+the only module that *restricts* a particular product. It is not the only
+place that names OpenCode: `src/acp/agent.rs` carries its default command and
+its working mode names, and both degrade to nothing on another agent. See
+ADR-011's Update.
