@@ -125,3 +125,12 @@ than not letting it happen, when both are available.
   correct and worth keeping; only its conclusion was too wide, and the shape of
   that mistake — reasoning about one layer and concluding about the system — is
   the useful part of the record.
+
+## Update: what "the only way" meant
+
+This record says `write_svg` is the only way the project changes. When it was
+written that was true; it now reads too narrowly. The project changes through
+Shaipe's own tools — `write_svg`, `write_variant`, `set_palette_colour`,
+`set_reference` and `set_generation` — and none of them saves. The decision is
+unchanged: the agent's own editor and shell stay denied, so those tools remain
+the only route by which an agent changes the project.

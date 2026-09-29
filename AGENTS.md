@@ -214,10 +214,12 @@ worth remembering: it reasoned about the protocol and concluded about the
 system. `src/tui/watch.rs` is still the backstop, for agents Shaipe cannot
 restrict and for a text editor in another window.
 
-`--yes` grants the *agent's* own tools — its editor, its shell — and an agent
-asked to change a colour may use them instead of `write_svg`, writing to the
-working tree past every guarantee above. Shaipe's own tools never ask and never
-save. Do not conflate the two when documenting either.
+`--yes` answers the permission requests an agent sends, so for an agent that
+asks it grants the *agent's* own tools — its editor, its shell — and one asked
+to change a colour may use them instead of Shaipe's own tools, writing to the
+working tree past every guarantee above. It does not lift the `edit` and `bash`
+denial Shaipe gives OpenCode through its environment. Shaipe's own tools never
+ask and never save. Do not conflate the two when documenting either.
 
 When a test asserts something about a model's behaviour, make sure it can fail.
 `an_agent_can_see_the_artwork_rather_than_only_read_it` originally passed

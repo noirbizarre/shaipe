@@ -381,7 +381,7 @@ This needs no ACP and no agent. It opens the file itself, and works headlessly.
 **In the workspace.** Open a project and talk to it:
 
 ```bash
-shaipe logo.svg
+shaipe tui logo.svg
 ```
 
 Tab to the prompt pane, press `enter` and describe the artwork you want, then
@@ -396,11 +396,15 @@ the agent's edits and your preview cannot drift apart
 ([ADR-010](docs/adr/010-mcp-over-a-socket-with-a-bridge.md)).
 
 ```bash
-shaipe --agent "some-other-agent acp"     # any ACP agent, not just OpenCode
-shaipe --no-agent                         # open the workspace without one
-shaipe --yes                              # approve the agent's own tools
-shaipe --model "anthropic/claude-opus-4-1" # request one of the agent's own models
+shaipe tui --agent "some-other-agent acp"      # any ACP agent, not just OpenCode
+shaipe tui --no-agent                          # open the workspace without one
+shaipe tui --yes                               # approve the agent's own tools
+shaipe tui --model "anthropic/claude-opus-4-1" # request one of the agent's own models
 ```
+
+These flags belong to `shaipe tui`; `--agent` also reads `SHAIPE_AGENT` and
+`--model` reads `SHAIPE_MODEL`.
+Only the global `--preview` and `--verbose` work on the bare `shaipe`.
 
 The keys:
 
@@ -411,15 +415,17 @@ The keys:
 | `tab` / `shift-tab`, `↑` / `↓` | move between the prompt, the palette and the references pane, still editing |
 | `a` | **send the prompt to the agent**, so it makes the artwork match |
 | `alt+a` | the same, without leaving the editor |
-| `e` | open the prompt in `$EDITOR` |
-| `←` / `→` | the previous or next tab, wrapping at both ends |
+| `e` | open the prompt in `$VISUAL`, or `$EDITOR` when that is unset |
+| `←` / `→`, `[` / `]` | the previous or next tab, wrapping at both ends |
+| `p` | from the palette pane, open the colour picker on the selected colour |
 | `m` | swap the variants for the render specifications |
 | `s` | swap the preview for the SVG that produced it |
 | `t` | swap the prompt for the transcript |
 | `x` | open the editor for whichever the tabs list, or for the references pane when that has the keyboard |
 | `M` | search and pick from whichever models the agent offers, shown once one is chosen |
 | `PageUp` / `PageDown` | scroll the source, or the transcript |
-| `ctrl-c` | stop the turn the agent is on; again to quit |
+| `ctrl-c` | stop the turn the agent is on; it does nothing when no turn is running |
+| `q` / `esc` | quit, asking first when something is unsaved |
 | `ctrl-s` | save the project |
 | `R` | re-read the project from disk, discarding what is in memory |
 
@@ -450,7 +456,9 @@ point it at something else once one exists.
 
 ### What the agent may and may not do
 
-`write_svg` is the only way the project changes. Shaipe starts OpenCode with
+Shaipe's own tools are the only way the project changes: `write_svg`,
+`write_variant`, `set_palette_colour`, `set_reference` and `set_generation`,
+none of which saves. Shaipe starts OpenCode with
 its file-editing and shell tools **denied**, so the agent cannot write to your
 working tree even if it decides to — and OpenCode removes a denied tool rather
 than refusing it, so the model does not propose one and then apologise.
@@ -531,6 +539,9 @@ Early, but real. Nothing described above is a mock.
 - The project format: metadata, palette, fonts, variants, references, render
   specifications, with a versioned schema and byte-preserving writes.
 - Deterministic rendering to PNG and SVG, at any size, with backgrounds.
+- Palette binding: an element can name a palette colour with `shaipe:fill` or
+  `shaipe:stroke`, so editing that colour — in the palette pane, or through
+  `set_palette_colour` — restyles the mark. There is a colour picker on `p`.
 - `shaipe render`, `shaipe inspect`, `shaipe init`, and a CI workflow that
   regenerates this repository's own artwork from `logo.svg` and fails if it
   drifted.
@@ -552,13 +563,11 @@ Early, but real. Nothing described above is a mock.
   agent receives it, but whether the *model* can see it depends on the model
   you configured. The end-to-end test skips loudly rather than pretending
   otherwise when it cannot.
-- A permission dialogue. The agent's own tools — reading files, running
-  commands — are refused unless `--yes` is passed, because there is nothing to
-  ask with yet. Shaipe's own tools never ask.
-- Editing from the workspace beyond the prompt: the palette pane has no colour
-  picker yet.
-- Palette *binding*. The palette is recorded and reported, but the artwork does
-  not yet reference it, so editing a colour does not restyle the mark.
+- A permission dialogue. For an agent that does ask, edits, moves, deletes and
+  command execution are refused unless `--yes` is passed, because there is
+  nothing to ask with yet; reading stays allowed. OpenCode never asks, and its
+  editing and shell are denied through its environment whatever `--yes` says.
+  Shaipe's own tools never ask.
 
 **Dogfooding.** `logo.svg` at the root of this repository is a Shaipe project,
 and every image in `docs/images/` is rendered from it. The artwork itself is

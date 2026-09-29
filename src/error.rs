@@ -578,8 +578,8 @@ pub enum Error {
         help(
             "Shaipe drives an agent you already have; it does not host one \
              (see ADR 004). Install OpenCode from https://opencode.ai, point \
-             Shaipe at another ACP agent with `--agent \"<command> acp\"`, or \
-             open the workspace without one using `--no-agent`."
+             Shaipe at another ACP agent with `shaipe tui --agent \"<command> acp\"`, \
+             or open the workspace without one using `shaipe tui --no-agent`."
         )
     )]
     AgentNotFound {
