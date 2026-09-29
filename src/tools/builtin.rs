@@ -328,6 +328,11 @@ impl Tool for GetReferenceAnalysis {
 
         let resolved = project.resolve(&reference.src);
 
+        // Before the file is read, like the other reference tools: an
+        // unsupported format is refused for what it is, not for a decode
+        // failure that says less.
+        reference_mime_type_or_refuse(self.name(), &resolved)?;
+
         let bytes =
             std::fs::read(&resolved).map_err(|error| crate::Error::io(resolved.clone(), error))?;
 
@@ -430,14 +435,15 @@ fn reference_mime_type(path: &Path) -> Option<&'static str> {
 
 /// [`reference_mime_type`], or the refusal that lists what is accepted.
 ///
-/// Shared by the two tools that hand a reference to a model as an image, so
-/// the message that tells it what to do instead is one message.
+/// Shared by every tool that reads a reference's pixels, so the message that
+/// tells a model what to do instead is one message, and an unusable reference
+/// is refused for what it is before any of them touches the file.
 fn reference_mime_type_or_refuse(tool: &str, resolved: &Path) -> Result<&'static str> {
     reference_mime_type(resolved).ok_or_else(|| crate::Error::InvalidToolInput {
         tool: tool.to_owned(),
         reason: format!(
             "`{}` is not an image format this tool recognises; expected .png, .jpg, .jpeg, \
-             .gif, .webp or .bmp. An SVG or PDF reference cannot be shown; export a raster \
+             .gif, .webp or .bmp. An SVG or PDF reference cannot be used here; export a raster \
              image of it and attach that with `set_reference`.",
             resolved.display()
         ),
@@ -609,6 +615,9 @@ impl Tool for GetReferenceTrace {
         let reference = attached_reference(self.name(), project, &src)?;
 
         let resolved = project.resolve(&reference.src);
+
+        // Before the file is read, for the reason `get_reference_image` gives.
+        reference_mime_type_or_refuse(self.name(), &resolved)?;
 
         let bytes =
             std::fs::read(&resolved).map_err(|error| crate::Error::io(resolved.clone(), error))?;
@@ -866,6 +875,7 @@ impl Tool for GetWorkflow {
             let reference = attached_reference(self.name(), project, &src)?;
 
             let resolved = project.resolve(&reference.src);
+            reference_mime_type_or_refuse(self.name(), &resolved)?;
             let bytes = std::fs::read(&resolved)
                 .map_err(|error| crate::Error::io(resolved.clone(), error))?;
             let analysis = crate::analysis::analyze(&resolved, &bytes)?;
@@ -1245,10 +1255,11 @@ impl Tool for WriteVariant {
          once. Send the complete replacement for that element — its opening \
          tag, attributes and closing tag, with the same `id` it already has — \
          found in `get_svg`. It is checked by isolating the variant before \
-         anything is replaced, so a fragment that does not parse, that drops \
-         the element's `id`, or that leaves the variant unrenderable is \
-         rejected and the project left exactly as it was. Accepted means \
-         valid, not right: look at the result with `render_svg`, and for a \
+         anything is replaced, so a fragment that does not parse or that drops \
+         the element's `id` is rejected and the project left exactly as it \
+         was. Nothing is rasterised, so a fragment that isolates but draws \
+         nothing, or draws the wrong thing, is accepted. Accepted means \
+         well-formed, not right: look at the result with `render_svg`, and for a \
          `source` reference run `compare_reference`. It changes the project \
          in memory, and reaches disk only if the server runs with `--write` \
          or the user saves."
@@ -1291,16 +1302,23 @@ impl Tool for WriteVariant {
             source: Box::new(error),
         };
 
-        let updated =
-            document::replace_element(project.source(), name, &element, svg, project.path())
-                .map_err(invalid)?;
+        // Spliced into the document as it now stands, not as it was read:
+        // `source()` keeps the old metadata until saving, so splicing into it
+        // and adopting the result would silently revert an unsaved prompt or
+        // palette edit — the same data loss `get_svg` documents.
+        let current = project.to_svg()?;
+        let updated = document::replace_element(&current, name, &element, svg, project.path())
+            .map_err(invalid)?;
 
         let candidate = Project::from_source(project.path(), updated).map_err(invalid)?;
 
-        // The touched variant must still isolate and parse as SVG — this
-        // catches a dropped or renamed `id`, and a fragment `usvg` refuses.
-        // `Format::Svg` because isolation is what this needs to prove; there
-        // is nothing to gain from rasterising it too.
+        // The touched variant must still isolate — this catches a dropped or
+        // renamed `id` and a fragment that does not parse. It does not run
+        // `usvg`: `Format::Svg` returns the isolated document unrasterised.
+        // Probed, not assumed: nine deliberately hostile fragments (a zero
+        // `viewBox`, a self-referencing `<use>`, garbage CSS, a singular
+        // transform…) all pass `usvg` too, so rasterising here would cost a
+        // render and catch nothing this does not.
         let probe = RenderSpec {
             format: Format::Svg,
             ..RenderSpec::square(name, name, 64)
@@ -2703,6 +2721,46 @@ mod tests {
     }
 
     #[test]
+    fn write_variant_preserves_metadata_edited_since_the_project_was_read() {
+        // `source()` still carries the metadata as it was read, so splicing
+        // into it and adopting the result reverted every unsaved metadata
+        // edit: the same data loss `get_svg` documents for `write_svg`.
+        let mut project = fixtures::project();
+        project.metadata_mut().prompt = Some("a wordless circular mark".to_owned());
+
+        let registry = Registry::new();
+        registry
+            .call(
+                "set_palette_colour",
+                &mut project,
+                &json!({ "name": "accent", "value": "#0066ff" }),
+            )
+            .unwrap();
+
+        registry
+            .call(
+                "write_variant",
+                &mut project,
+                &json!({
+                    "variant": "icon",
+                    "svg": r##"<symbol id="icon" viewBox="0 0 64 64"><circle r="32" cx="32" cy="32" fill="#f05032"/></symbol>"##,
+                }),
+            )
+            .unwrap();
+
+        assert_eq!(
+            project.metadata().prompt.as_deref(),
+            Some("a wordless circular mark"),
+            "writing a variant reverted the prompt"
+        );
+        assert_eq!(
+            project.metadata().palette.colours()[0].value.to_string(),
+            "#0066ff",
+            "writing a variant reverted a palette edit"
+        );
+    }
+
+    #[test]
     fn write_variant_replaces_only_the_named_elements_bytes() {
         let mut project = fixtures::project();
 
@@ -3147,12 +3205,21 @@ mod tests {
             .references
             .push(Reference::new("brief.pdf", ReferenceKind::Source));
 
-        for tool in ["get_reference_image", "compare_reference"] {
+        // All five tools that read a reference's pixels, not only the two that
+        // hand it to a model as an image: ADR 023 promises the refusal for
+        // every one of them.
+        for tool in [
+            "get_reference_image",
+            "get_reference_analysis",
+            "get_reference_trace",
+            "compare_reference",
+            "get_workflow",
+        ] {
             let error = Registry::new()
                 .call(
                     tool,
                     &mut project,
-                    &json!({ "src": "brief.pdf", "variant": "icon" }),
+                    &json!({ "src": "brief.pdf", "variant": "icon", "kind": "reference" }),
                 )
                 .unwrap_err();
 

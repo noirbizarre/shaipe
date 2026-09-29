@@ -30,13 +30,9 @@ pub fn run(args: &RenderArgs, out: &mut dyn Write) -> Result<()> {
     // conventional fallback — resolved against the project file's own
     // directory (not the shell's cwd) the same way every other relative path
     // in a project already is, so `shaipe render /anywhere/logo.svg` behaves
-    // identically regardless of where it is invoked from.
-    let output = args
-        .output
-        .clone()
-        .or_else(|| project.metadata().render_output.clone())
-        .unwrap_or_else(|| std::path::PathBuf::from("dist"));
-    let output = project.resolve(&output);
+    // identically regardless of where it is invoked from. The workspace's
+    // export asks the same question of the same method.
+    let output = project.render_output_directory(args.output.as_deref());
 
     let options = RenderOptions {
         fonts: if args.strict_fonts {
@@ -63,7 +59,7 @@ pub fn run(args: &RenderArgs, out: &mut dyn Write) -> Result<()> {
                 "would write {}",
                 output.join(asset.file_name()).display()
             )
-            .map_err(|source| shaipe::Error::io(&output, source))?;
+            .map_err(|source| shaipe::Error::io("stdout", source))?;
             continue;
         }
 
@@ -75,7 +71,7 @@ pub fn run(args: &RenderArgs, out: &mut dyn Write) -> Result<()> {
             asset.spec.width,
             asset.spec.height
         )
-        .map_err(|source| shaipe::Error::io(&path, source))?;
+        .map_err(|source| shaipe::Error::io("stdout", source))?;
     }
 
     Ok(())

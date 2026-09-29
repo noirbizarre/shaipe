@@ -75,8 +75,9 @@ pub fn restrictions(
         None => (json!({}), None),
         Some(existing) => match serde_json::from_str::<Value>(existing) {
             Ok(Value::Object(map)) => (Value::Object(map), None),
-            // Left alone rather than replaced. Reporting it beats discarding
-            // it, and beats refusing to start over somebody's typo.
+            // Replaced, and said so in the note below. Reporting it beats
+            // discarding it silently, and beats refusing to start over
+            // somebody's typo.
             _ => (
                 json!({}),
                 Some(format!(

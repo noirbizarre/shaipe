@@ -5,8 +5,8 @@
 //! would rasterise a 512-pixel SVG four times a second for no reason.
 //!
 //! This is where editing lives. The prompt editor holds its draft and the
-//! dirty flag here rather than spread through the drawing code, and a colour
-//! picker or an agent conversation would land beside them.
+//! dirty flag here rather than spread through the drawing code, and the colour
+//! picker and the agent conversation sit beside them.
 
 use std::time::{Duration, Instant};
 
@@ -59,12 +59,6 @@ const MIN_PREVIEW_SIZE: u32 = 32;
 /// than once per entry; short enough that a single deliberate step still feels
 /// immediate.
 const DEBOUNCE: Duration = Duration::from_millis(120);
-
-/// Where a double-clicked render specification is written.
-///
-/// The conventional output directory, matching `shaipe render`'s default, so
-/// the workspace and the command line do not disagree about where assets go.
-const EXPORT_DIRECTORY: &str = "dist";
 
 /// Which pane the keyboard is talking to.
 ///
@@ -2258,7 +2252,8 @@ impl App {
         self.selected[index] = next as usize;
     }
 
-    /// Render the specification on screen and write it to `dist/`.
+    /// Render the specification on screen and write it to the project's
+    /// output directory — `dist/` beside the project unless it declares another.
     ///
     /// The result goes to the status line rather than being returned: an
     /// export that fails must not close the workspace, and a project mid-edit
@@ -2275,11 +2270,13 @@ impl App {
             return;
         };
 
-        let directory = std::path::Path::new(EXPORT_DIRECTORY);
+        // Where `shaipe render` would write, not a private choice of the
+        // workspace's: the same export must not land in two places.
+        let directory = self.project.render_output_directory(None);
         self.notice = Some(
             match Renderer::new(&self.project, RenderOptions::default())
                 .and_then(|renderer| renderer.render(&spec))
-                .and_then(|asset| asset.write_to(directory))
+                .and_then(|asset| asset.write_to(&directory))
             {
                 Ok(path) => Notice::info(format!("wrote {}", path.display())),
                 Err(error) => Notice::warning(format!("export failed: {error}")),
@@ -2313,6 +2310,28 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_tool_the_turn_names_exists() {
+        // The turn is prompt text that names tools. Both branches: the one
+        // with references is where it points at `get_workflow`.
+        let names = crate::tools::Registry::new().names();
+        let attached = [Reference::new(
+            "logo.png",
+            crate::project::ReferenceKind::Source,
+        )];
+
+        for text in [instruct("a mark", &[]), instruct("a mark", &attached)] {
+            let mentioned = crate::tools::tool_names_in(&text);
+            assert!(!mentioned.is_empty(), "the turn names no tool at all");
+            for name in mentioned {
+                assert!(
+                    names.contains(&name),
+                    "the turn names `{name}`, which is not a tool"
+                );
+            }
+        }
+    }
+
     use std::collections::HashMap;
 
     use pretty_assertions::assert_eq;

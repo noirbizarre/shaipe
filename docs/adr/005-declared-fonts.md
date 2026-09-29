@@ -66,3 +66,13 @@ are loaded. Only if a family is still unresolved does anything else happen:
 - The system fallback remains the default because refusing to render a logo on
   a developer's laptop over a font they clearly have would be obnoxious. The
   warning, and the fact that CI is strict, is the compromise.
+
+## Update: the logo now sets text
+
+The consequence above, that `logo.svg` contains no `<text>`, is no longer true.
+The wordmark is now `<text>` in Fira Sans, pinned by a `<shaipe:font
+src="fonts/FiraSans-Regular.ttf"/>` declaration that points at a committed
+file. Nothing in the decision changed: the render still does not consult the
+system, and `--strict-fonts` still passes for the logo because its family is
+supplied by the project. The logo now demonstrates the `src=` path instead of
+avoiding fonts altogether.

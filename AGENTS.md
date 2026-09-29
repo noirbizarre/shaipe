@@ -23,9 +23,9 @@ add a provider, an API key or a `generate` command that calls one, read
    unless the document asked for a family the project failed to supply, and
    no network *reads* — the one narrow exception is a font declared by a
    checksum-pinned URL (`docs/adr/015-checksum-pinned-remote-fonts.md`),
-   fetched once into a local cache and never touched again on a match; a
-   render itself still never makes the request, `crate::fonts` does, before
-   `src/render/` ever sees the bytes — enforced by
+   fetched once into a local cache and never touched again on a match; the
+   request is made by `crate::fonts`, from `Renderer::new` while the font
+   database is assembled, and never while drawing — enforced by
    `rendering_the_same_project_twice_produces_identical_bytes`
    in `src/render/mod.rs`, and end to end by `.github/workflows/assets.yaml`,
    which re-renders `logo.svg` and fails if `docs/images` changed.
@@ -54,12 +54,17 @@ add a provider, an API key or a `generate` command that calls one, read
    under a pty that impersonates a Kitty terminal.
 
 7. **Nothing but JSON-RPC reaches standard output while `shaipe mcp` serves.**
-   A single `log::warn!` about a missing font in the middle of the stream is a
-   frame the client cannot parse, and it looks like Shaipe speaking a broken
-   protocol rather than like a warning. `logging::suppress()` is held for the
-   whole session — the stdio twin of invariant 6 — and
-   `nothing_but_json_rpc_is_written_to_standard_output` in
-   `tests/mcp_stdio.rs` runs the binary under `-vv` and parses every line.
+   The logger writes to standard error, so a `log::warn!` cannot land in the
+   stream by itself; what would is anything in the library printing to standard
+   output, which `write_lines` in `src/main.rs` exists to keep out. Separately,
+   `logging::suppress()` is held for the whole session — the stdio twin of
+   invariant 6 — so the server is silent on standard error too, and the one
+   thing it does write there is a failed `--write` save, which is reported
+   directly because a silent one is an agent claiming edits that are not on
+   disk. `nothing_but_json_rpc_is_written_to_standard_output` in
+   `tests/mcp_stdio.rs` runs the binary under `-vv`, parses every line of
+   standard output, and asserts standard error is empty: the second half is what
+   fails if `suppress()` is dropped.
 
 8. **The workspace never waits for an agent's handshake.** An agent starts the
    MCP servers it is given in `session/new` and calls `tools/list` on them
@@ -96,7 +101,14 @@ src/
 ├── tui/          the interactive workspace
 ├── tools/        the operations an agent can perform. The application layer
 ├── mcp/          those tools, spoken as MCP. A thin adapter
-└── acp/          an ACP client, for driving an agent. A thin adapter
+├── acp/          an ACP client, for driving an agent. A thin adapter
+├── analysis/     measuring a reference raster: regions, colours, background
+├── compare/      a render against a reference: difference, overlay
+├── vectorize/    deterministic raster-to-vector tracing. See ADR 014
+├── workflow/     the reconstruction phases and the instructions built from them
+├── fonts/        acquiring a declared font's bytes, incl. the pinned fetch
+├── settings.rs   what the workspace remembers between runs
+└── vision.rs     which models can see images, read from models.dev
 ```
 
 Dependencies point inward, and the direction is enforced, not described:
@@ -109,6 +121,17 @@ cli ──> tui ──> preview ──┐
   │       └──> acp ──┐            │
   └──────────> mcp ──┴──> tools ──┘
 ```
+
+Beyond that spine, the reconstruction modules and the small ones hang off it
+like this, each arrow meaning "imports":
+
+- `tools` → `render`, `analysis`, `compare`, `vectorize`, `workflow`
+- `workflow` → `analysis`, `compare`, `vectorize`, `project`
+- `compare` → `analysis`, `render`; `vectorize` → `analysis`, `render`, `project`
+- `render` → `fonts`; `fonts` → `project`
+- `acp` → `mcp`; `tui` → `mcp`, `vision`, `settings`
+
+Only some of those are guarded by a hook; the rest are described, not enforced.
 
 `project` knows nothing. `render` knows `project`. `preview` knows neither.
 Nothing in the library knows a command exists. `mcp` and `acp` are adapters
@@ -207,17 +230,21 @@ agent, and OpenCode's defaults never ask, so `src/acp/`'s `Policy` is correct
 code a default install never reaches. But Shaipe *spawns* the agent, and a
 parent chooses its child's environment: `src/acp/opencode.rs` starts OpenCode
 with `edit` and `bash` denied, merged into whatever config the user already
-has. That is the only product-specific module in the crate, and it earns it.
+has. That is the only module that restricts a particular product, and it earns
+it. (`src/acp/agent.rs` also carries OpenCode's default command and its working
+mode names, which degrade to nothing on another agent — see ADR 011's Update.)
 
 ADR 012 concluded the opposite and is superseded by ADR 013. The mistake is
 worth remembering: it reasoned about the protocol and concluded about the
 system. `src/tui/watch.rs` is still the backstop, for agents Shaipe cannot
 restrict and for a text editor in another window.
 
-`--yes` grants the *agent's* own tools — its editor, its shell — and an agent
-asked to change a colour may use them instead of `write_svg`, writing to the
-working tree past every guarantee above. Shaipe's own tools never ask and never
-save. Do not conflate the two when documenting either.
+`--yes` answers the permission requests an agent sends, so for an agent that
+asks it grants the *agent's* own tools — its editor, its shell — and one asked
+to change a colour may use them instead of Shaipe's own tools, writing to the
+working tree past every guarantee above. It does not lift the `edit` and `bash`
+denial Shaipe gives OpenCode through its environment. Shaipe's own tools never
+ask and never save. Do not conflate the two when documenting either.
 
 When a test asserts something about a model's behaviour, make sure it can fail.
 `an_agent_can_see_the_artwork_rather_than_only_read_it` originally passed
@@ -250,7 +277,13 @@ derives the version from the commit history, `prepare-release` applies it, and
 mise run ci
 ```
 
-Formatting, Clippy, spelling, workflow and Markdown linting, tests and the documentation build. Same as CI.
+Formatting, Clippy, spelling, workflow and Markdown linting, tests, the three
+pty scripts (`test:terminal`, `test:workspace`, `test:traffic`) and the
+documentation build. It is not the same set as CI's: CI runs the `prek` hooks
+(the architecture guards behind invariants 3 to 6 among them) and coverage,
+which `mise run ci` does not, so also run `prek run --all-files`. The pty
+scripts, which are what invariant 6 cites, run locally only — no workflow
+invokes them.
 
 ## This repository is generated from a template
 

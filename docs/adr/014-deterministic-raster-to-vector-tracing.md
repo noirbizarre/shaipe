@@ -4,7 +4,7 @@
 
 Accepted. Its scope was extended by [ADR-018](018-structured-reference-measurement.md)
 to [ADR-024](024-reconstruction-fixtures-and-evaluation-loop.md); see
-*Update: where this fits now* at the end, which corrects three statements
+*Update: where this fits now* at the end, which corrects the statements
 below that are no longer true.
 
 ## Context
@@ -246,3 +246,11 @@ Shaipe's own instructions for using its tools are generated in
 prompts are as before. Any user-facing change to how a reconstruction is
 started, watched or reviewed belongs to the UX epic that follows, not to this
 one.
+
+**Further statements the sections above no longer match.** `trace` returns
+`Result<Traced>`, not `Result<String>`: the SVG travels with the measurements
+made from it ([ADR-020](020-richer-reference-tracing.md)). `TraceOptions` has
+four fields — `mode`, `threshold`, `invert` and `max_colors` — not "exactly two
+knobs", and `max_colors` is exposed. The README's "Not yet" wording this ADR
+quotes as its Context (that asking a model to reconstruct an SVG from a
+reference is future work) is gone from the README.

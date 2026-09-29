@@ -75,8 +75,8 @@ pub struct Listener {
     /// Dropped to stop the accept loop. The channel is never sent on; closing
     /// it is the signal, so quitting needs no cooperation from the loop.
     _shutdown: oneshot::Sender<()>,
-    /// Removed when the workspace quits, taking the socket with it. Held even
-    /// on the TCP path, where it is empty, so the field has one type.
+    /// Removed when the workspace quits, taking the socket with it. Unix only:
+    /// a TCP address has no directory to remove.
     #[cfg(unix)]
     _directory: tempfile::TempDir,
 }

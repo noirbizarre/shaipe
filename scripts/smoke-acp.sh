@@ -27,7 +27,7 @@ command -v opencode >/dev/null 2>&1 || fail \
 
     Shaipe drives an agent you already have; it does not host one. Install it
     from https://opencode.ai, or point Shaipe at another ACP agent with
-    --agent \"<command> acp\"."
+    shaipe tui --agent \"<command> acp\"."
 
 note "opencode $(opencode --version 2>/dev/null || echo '(version unknown)')"
 
@@ -93,7 +93,7 @@ cat <<'GUIDE'
 
     Run:
 
-        shaipe logo.svg
+        shaipe tui logo.svg
 
     Then:
 

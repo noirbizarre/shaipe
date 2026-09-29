@@ -257,17 +257,15 @@ pub struct StrategyRecommendation {
 /// they do not change the recommendation.
 ///
 /// [`WorkflowKind::Reference`] recommends [`ConstructionStrategy::Trace`]
-/// when the geometry looks clean enough to trace well — few regions, few
-/// dominant colours, few holes, the same facts `get_reference_analysis`
-/// already exposes — and [`ConstructionStrategy::Construct`] otherwise, e.g.
+/// when the geometry looks clean enough to trace well — few regions and few
+/// significant colours, the same facts `get_reference_analysis` already
+/// exposes; the hole count is reported alongside but does not decide it — and [`ConstructionStrategy::Construct`] otherwise, e.g.
 /// a photograph or a busy multi-region image where tracing would reproduce
 /// noise rather than a clean mark.
 ///
-/// # Panics
-///
 /// Never meaningfully called with [`WorkflowKind::FromScratch`], which has no
-/// `choose_strategy` phase — see [`WorkflowKind::phases`]. Does not panic;
-/// simply recommends as `Reference` would, since there is no reference-free
+/// `choose_strategy` phase — see [`WorkflowKind::phases`]. It does not panic;
+/// it simply recommends as `Reference` would, since there is no reference-free
 /// notion of "strategy" to fall back to instead. Callers should not reach
 /// this for `from_scratch` work in the first place.
 #[must_use]

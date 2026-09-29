@@ -31,7 +31,7 @@ pub fn run(args: &InspectArgs, out: &mut dyn Write) -> Result<()> {
     };
 
     out.write_all(rendered.as_bytes())
-        .map_err(|source| Error::io(&args.input, source))
+        .map_err(|source| Error::io("stdout", source))
 }
 
 /// Render a report for a person.

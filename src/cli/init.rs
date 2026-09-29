@@ -103,7 +103,9 @@ pub fn run(args: &InitArgs, out: &mut dyn Write) -> Result<()> {
     }
     project.save()?;
 
-    writeln!(out, "created {}", args.path.display()).map_err(|source| Error::io(&args.path, source))
+    // `stdout`, not the project: the file was saved, it is the report of it that
+    // could not be written, e.g. into a closed pipe.
+    writeln!(out, "created {}", args.path.display()).map_err(|source| Error::io("stdout", source))
 }
 
 #[cfg(test)]

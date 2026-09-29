@@ -21,7 +21,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     /// Reading or writing a file failed.
     #[error("failed to access `{}`", path.display())]
-    #[diagnostic(code(shaipe::error::io))]
+    #[diagnostic(
+        code(shaipe::error::io),
+        help("Check that the path exists and that you may read it, or write it when saving.")
+    )]
     Io {
         /// The path that could not be accessed.
         path: PathBuf,
@@ -117,7 +120,13 @@ pub enum Error {
 
     /// A metadata element is present but malformed.
     #[error("invalid Shaipe metadata in `{}`: {reason}", path.display())]
-    #[diagnostic(code(shaipe::project::invalid_metadata))]
+    #[diagnostic(
+        code(shaipe::project::invalid_metadata),
+        help(
+            "The metadata is the `<shaipe:project>` element inside `<metadata>`. Fix what \
+             the reason names and run `shaipe inspect` on the file to check it reads."
+        )
+    )]
     InvalidMetadata {
         /// The offending file.
         path: PathBuf,
@@ -127,7 +136,13 @@ pub enum Error {
 
     /// `usvg` refused the document.
     #[error("failed to parse the SVG in `{}`", path.display())]
-    #[diagnostic(code(shaipe::render::parse))]
+    #[diagnostic(
+        code(shaipe::render::parse),
+        help(
+            "The file, or the variant being rendered from it, is not an SVG `usvg` can \
+             read. Open it in a browser to see where it breaks."
+        )
+    )]
     ParseSvg {
         /// The offending file.
         path: PathBuf,
@@ -229,7 +244,13 @@ pub enum Error {
 
     /// Encoding the rasterised pixmap failed.
     #[error("failed to encode `{spec}` as PNG")]
-    #[diagnostic(code(shaipe::render::encode))]
+    #[diagnostic(
+        code(shaipe::render::encode),
+        help(
+            "The pixels were drawn but could not be written as a PNG. Try a smaller size; \
+             if it persists it is a bug in Shaipe."
+        )
+    )]
     Encode {
         /// The specification being encoded.
         spec: String,
@@ -262,7 +283,7 @@ pub enum Error {
     #[diagnostic(
         code(shaipe::fonts::fetch),
         help(
-            "This is the only network access Shaipe ever makes (see ADR 015), and it \
+            "This is the only network access a render can make (see ADR 015), and it \
              only happens once — a warm cache never repeats it. Check connectivity, or \
              declare `src=\"...\"` instead for a render that never needs one."
         )
@@ -327,7 +348,8 @@ pub enum Error {
         help(
             "`--strict-fonts` forbids falling back to system fonts, because a system \
              font makes the render depend on the machine. Declare the family with a \
-             `<shaipe:font src=\"...\">` pointing at a committed font file."
+             `<shaipe:font src=\"...\">` pointing at a committed font file, or with an \
+             `href=` and its `sha256`, which is also accepted."
         )
     )]
     StrictFonts {
@@ -382,7 +404,13 @@ pub enum Error {
     /// empty result (both have their own variant), but something the
     /// pipeline reported about the run itself.
     #[error("tracing `{}` failed: {reason}", path.display())]
-    #[diagnostic(code(shaipe::vectorize::trace))]
+    #[diagnostic(
+        code(shaipe::vectorize::trace),
+        help(
+            "Try the other `mode`, or a different `threshold`; if the reference is a \
+             photograph, construct the mark by hand instead."
+        )
+    )]
     Trace {
         /// The reference being traced.
         path: PathBuf,
@@ -433,8 +461,8 @@ pub enum Error {
     /// dimensions. Unreachable through the tool itself — it renders the
     /// variant at the reference's own dimensions before comparing — kept as
     /// a typed error rather than an assertion because [`crate::compare::compare`]
-    /// is `pub(crate)` and a future caller within the crate should be told
-    /// what went wrong rather than hit an index panic in the comparison math.
+    /// is `pub`, so a caller that is not the tool should be told what went
+    /// wrong rather than hit an index panic in the comparison math.
     #[error(
         "cannot compare a {reference_width}x{reference_height} reference against a \
          {render_width}x{render_height} render"
@@ -461,7 +489,13 @@ pub enum Error {
 
     /// The perceptual-similarity comparison itself failed.
     #[error("perceptual similarity comparison failed: {source}")]
-    #[diagnostic(code(shaipe::compare::perceptual_similarity))]
+    #[diagnostic(
+        code(shaipe::compare::perceptual_similarity),
+        help(
+            "The other measurements in the comparison are unaffected. If it persists, it \
+             is a bug in Shaipe rather than in the project."
+        )
+    )]
     PerceptualSimilarity {
         /// What the comparison crate reported.
         #[source]
@@ -483,7 +517,13 @@ pub enum Error {
 
     /// A tool was invoked with arguments it could not accept.
     #[error("invalid arguments for tool `{tool}`: {reason}")]
-    #[diagnostic(code(shaipe::tools::invalid_input))]
+    #[diagnostic(
+        code(shaipe::tools::invalid_input),
+        help(
+            "The reason names the argument. Each tool's input schema, from `tools/list`, \
+             says what it accepts; nothing was changed."
+        )
+    )]
     InvalidToolInput {
         /// The tool that refused.
         tool: String,
@@ -578,8 +618,8 @@ pub enum Error {
         help(
             "Shaipe drives an agent you already have; it does not host one \
              (see ADR 004). Install OpenCode from https://opencode.ai, point \
-             Shaipe at another ACP agent with `--agent \"<command> acp\"`, or \
-             open the workspace without one using `--no-agent`."
+             Shaipe at another ACP agent with `shaipe tui --agent \"<command> acp\"`, \
+             or open the workspace without one using `shaipe tui --no-agent`."
         )
     )]
     AgentNotFound {
@@ -657,7 +697,8 @@ pub enum Error {
         code(shaipe::acp::protocol),
         help(
             "This is a bug in Shaipe or in the agent, not in the project. The \
-             project is untouched. Rerun with `-vv` to log the exchange."
+             project is untouched. The workspace keeps the terminal quiet while it is \
+             open, so look in the agent's own log for what it sent."
         )
     )]
     AgentProtocol {

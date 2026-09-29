@@ -118,3 +118,11 @@ of the failure it was built to show. Its specks are 5x5.
 - The four private image generators in the module tests are left where they
   are: they are unit fixtures, and moving them is a refactor with no test to
   gain.
+
+## Update: the tool count
+
+Context says the epic "added six tools". Counted across ADR-018 to ADR-023
+alone, three are new — `get_reference_analysis`, `compare_reference` and
+`get_workflow` — and `get_reference_trace` (from ADR-014) was extended by
+ADR-020. Six is right only if the reference tools ADR-014 introduced are
+counted with them. Nothing in the decision depends on the number.

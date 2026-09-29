@@ -1,6 +1,6 @@
 # Plan
 
-Where Shaipe is and where it is going. Checked means done and shipped.
+Where Shaipe is and where it is going. Checked means done in the tree; the release items below say what has shipped.
 
 ## How to edit this file
 
@@ -82,13 +82,13 @@ Local, deterministic, no model.
 
 The interactive TUI.
 
-- [x] Four panes: prompt, palette, variants, render specifications
+- [x] ~~Four panes: prompt, palette, variants, render specifications~~ — superseded: the panes are prompt, palette and references, and the variants and render specifications are the preview's tabs (see the items below).
 - [x] Live preview through the same renderer `shaipe render` uses
 - [x] Kitty, Sixel, iTerm2 and half-block previews via `ratatui-image`
 - [x] `--preview` forces a backend when detection is wrong
 - [x] A render failure shows the reason instead of taking the terminal down
 - [x] Terminal capability query actually reaches the terminal
-- [x] The focused pane expands; the others collapse to their titles
+- [x] ~~The focused pane expands; the others collapse to their titles~~ — superseded: no pane grows just because it has the keyboard (see the left-column item below).
 - [x] Mouse: click to focus and select, wheel to scroll
 - [x] Mouse: drag the column divider to resize
 - [x] Mouse: double-click a render specification to export it
@@ -140,7 +140,7 @@ The interactive TUI.
 - [x] The workspace's name is text rather than a button, every button is
       labelled with what pressing it will do, and the arrows move between the
       panes until one of them is being edited
-- [ ] Scroll back through the transcript: it is anchored to its newest entry,
+- [x] Scroll back through the transcript: it is anchored to its newest entry,
       and nothing but `PageUp` reaches the rest of it
 - [x] Render the transcript's Markdown — bold, italics and real bullets —
       rather than showing the characters a model wrote
@@ -198,8 +198,9 @@ see `docs/adr/004-tools-not-a-model.md`.
       match it
 - [x] A spinner and the running tool in the status line, so a turn is visibly
       happening
-- [x] `s` cycles the right-hand column between the preview, the SVG the agent
-      would read, and the log of what it did
+- [x] ~~`s` cycles the right-hand column between the preview, the SVG the agent
+      would read, and the log of what it did~~ — superseded: `s` swaps the preview
+      and the source, and `t` swaps the prompt and the transcript.
 - [x] The log appears by itself while a turn runs and gives way to the result
 - [x] The transcript takes the prompt's box rather than the right-hand column,
       and `t` swaps the two at any moment, during a turn or not

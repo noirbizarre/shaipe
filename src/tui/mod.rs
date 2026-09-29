@@ -7,6 +7,8 @@
 //! │                       │                                                │
 //! ├───────────────────────┤            preview or source                   │
 //! │ palette               │                                                │
+//! ├───────────────────────┤                                                │
+//! │ references            │                                                │
 //! └───────────────────────┴────────────────────────────────────────────────┘
 //! ```
 //!
@@ -16,8 +18,8 @@
 //! and it renders through [`crate::render`], so it shows exactly what
 //! `shaipe render` would write — not an approximation of it.
 //!
-//! Both panes are editable, in one shared edit mode: `enter` hands the
-//! keyboard to the focused pane, `esc` gives it back, `tab` and the arrows
+//! The prompt, the palette and the references are editable, in one shared
+//! edit mode: `enter` hands the keyboard to the focused pane, `esc` gives it back, `tab` and the arrows
 //! move around the workspace — up and down between the panes, left and right
 //! between the tabs — and once a pane is being edited the arrows belong to it
 //! instead. The variants and the render specifications are the preview's tabs
@@ -716,18 +718,22 @@ fn handle(app: &mut App, key: KeyEvent) {
     // a save that only works from outside the editor would be a save nobody
     // reaches for.
     let save = key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL);
-    if app.is_editing() && !save {
-        app.edit_key(key);
-        return;
-    }
 
     // While the agent is working, `ctrl-c` stops the turn rather than the
-    // workspace. Pressing it again quits, because by then it is not working.
+    // workspace. Asked before the editor, like saving: the footer offers
+    // "ctrl-c stop" *while a pane is being edited* — that is when a prompt was
+    // just sent with `alt+a` — and the editor would otherwise swallow it as a
+    // key it has no binding for. When no turn is running it does nothing.
     if key.code == KeyCode::Char('c')
         && key.modifiers.contains(KeyModifiers::CONTROL)
         && app.transcript.is_busy()
     {
         app.cancel_turn();
+        return;
+    }
+
+    if app.is_editing() && !save {
+        app.edit_key(key);
         return;
     }
 
@@ -1075,6 +1081,25 @@ mod tests {
         };
         assert!(!sent.contains("get_references"), "{sent}");
         assert!(!sent.contains("get_workflow"), "{sent}");
+    }
+
+    #[test]
+    fn control_c_stops_the_turn_even_from_inside_the_editor() {
+        // The footer offers "ctrl-c stop" while a pane is being edited, and
+        // the editor used to be asked first, so the offer was a lie.
+        let mut app = app();
+        app.focus = Focus::Prompt;
+        press(&mut app, KeyCode::Enter);
+        app.transcript.push_user("a minimalist logo".to_owned());
+        assert!(app.transcript.is_busy());
+
+        control(&mut app, KeyCode::Char('c'));
+
+        assert_eq!(app.pending_agent_request, Some(AgentRequest::Cancel));
+        assert!(
+            app.is_editing(),
+            "stopping a turn does not leave the editor"
+        );
     }
 
     #[test]
@@ -1953,6 +1978,35 @@ mod tests {
 
         assert!(notice.contains("favicon-32.png"), "{notice}");
         assert!(directory.path().join("dist/favicon-32.png").is_file());
+    }
+
+    #[test]
+    fn exporting_a_render_honours_the_output_directory_the_project_declares() {
+        // The workspace used to hard-code `dist/` relative to wherever it was
+        // started, so the same export landed somewhere else than
+        // `shaipe render` put it. An absolute project path means this needs
+        // no change of working directory.
+        let directory = tempfile::tempdir().unwrap();
+        let mut project = Project::from_source(
+            directory.path().join("logo.svg"),
+            fixtures::PROJECT.to_owned(),
+        )
+        .unwrap();
+        project.metadata_mut().render_output = Some(std::path::PathBuf::from("declared-assets"));
+
+        let mut app = App::new(project, "blocks");
+        app.toggle_mode();
+        app.export_selected_render();
+
+        assert!(
+            directory
+                .path()
+                .join("declared-assets/favicon-32.png")
+                .is_file(),
+            "{:?}",
+            app.notice.as_ref().and_then(app::Notice::text)
+        );
+        assert!(!directory.path().join("dist").exists());
     }
 
     #[test]

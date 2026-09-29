@@ -208,27 +208,49 @@ fn a_render_arrives_over_stdio_as_an_image_a_model_can_see() {
     assert_eq!((pixmap.width(), pixmap.height()), (32, 32));
 }
 
+/// The fixture, with a variant that asks for a font family nobody supplied.
+///
+/// That is the one thing on the render path that logs (`render/fonts.rs`: the
+/// fall back to system fonts), so it is what makes the assertions below able
+/// to fail. The plain fixture has no `<text>` and logs nothing at all, which
+/// would let them pass whether or not logging were suppressed.
+fn project_asking_for_an_unsupplied_font(directory: &std::path::Path) -> std::path::PathBuf {
+    let path = project(directory);
+    let source = std::fs::read_to_string(&path).expect("the fixture is readable");
+    let source = source.replace(
+        r##"<symbol id="icon" viewBox="0 0 64 64"><rect width="64" height="64" fill="#f05032"/></symbol>"##,
+        r##"<symbol id="icon" viewBox="0 0 64 64"><text font-family="Nobody Supplied This" y="32">S</text></symbol>"##,
+    );
+    assert!(
+        source.contains("Nobody Supplied This"),
+        "the fixture changed"
+    );
+    std::fs::write(&path, source).expect("the copy is writable");
+    path
+}
+
+fn render_the_icon() -> Value {
+    json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": { "name": "render_svg", "arguments": { "variant": "icon" } }
+    })
+}
+
 #[test]
 fn nothing_but_json_rpc_is_written_to_standard_output() {
     // The regression test for the failure mode that is invisible in-process:
-    // a warning printed to stdout is a frame the client cannot parse, and it
-    // looks like Shaipe speaking a broken protocol rather than like a warning.
+    // anything but a JSON-RPC frame on stdout is one the client cannot parse.
     //
-    // `-vv` is the interesting case, because it is the flag that turns on the
-    // logging that would do it, and `render_svg` on a project whose declared
-    // font is missing is a call that actually logs.
+    // `-vv` turns the logging all the way up, and the project asks for a font
+    // nobody supplied, so this call genuinely logs a warning. The logger writes
+    // to stderr, so stdout alone would pass with `logging::suppress()` removed;
+    // asserting stderr is empty as well is what makes this fail when it is.
     let directory = tempfile::tempdir().unwrap();
-    let path = project(directory.path());
+    let path = project_asking_for_an_unsupplied_font(directory.path());
 
-    let (responses, _stderr) = exchange(
+    let (responses, stderr) = exchange(
         &["-vv", "mcp", path.to_str().unwrap()],
-        &[
-            initialize(),
-            json!({
-                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                "params": { "name": "render_svg", "arguments": { "variant": "wordmark" } }
-            }),
-        ],
+        &[initialize(), render_the_icon()],
     );
 
     // `exchange` parses every line as JSON and panics otherwise, so arriving
@@ -236,6 +258,11 @@ fn nothing_but_json_rpc_is_written_to_standard_output() {
     for response in &responses {
         assert_eq!(response["jsonrpc"], "2.0", "{response}");
     }
+
+    assert!(
+        stderr.is_empty(),
+        "the server logged while serving, so `suppress()` is not held: {stderr}"
+    );
 }
 
 #[test]

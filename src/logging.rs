@@ -14,10 +14,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use log::{Level, LevelFilter, Metadata, Record};
 
-/// Set while the alternate screen is in use.
+/// Set while something owns the output: the alternate screen in the workspace,
+/// or the process's standard streams under `shaipe mcp`.
 ///
 /// A warning printed over a TUI corrupts the display and cannot be scrolled
 /// back to, so during the workspace they are dropped rather than shown badly.
+/// `shaipe mcp` holds it too, so the server is silent on standard error.
 static SUPPRESSED: AtomicBool = AtomicBool::new(false);
 
 /// The logger.
@@ -72,7 +74,8 @@ pub fn init(verbosity: u8) {
 
 /// Stop emitting log records until the returned guard is dropped.
 ///
-/// Held by the TUI for as long as it owns the screen.
+/// Held by the TUI for as long as it owns the screen, and by `shaipe mcp` for
+/// the whole of a session.
 #[must_use]
 pub fn suppress() -> Suppressed {
     SUPPRESSED.store(true, Ordering::Relaxed);

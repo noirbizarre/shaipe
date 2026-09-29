@@ -78,12 +78,15 @@ parser never sees it.
 
 ## Installation
 
+Shaipe has not had its first release yet, so there is no crates.io package or
+binary download to point at. Install it from source:
+
 ```bash
-cargo install shaipe
+cargo install --git https://github.com/noirbizarre/shaipe
 ```
 
-Or download a binary for your platform from the
-[latest release](https://github.com/noirbizarre/shaipe/releases/latest).
+Or, from a checkout, `mise run setup`. Releases are tracked in
+[PLAN.md](PLAN.md); this section changes when the first one ships.
 
 ## Usage
 
@@ -166,9 +169,9 @@ the same rule every other relative path in a project already follows
 regardless of where it was invoked from.
 
 No model, no clock, no environment, and no network *during* a render — the
-one exception is a font declared by a checksum-pinned URL, resolved by a
-separate step before rendering and never touched again once its cache is
-warm (see below). The same project bytes and the same resolved font bytes
+one exception is a font declared by a checksum-pinned URL, fetched while the
+renderer is being set up — before anything is drawn — and never touched again
+once its cache is warm (see below). The same project bytes and the same resolved font bytes
 produce the same output bytes on any machine, which is what makes this a CI
 step:
 
@@ -209,7 +212,7 @@ shaipe tui logo.svg
 ```
 
 ```text
-┌ Shaipe  [Transcript] [Source] [Renders] [Edit renders] ───────────────────┐
+┌ Shaipe  [Transcript] [Source] [Renders] [Edit variants] ──────────────────┐
 ├───────────────────────────────┬───────────────────────────────────────────┤
 │ prompt, or the transcript     │ ‹ icon │ wordmark ›                       │
 │                               │                                           │
@@ -242,7 +245,9 @@ so the toolbar reads `Source` while the preview is up and `Preview` while it is
 not. `r` re-renders, `q` quits.
 The mouse works: click a toolbar button or a tab, click a pane to focus it,
 double-click to edit it, wheel to scroll, drag the divider to resize, and
-double-click a specification's tab to write it to `dist/`.
+double-click a specification's tab to write it to the project's output
+directory — `dist/` beside the project unless `<shaipe:renders output="…">`
+says otherwise, the same place `shaipe render` writes.
 
 `e` opens the prompt in `$VISUAL` or `$EDITOR` instead. `ctrl-s` writes the
 project back to its file. The status line marks unsaved work, and quitting with
@@ -283,8 +288,10 @@ gives that agent the one thing it does not have: the ability to *see* an SVG.
          Shaipe's asset tools
 ```
 
-Shaipe never sees an API key, never names a provider, and cannot tell you which
-model answered. Your agent is configured and authenticated in your agent. See
+Shaipe never sees an API key and never chooses a provider or a model. It can
+show, and relay, the model names your agent advertises — the status line names
+the one in use, and `M` asks the agent to switch — but which model answers is
+decided in your agent. Your agent is configured and authenticated in your agent. See
 [ADR-011](docs/adr/011-driving-an-agent-is-still-not-a-model.md).
 
 ### The tools
@@ -381,7 +388,7 @@ This needs no ACP and no agent. It opens the file itself, and works headlessly.
 **In the workspace.** Open a project and talk to it:
 
 ```bash
-shaipe logo.svg
+shaipe tui logo.svg
 ```
 
 Tab to the prompt pane, press `enter` and describe the artwork you want, then
@@ -396,11 +403,15 @@ the agent's edits and your preview cannot drift apart
 ([ADR-010](docs/adr/010-mcp-over-a-socket-with-a-bridge.md)).
 
 ```bash
-shaipe --agent "some-other-agent acp"     # any ACP agent, not just OpenCode
-shaipe --no-agent                         # open the workspace without one
-shaipe --yes                              # approve the agent's own tools
-shaipe --model "anthropic/claude-opus-4-1" # request one of the agent's own models
+shaipe tui --agent "some-other-agent acp"      # any ACP agent, not just OpenCode
+shaipe tui --no-agent                          # open the workspace without one
+shaipe tui --yes                               # approve the agent's own tools
+shaipe tui --model "anthropic/claude-opus-4-1" # request one of the agent's own models
 ```
+
+These flags belong to `shaipe tui`; `--agent` also reads `SHAIPE_AGENT` and
+`--model` reads `SHAIPE_MODEL`.
+Only the global `--preview` and `--verbose` work on the bare `shaipe`.
 
 The keys:
 
@@ -411,15 +422,17 @@ The keys:
 | `tab` / `shift-tab`, `↑` / `↓` | move between the prompt, the palette and the references pane, still editing |
 | `a` | **send the prompt to the agent**, so it makes the artwork match |
 | `alt+a` | the same, without leaving the editor |
-| `e` | open the prompt in `$EDITOR` |
-| `←` / `→` | the previous or next tab, wrapping at both ends |
+| `e` | open the prompt in `$VISUAL`, or `$EDITOR` when that is unset |
+| `←` / `→`, `[` / `]` | the previous or next tab, wrapping at both ends |
+| `p` | from the palette pane, open the colour picker on the selected colour |
 | `m` | swap the variants for the render specifications |
 | `s` | swap the preview for the SVG that produced it |
 | `t` | swap the prompt for the transcript |
 | `x` | open the editor for whichever the tabs list, or for the references pane when that has the keyboard |
 | `M` | search and pick from whichever models the agent offers, shown once one is chosen |
 | `PageUp` / `PageDown` | scroll the source, or the transcript |
-| `ctrl-c` | stop the turn the agent is on; again to quit |
+| `ctrl-c` | stop the turn the agent is on; it does nothing when no turn is running |
+| `q` / `esc` | quit, asking first when something is unsaved |
 | `ctrl-s` | save the project |
 | `R` | re-read the project from disk, discarding what is in memory |
 
@@ -450,7 +463,9 @@ point it at something else once one exists.
 
 ### What the agent may and may not do
 
-`write_svg` is the only way the project changes. Shaipe starts OpenCode with
+Shaipe's own tools are the only way the project changes: `write_svg`,
+`write_variant`, `set_palette_colour`, `set_reference` and `set_generation`,
+none of which saves. Shaipe starts OpenCode with
 its file-editing and shell tools **denied**, so the agent cannot write to your
 working tree even if it decides to — and OpenCode removes a denied tool rather
 than refusing it, so the model does not propose one and then apologise.
@@ -506,6 +521,17 @@ cli ──> tui ──> preview ──┐
   └──────────> mcp ──┴──> tools ──┘
 ```
 
+Beyond that spine, the reconstruction modules and the small ones hang off it
+like this, each arrow meaning "imports":
+
+- `tools` → `render`, `analysis`, `compare`, `vectorize`, `workflow`
+- `workflow` → `analysis`, `compare`, `vectorize`, `project`
+- `compare` → `analysis`, `render`; `vectorize` → `analysis`, `render`, `project`
+- `render` → `fonts`; `fonts` → `project`
+- `acp` → `mcp`; `tui` → `mcp`, `vision`, `settings`
+
+Only some of those are guarded by a hook; the rest are described, not enforced.
+
 - **`project`** — the format. Reads and writes the SVG and its metadata, and
   knows nothing else.
 - **`render`** — project + specification → bytes. Headless and deterministic;
@@ -516,6 +542,12 @@ cli ──> tui ──> preview ──┐
   no transport, and the only place any of them is implemented.
 - **`mcp`** — those tools, spoken as the Model Context Protocol.
 - **`acp`** — an Agent Client Protocol client, for driving an agent.
+- **`analysis`**, **`compare`**, **`vectorize`**, **`workflow`** — measuring a
+  reference raster, comparing a render against it, tracing it
+  deterministically, and the reconstruction phases built from them.
+- **`fonts`** — acquiring a declared font's bytes, including the pinned fetch.
+- **`settings`**, **`vision`** — what the workspace remembers, and which models
+  can see images.
 
 Those directions are enforced by hooks in `prek.toml`, not merely documented.
 The reasoning behind each significant choice — including two where the obvious
@@ -531,6 +563,9 @@ Early, but real. Nothing described above is a mock.
 - The project format: metadata, palette, fonts, variants, references, render
   specifications, with a versioned schema and byte-preserving writes.
 - Deterministic rendering to PNG and SVG, at any size, with backgrounds.
+- Palette binding: an element can name a palette colour with `shaipe:fill` or
+  `shaipe:stroke`, so editing that colour — in the palette pane, or through
+  `set_palette_colour` — restyles the mark. There is a colour picker on `p`.
 - `shaipe render`, `shaipe inspect`, `shaipe init`, and a CI workflow that
   regenerates this repository's own artwork from `logo.svg` and fails if it
   drifted.
@@ -552,13 +587,11 @@ Early, but real. Nothing described above is a mock.
   agent receives it, but whether the *model* can see it depends on the model
   you configured. The end-to-end test skips loudly rather than pretending
   otherwise when it cannot.
-- A permission dialogue. The agent's own tools — reading files, running
-  commands — are refused unless `--yes` is passed, because there is nothing to
-  ask with yet. Shaipe's own tools never ask.
-- Editing from the workspace beyond the prompt: the palette pane has no colour
-  picker yet.
-- Palette *binding*. The palette is recorded and reported, but the artwork does
-  not yet reference it, so editing a colour does not restyle the mark.
+- A permission dialogue. For an agent that does ask, edits, moves, deletes and
+  command execution are refused unless `--yes` is passed, because there is
+  nothing to ask with yet; reading stays allowed. OpenCode never asks, and its
+  editing and shell are denied through its environment whatever `--yes` says.
+  Shaipe's own tools never ask.
 
 **Dogfooding.** `logo.svg` at the root of this repository is a Shaipe project,
 and every image in `docs/images/` is rendered from it. The artwork itself is

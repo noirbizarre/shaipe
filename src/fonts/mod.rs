@@ -43,13 +43,9 @@ const MAX_FONT_BYTES: u64 = 32 * 1024 * 1024;
 /// identified entirely by the hash the project already declared, so two
 /// projects that pin the same font share one download.
 ///
-/// # Errors
-///
-/// Returns [`Error::FontFetch`]-shaped context is not appropriate here since
-/// this is a filesystem, not a network, lookup — callers get a plain
-/// [`Error::Io`] if the OS refuses to say where its cache directory is,
-/// which in practice does not happen on a machine capable of running
-/// Shaipe at all.
+/// Infallible: when the OS cannot say where its cache directory is, which in
+/// practice does not happen on a machine capable of running Shaipe at all,
+/// this falls back to `.shaipe-cache` beside the process.
 fn cache_path(sha256: &str) -> PathBuf {
     directories::ProjectDirs::from("dev", "shaipe", "shaipe")
         // No project directories at all (an unusual, minimal environment) —

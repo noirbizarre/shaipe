@@ -96,10 +96,10 @@ impl SessionHandle {
                     && save
                     && let Err(error) = project.save()
                 {
-                    // Logged rather than returned: the tool call itself
+                    // Reported rather than returned: the tool call itself
                     // succeeded, and failing it now would tell the agent to
                     // retry an edit that has already been applied.
-                    log::error!("could not save {}: {error}", project.path().display());
+                    report_failed_save(&mut std::io::stderr(), &project, &error);
                 }
             }
         });
@@ -155,10 +155,10 @@ pub fn serve(command: SessionCommand, registry: &Registry, project: &mut Project
             Applied { mutated: false }
         }
         SessionCommand::Call { name, input, reply } => {
-            // Read before the call, because the tool is about to be consumed
-            // by it, and asked of the tool rather than inferred from the
-            // result: a failed `write_svg` changed nothing, and this is the
-            // conservative answer for one that succeeded.
+            // Asked of the tool rather than inferred from the result, and
+            // combined with whether the call succeeded below: a failed
+            // `write_svg` changed nothing, so only a successful call to a
+            // tool that mutates counts.
             let mutated = registry.get(&name).is_some_and(|tool| tool.mutates());
             let result = registry.call(&name, project, &input);
             let mutated = mutated && result.is_ok();
@@ -167,6 +167,22 @@ pub fn serve(command: SessionCommand, registry: &Registry, project: &mut Project
             Applied { mutated }
         }
     }
+}
+
+/// Say, on `out`, that a `--write` save failed.
+///
+/// Written directly rather than through `log`: `shaipe mcp` holds
+/// [`crate::logging::suppress`] for the whole session, so `log::error!` was
+/// dropped without a trace — and a save that fails silently is an agent
+/// reporting edits that are not on disk. The one place the library writes to
+/// standard error itself; standard output stays the protocol's.
+fn report_failed_save(out: &mut dyn std::io::Write, project: &Project, error: &Error) {
+    // A failure to say so must not take the session down with it.
+    let _ = writeln!(
+        out,
+        "error: could not save {}: {error}",
+        project.path().display()
+    );
 }
 
 #[cfg(test)]
@@ -318,6 +334,49 @@ mod tests {
             after.value["source"].as_str().unwrap().contains("#00ff00"),
             "the read did not see the write that preceded it"
         );
+    }
+
+    #[test]
+    fn a_failed_save_is_reported_where_the_user_can_see_it() {
+        let project = fixtures::project();
+        let error = Error::io(project.path(), std::io::Error::other("disk on fire"));
+
+        let mut out = Vec::new();
+        report_failed_save(&mut out, &project, &error);
+
+        let said = String::from_utf8(out).unwrap();
+        assert!(
+            said.contains(&project.path().display().to_string()),
+            "{said}"
+        );
+        assert!(said.contains("could not save"), "{said}");
+    }
+
+    #[tokio::test]
+    async fn a_save_that_fails_does_not_fail_the_call_that_caused_it() {
+        // Retrying would re-apply an edit that already happened, so the call
+        // succeeds and the failure is reported on its own channel.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        let project = Project::open(&path).unwrap();
+
+        // Opened, then made unwritable in a way that holds for root too.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+
+        let session = SessionHandle::detached(project, Registry::new(), true);
+        let output = session
+            .call(
+                "write_svg",
+                json!({ "source": fixtures::PROJECT.replace("#f05032", "#00ff00") }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(output.value["saved"], false);
+        // And the session is still serving.
+        session.call("get_svg", Value::Null).await.unwrap();
     }
 
     #[tokio::test]

@@ -11,12 +11,15 @@ Shaipe does not host a model, and will not. Bring your own agent.
 
 ## Installation
 
+Shaipe has not had its first release yet, so there is no crates.io package or
+binary download to point at. Install it from source:
+
 ```bash
-cargo install shaipe
+cargo install --git https://github.com/noirbizarre/shaipe
 ```
 
-Or download a binary for your platform from the
-[latest release](https://github.com/noirbizarre/shaipe/releases/latest).
+Or, from a checkout, `mise run setup`. Releases are tracked in
+[PLAN.md](https://github.com/noirbizarre/shaipe/blob/main/PLAN.md); this section changes when the first one ships.
 
 ## The project file
 
@@ -85,8 +88,8 @@ shaipe render logo.svg --variant icon --width 64 --output dist
 
 With no flags, every declared specification is produced. Rendering itself
 reads no network, no clock and no environment — a font declared by a
-checksum-pinned URL is fetched and cached once by a separate step before a
-render ever runs, never during one — so the same project bytes produce the
+checksum-pinned URL is fetched and cached once while the renderer is set up,
+before anything is drawn, and never again once the cache is warm — so the same project bytes produce the
 same output bytes anywhere, which is what makes it a CI check:
 
 ```yaml

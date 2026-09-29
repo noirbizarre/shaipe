@@ -118,3 +118,12 @@ reason.
 - `src/acp/agent.rs`'s startup path now matches its mid-session one exactly
   in how it reports a switch — a small, independently useful fix, not a
   workaround kept local to this feature.
+
+## Update: a second file in the config directory
+
+"The crate's first use of `config_dir()`" was true when written. ADR-017's
+`vision.json` is also kept there, on purpose and against the argument above
+that a cache belongs in `cache_dir()`: it is read to decide how the model
+picker behaves, and a cache-clearing tool sweeping it away under a running
+workspace would change that mid-session. `src/vision.rs` records the same
+reasoning.

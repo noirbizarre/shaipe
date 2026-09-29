@@ -106,3 +106,25 @@ actually sees, the noun is doing the work of saying whose `render` this is.
   code. They can disagree.
   `only_the_writing_and_setting_tools_declare_that_they_mutate` in
   `src/tools/builtin.rs` is what stops them.
+
+## Update: the verbs the tool set grew
+
+The set of tools is larger than this record lists, and one verb was added
+without being recorded here.
+
+**`compare_`.** `compare_reference` renders a variant and measures it against
+a reference. It reads and reports; it never changes the project. It fits none
+of the four verbs above. It was added without amending this record, which is
+what this section corrects. The closed set is now `get_`, `render_`, `write_`,
+`set_` and `compare_`.
+
+**Tools added since**, all under the rules above: `get_references`,
+`get_reference_image`, `get_reference_analysis`, `get_reference_trace` and
+`get_workflow` read; `set_reference` sets a metadata field; `write_variant`
+replaces one element's markup. See ADR-018 to ADR-023.
+
+**A correction to the `set_` row.** It says `set_` never touches document
+markup. `set_palette_colour` does, when an element is bound to the colour with
+`shaipe:fill` or `shaipe:stroke`: it rewrites those attributes and reports how
+many in `restyled`. What still holds is that a `set_` tool takes explicit values
+for metadata and never accepts raw markup; that is `write_`'s job.
