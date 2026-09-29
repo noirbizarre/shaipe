@@ -9,7 +9,8 @@ versions.
 ```bash
 mise install          # the tools
 prek install          # the Git hooks
-mise run ci           # everything CI runs
+mise run ci           # the local checks, incl. the pty scripts CI does not run
+prek run --all-files  # the hooks CI runs, which `ci` does not
 ```
 
 Rust itself is not managed by mise: `rust-toolchain.toml` pins the channel, and

@@ -101,7 +101,14 @@ src/
 ├── tui/          the interactive workspace
 ├── tools/        the operations an agent can perform. The application layer
 ├── mcp/          those tools, spoken as MCP. A thin adapter
-└── acp/          an ACP client, for driving an agent. A thin adapter
+├── acp/          an ACP client, for driving an agent. A thin adapter
+├── analysis/     measuring a reference raster: regions, colours, background
+├── compare/      a render against a reference: difference, overlay
+├── vectorize/    deterministic raster-to-vector tracing. See ADR 014
+├── workflow/     the reconstruction phases and the instructions built from them
+├── fonts/        acquiring a declared font's bytes, incl. the pinned fetch
+├── settings.rs   what the workspace remembers between runs
+└── vision.rs     which models can see images, read from models.dev
 ```
 
 Dependencies point inward, and the direction is enforced, not described:
@@ -114,6 +121,17 @@ cli ──> tui ──> preview ──┐
   │       └──> acp ──┐            │
   └──────────> mcp ──┴──> tools ──┘
 ```
+
+Beyond that spine, the reconstruction modules and the small ones hang off it
+like this, each arrow meaning "imports":
+
+- `tools` → `render`, `analysis`, `compare`, `vectorize`, `workflow`
+- `workflow` → `analysis`, `compare`, `vectorize`, `project`
+- `compare` → `analysis`, `render`; `vectorize` → `analysis`, `render`, `project`
+- `render` → `fonts`; `fonts` → `project`
+- `acp` → `mcp`; `tui` → `mcp`, `vision`, `settings`
+
+Only some of those are guarded by a hook; the rest are described, not enforced.
 
 `project` knows nothing. `render` knows `project`. `preview` knows neither.
 Nothing in the library knows a command exists. `mcp` and `acp` are adapters
@@ -257,7 +275,13 @@ derives the version from the commit history, `prepare-release` applies it, and
 mise run ci
 ```
 
-Formatting, Clippy, spelling, workflow and Markdown linting, tests and the documentation build. Same as CI.
+Formatting, Clippy, spelling, workflow and Markdown linting, tests, the three
+pty scripts (`test:terminal`, `test:workspace`, `test:traffic`) and the
+documentation build. It is not the same set as CI's: CI runs the `prek` hooks
+(the architecture guards behind invariants 3 to 6 among them) and coverage,
+which `mise run ci` does not, so also run `prek run --all-files`. The pty
+scripts, which are what invariant 6 cites, run locally only — no workflow
+invokes them.
 
 ## This repository is generated from a template
 

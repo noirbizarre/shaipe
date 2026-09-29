@@ -519,6 +519,17 @@ cli ──> tui ──> preview ──┐
   └──────────> mcp ──┴──> tools ──┘
 ```
 
+Beyond that spine, the reconstruction modules and the small ones hang off it
+like this, each arrow meaning "imports":
+
+- `tools` → `render`, `analysis`, `compare`, `vectorize`, `workflow`
+- `workflow` → `analysis`, `compare`, `vectorize`, `project`
+- `compare` → `analysis`, `render`; `vectorize` → `analysis`, `render`, `project`
+- `render` → `fonts`; `fonts` → `project`
+- `acp` → `mcp`; `tui` → `mcp`, `vision`, `settings`
+
+Only some of those are guarded by a hook; the rest are described, not enforced.
+
 - **`project`** — the format. Reads and writes the SVG and its metadata, and
   knows nothing else.
 - **`render`** — project + specification → bytes. Headless and deterministic;
@@ -529,6 +540,12 @@ cli ──> tui ──> preview ──┐
   no transport, and the only place any of them is implemented.
 - **`mcp`** — those tools, spoken as the Model Context Protocol.
 - **`acp`** — an Agent Client Protocol client, for driving an agent.
+- **`analysis`**, **`compare`**, **`vectorize`**, **`workflow`** — measuring a
+  reference raster, comparing a render against it, tracing it
+  deterministically, and the reconstruction phases built from them.
+- **`fonts`** — acquiring a declared font's bytes, including the pinned fetch.
+- **`settings`**, **`vision`** — what the workspace remembers, and which models
+  can see images.
 
 Those directions are enforced by hooks in `prek.toml`, not merely documented.
 The reasoning behind each significant choice — including two where the obvious
