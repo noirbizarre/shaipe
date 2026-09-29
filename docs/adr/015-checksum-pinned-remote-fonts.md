@@ -129,3 +129,18 @@ shorthand later if it turns out to matter.
   file" and "system fallback," trusted by a pinned hash rather than by
   presence. A one-line forward pointer was added to ADR-005 instead, the same
   courtesy ADR-004 gave ADR-011.
+
+## Update: where the fetch happens
+
+The Decision says `render/` "receives already-resolved bytes". That is true of
+what it draws with, but not of the order of events: there is no separate step
+before a render. `Renderer::new` builds the font database, and its per-font
+loop calls `crate::fonts::resolve`, so the fetch happens on the caller's thread
+while the renderer is set up, before anything is drawn. Every caller of
+`Renderer::new` can therefore block on the network for up to the fetch timeout
+on a cold cache: `shaipe render`, the workspace's render worker, `render_svg`,
+`compare_reference`, and the validation in `write_svg` and `write_variant`.
+
+Determinism is unaffected: a warm cache is a file read, a match is never
+fetched again, and drawing never touches the network. The advice to pre-warm the
+cache as its own step, above, is the way to keep a tool call from waiting on it.

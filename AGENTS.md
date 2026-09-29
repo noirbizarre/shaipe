@@ -23,9 +23,9 @@ add a provider, an API key or a `generate` command that calls one, read
    unless the document asked for a family the project failed to supply, and
    no network *reads* — the one narrow exception is a font declared by a
    checksum-pinned URL (`docs/adr/015-checksum-pinned-remote-fonts.md`),
-   fetched once into a local cache and never touched again on a match; a
-   render itself still never makes the request, `crate::fonts` does, before
-   `src/render/` ever sees the bytes — enforced by
+   fetched once into a local cache and never touched again on a match; the
+   request is made by `crate::fonts`, from `Renderer::new` while the font
+   database is assembled, and never while drawing — enforced by
    `rendering_the_same_project_twice_produces_identical_bytes`
    in `src/render/mod.rs`, and end to end by `.github/workflows/assets.yaml`,
    which re-renders `logo.svg` and fails if `docs/images` changed.

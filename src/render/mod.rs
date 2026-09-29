@@ -7,8 +7,10 @@
 //! Nothing in this module knows that an LLM exists, and nothing in it reads
 //! the clock or the environment — and it never reaches the network itself:
 //! a font declared by URL (ADR 015) is resolved, checksum-verified and
-//! cached by [`crate::fonts`] before its bytes ever arrive here, the one
-//! narrow, opt-in exception to "no network" that a render can ever depend
+//! cached by [`crate::fonts`], which [`Renderer::new`] calls while it
+//! assembles the font database, before anything is drawn. On a cold cache
+//! that call blocks on the network; on a warm one it reads a file. It is the
+//! one narrow, opt-in exception to "no network" that a render can ever depend
 //! on. [`crate::vision`] (ADR 017) also reaches the network, for a reason
 //! that has nothing to do with rendering and nowhere near this module —
 //! naming both here would be the kind of thing that goes stale the next

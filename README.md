@@ -166,9 +166,9 @@ the same rule every other relative path in a project already follows
 regardless of where it was invoked from.
 
 No model, no clock, no environment, and no network *during* a render — the
-one exception is a font declared by a checksum-pinned URL, resolved by a
-separate step before rendering and never touched again once its cache is
-warm (see below). The same project bytes and the same resolved font bytes
+one exception is a font declared by a checksum-pinned URL, fetched while the
+renderer is being set up — before anything is drawn — and never touched again
+once its cache is warm (see below). The same project bytes and the same resolved font bytes
 produce the same output bytes on any machine, which is what makes this a CI
 step:
 
@@ -242,7 +242,9 @@ so the toolbar reads `Source` while the preview is up and `Preview` while it is
 not. `r` re-renders, `q` quits.
 The mouse works: click a toolbar button or a tab, click a pane to focus it,
 double-click to edit it, wheel to scroll, drag the divider to resize, and
-double-click a specification's tab to write it to `dist/`.
+double-click a specification's tab to write it to the project's output
+directory — `dist/` beside the project unless `<shaipe:renders output="…">`
+says otherwise, the same place `shaipe render` writes.
 
 `e` opens the prompt in `$VISUAL` or `$EDITOR` instead. `ctrl-s` writes the
 project back to its file. The status line marks unsaved work, and quitting with

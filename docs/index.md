@@ -85,8 +85,8 @@ shaipe render logo.svg --variant icon --width 64 --output dist
 
 With no flags, every declared specification is produced. Rendering itself
 reads no network, no clock and no environment — a font declared by a
-checksum-pinned URL is fetched and cached once by a separate step before a
-render ever runs, never during one — so the same project bytes produce the
+checksum-pinned URL is fetched and cached once while the renderer is set up,
+before anything is drawn, and never again once the cache is warm — so the same project bytes produce the
 same output bytes anywhere, which is what makes it a CI check:
 
 ```yaml
