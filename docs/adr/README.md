@@ -39,17 +39,25 @@ verbs). Anything else is an *Update*.
 - [ADR-009](009-session-reached-by-message.md) — The session is reached by message, not by lock
 - [ADR-010](010-mcp-over-a-socket-with-a-bridge.md) — A live workspace serves MCP on a socket, reached by a bridge
 - [ADR-011](011-driving-an-agent-is-still-not-a-model.md) — Driving an agent is still not providing a model
-- [ADR-012](012-cannot-restrict-an-agents-own-tools.md) — Shaipe cannot restrict an agent's own tools, and does not pretend to *(superseded by ADR-013)*
-- [ADR-013](013-restrict-the-agent-through-its-environment.md) — Restrict the agent through the environment it is started in
-- [ADR-014](014-deterministic-raster-to-vector-tracing.md) — Trace a reference deterministically; do not ask a model to redraw it
+- [ADR-012](012-cannot-restrict-an-agents-own-tools.md) — Shaipe cannot restrict an agent's own tools, and does not
+  pretend to *(superseded by ADR-013)*
+- [ADR-013](013-restrict-the-agent-through-its-environment.md) — Restrict the agent through the environment it is
+  started in
+- [ADR-014](014-deterministic-raster-to-vector-tracing.md) — Trace a reference deterministically; do not ask a model
+  to redraw it
   *(its final section is the overview of the reconstruction workflow)*
 - [ADR-015](015-checksum-pinned-remote-fonts.md) — A font may be declared by a checksum-pinned URL, cached locally
 - [ADR-016](016-remembering-a-chosen-model.md) — A chosen model is remembered per agent, in the OS config directory
 - [ADR-017](017-vision-capability-from-models-dev.md) — Vision capability is read from models.dev, cached, never guessed
-- [ADR-018](018-structured-reference-measurement.md) — Measure a reference's pixels into facts; do not ask a model to guess them
+- [ADR-018](018-structured-reference-measurement.md) — Measure a reference's pixels into facts; do not ask a model to
+  guess them
 - [ADR-019](019-compare-reference.md) — Compare a reference and a render on a canvas the tool chooses, never the model
-- [ADR-020](020-richer-reference-tracing.md) — Richer tracing: colour regions, and measuring the SVG a trace produces rather than the pixels behind it
-- [ADR-021](021-explicit-reconstruction-workflow.md) — Name the reconstruction workflow's phases; do not track whether they happened
-- [ADR-022](022-reconstruction-instructions.md) — Tell the agent how to reconstruct in Shaipe's own instructions, generated from the workflow model
+- [ADR-020](020-richer-reference-tracing.md) — Richer tracing: colour regions, and measuring the SVG a trace produces
+  rather than the pixels behind it
+- [ADR-021](021-explicit-reconstruction-workflow.md) — Name the reconstruction workflow's phases; do not track whether
+  they happened
+- [ADR-022](022-reconstruction-instructions.md) — Tell the agent how to reconstruct in Shaipe's own instructions,
+  generated from the workflow model
 - [ADR-023](023-tool-contract-conventions.md) — Tool contracts name what comes next and leave the phases to one place
-- [ADR-024](024-reconstruction-fixtures-and-evaluation-loop.md) — Reconstruction is tested with computed fixtures, no model
+- [ADR-024](024-reconstruction-fixtures-and-evaluation-loop.md) — Reconstruction is tested with computed fixtures, no
+  model
