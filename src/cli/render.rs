@@ -59,7 +59,7 @@ pub fn run(args: &RenderArgs, out: &mut dyn Write) -> Result<()> {
                 "would write {}",
                 output.join(asset.file_name()).display()
             )
-            .map_err(|source| shaipe::Error::io(&output, source))?;
+            .map_err(|source| shaipe::Error::io("stdout", source))?;
             continue;
         }
 
@@ -71,7 +71,7 @@ pub fn run(args: &RenderArgs, out: &mut dyn Write) -> Result<()> {
             asset.spec.width,
             asset.spec.height
         )
-        .map_err(|source| shaipe::Error::io(&path, source))?;
+        .map_err(|source| shaipe::Error::io("stdout", source))?;
     }
 
     Ok(())
