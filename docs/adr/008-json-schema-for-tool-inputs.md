@@ -92,3 +92,15 @@ moving away from the consumer.
 - ADR-004's parameter-list decision is amended, not overturned. Its actual
   claim — that Shaipe describes operations rather than hosting a model — is
   untouched.
+
+## Update: what has drifted since
+
+- The helpers are five, not three: `object`, `string`, `integer`, plus
+  `boolean` and `integers` (a bounded array of integers), all in
+  `src/tools/mod.rs`. Schemas are still hand-written.
+- `ToolImage` no longer assumes PNG. It carries a `mime_type` beside the bytes,
+  because `get_reference_image` hands back whatever raster the reference is.
+  The bytes are still raw, never base64.
+- The passage quoted in Context is a paraphrase of ADR-004, not a verbatim
+  quotation: ADR-004 says a tool has "a parameter list" and does not use those
+  words.
