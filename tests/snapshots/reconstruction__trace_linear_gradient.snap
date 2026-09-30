@@ -1,0 +1,60 @@
+---
+source: tests/reconstruction.rs
+expression: trace_golden(aware)
+---
+{
+  "mode": "colour",
+  "paths": [
+    {
+      "id": 0,
+      "bounding_box": {
+        "x": 12.0,
+        "y": 12.0,
+        "width": 40.0,
+        "height": 40.0
+      },
+      "area": 1600.0,
+      "fill_colour": null,
+      "region_id": 0,
+      "appearance": {
+        "fill": {
+          "kind": "linear_gradient",
+          "start": {
+            "x": 12.0,
+            "y": 31.5
+          },
+          "end": {
+            "x": 51.0,
+            "y": 31.5
+          },
+          "angle_degrees": 0.0,
+          "stops": [
+            {
+              "offset": 0.0,
+              "colour": "#c81e1e",
+              "opacity": 1.0
+            },
+            {
+              "offset": 1.0,
+              "colour": "#1e28d2",
+              "opacity": 1.0
+            }
+          ],
+          "fit": 1.0
+        },
+        "opacity": {
+          "min": 1.0,
+          "mean": 1.0,
+          "max": 1.0
+        }
+      }
+    }
+  ],
+  "bounding_box": {
+    "x": 12.0,
+    "y": 12.0,
+    "width": 40.0,
+    "height": 40.0
+  },
+  "path_count": 1
+}

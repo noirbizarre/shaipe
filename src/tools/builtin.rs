@@ -490,8 +490,10 @@ impl Tool for GetReferenceTrace {
          construct photographs and busy artwork yourself. `silhouette` \
          (default) separates one foreground colour from one background into \
          a single shape with holes, for a single-colour mark. `colour` \
-         traces each flat-colour region as its own path with its own fill, \
-         for multi-colour artwork; the background becomes one more region. \
+         traces each region as its own path, for multi-colour artwork; a \
+         gradient or translucent fill stays one path painted with its \
+         measured fill, and `fallbacks` lists regions that vary but are not \
+         one. The background becomes one more region. \
          Returns a standalone SVG in the reference's own pixel space with no \
          `viewBox` — give a grafted element a `viewBox` or a transform — an \
          overall bounding box, up to 32 paths (bounding box, approximate area \
@@ -563,6 +565,17 @@ impl Tool for GetReferenceTrace {
                          vtracer's own clustering decide.",
                     }),
                 ),
+                (
+                    "appearance",
+                    boolean(
+                        "`colour` mode only; default true. A region that \
+                         `get_reference_analysis` measures as a gradient, or \
+                         as a flat colour drawn translucent, is traced once \
+                         as its outline and painted with that fill (paths \
+                         then carry `region_id` and `appearance`). Set false \
+                         to get plain flat-colour layers for everything.",
+                    ),
+                ),
             ],
             &["src"],
         )
@@ -613,6 +626,19 @@ impl Tool for GetReferenceTrace {
             Some(value) => usize::try_from(value).ok(),
         };
 
+        // Refused when present and not a boolean, not read as the default:
+        // `"false"` silently becoming `true` would give the trace the caller
+        // asked not to get.
+        let appearance = match input.get("appearance") {
+            None | Some(Value::Null) => true,
+            Some(Value::Bool(value)) => *value,
+            Some(other) => {
+                return Err(refuse(format!(
+                    "`appearance` must be true or false, got {other}"
+                )));
+            }
+        };
+
         // Reported before anything is read, so an unattached name is a clear
         // refusal, not a race.
         let reference = attached_reference(self.name(), project, &src)?;
@@ -633,6 +659,7 @@ impl Tool for GetReferenceTrace {
                 threshold,
                 invert,
                 max_colors,
+                appearance,
             },
         )?;
         let preview = crate::vectorize::preview(&traced.svg);
@@ -2091,6 +2118,84 @@ mod tests {
         let path_count = output.value["trace"]["path_count"].as_u64().unwrap();
         assert!(path_count >= 2, "{}", output.value["trace"]);
         assert_eq!(output.images.len(), 1);
+    }
+
+    /// A red-to-blue ramp across a square, on a transparent canvas.
+    fn gradient_png() -> Vec<u8> {
+        let mut img = image::RgbaImage::new(64, 64);
+        for y in 12..52 {
+            for x in 12..52 {
+                let t = f64::from(x - 12) / 39.0;
+                img.put_pixel(
+                    x,
+                    y,
+                    image::Rgba([
+                        (200.0 - 170.0 * t) as u8,
+                        (30.0 + 10.0 * t) as u8,
+                        (30.0 + 180.0 * t) as u8,
+                        255,
+                    ]),
+                );
+            }
+        }
+        let mut bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        bytes
+    }
+
+    fn trace_gradient(arguments: Value) -> Result<ToolOutput> {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        std::fs::write(directory.path().join("mockup.png"), gradient_png()).unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        Registry::new().call("get_reference_trace", &mut project, &arguments)
+    }
+
+    #[test]
+    fn get_reference_trace_keeps_a_gradient_as_one_path_that_names_its_region() {
+        let output = trace_gradient(json!({ "src": "mockup.png", "mode": "colour" })).unwrap();
+
+        let trace = &output.value["trace"];
+        assert_eq!(trace["path_count"], 1, "{trace}");
+        let path = &trace["paths"][0];
+        assert_eq!(path["region_id"], 0, "{path}");
+        assert_eq!(
+            path["appearance"]["fill"]["kind"], "linear_gradient",
+            "{path}"
+        );
+        assert!(trace["svg"].as_str().unwrap().contains("linearGradient"));
+    }
+
+    #[test]
+    fn get_reference_trace_with_appearance_off_returns_the_flat_layers() {
+        let output =
+            trace_gradient(json!({ "src": "mockup.png", "mode": "colour", "appearance": false }))
+                .unwrap();
+
+        let trace = &output.value["trace"];
+        assert!(trace["path_count"].as_u64().unwrap() > 3, "{trace}");
+        assert!(trace["paths"][0].get("region_id").is_none(), "{trace}");
+    }
+
+    #[test]
+    fn get_reference_trace_refuses_an_appearance_that_is_not_a_boolean() {
+        let error =
+            trace_gradient(json!({ "src": "mockup.png", "mode": "colour", "appearance": "false" }))
+                .unwrap_err();
+
+        assert!(matches!(error, Error::InvalidToolInput { .. }), "{error}");
+        assert!(error.to_string().contains("appearance"), "{error}");
     }
 
     #[test]

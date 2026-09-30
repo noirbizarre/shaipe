@@ -40,7 +40,7 @@ pub use appearance::{
 };
 
 /// What a pixel's entry in the region map holds when it belongs to no region.
-const NO_REGION: u32 = u32::MAX;
+pub(crate) const NO_REGION: u32 = u32::MAX;
 
 /// A pixel whose alpha is below this is still counted as fully transparent — real anti-aliased edges rarely land
 /// exactly at 0.
@@ -329,6 +329,18 @@ pub(crate) fn classify(path: &Path, bytes: &[u8]) -> Result<Classified> {
 ///
 /// Returns [`Error::AnalysisDecode`] if `bytes` is not a recognisable image.
 pub fn analyze(path: &Path, bytes: &[u8]) -> Result<Analysis> {
+    analyze_with_regions(path, bytes).map(|(analysis, _)| analysis)
+}
+
+/// [`analyze`], and also which region each pixel belongs to: row-major, one
+/// entry per pixel, the [`Region::id`] it was reported under or
+/// [`NO_REGION`]. Ids beyond [`MAX_REGIONS`] are present in the map though not
+/// in [`Analysis::regions`].
+///
+/// This is what lets [`crate::vectorize`] act on a region's *pixels* using
+/// the same measurement an agent reads, rather than re-deriving regions
+/// with a second, possibly different, segmentation.
+pub(crate) fn analyze_with_regions(path: &Path, bytes: &[u8]) -> Result<(Analysis, Vec<u32>)> {
     let Classified {
         width,
         height,
@@ -498,18 +510,21 @@ pub fn analyze(path: &Path, bytes: &[u8]) -> Result<Analysis> {
         &holes,
     );
 
-    Ok(Analysis {
-        dimensions,
-        background,
-        dominant_colours,
-        foreground,
-        region_count,
-        regions,
-        hole_count,
-        holes,
-        symmetry,
-        appearance,
-    })
+    Ok((
+        Analysis {
+            dimensions,
+            background,
+            dominant_colours,
+            foreground,
+            region_count,
+            regions,
+            hole_count,
+            holes,
+            symmetry,
+            appearance,
+        },
+        region_map,
+    ))
 }
 
 /// Every pixel position on the image's border, corners counted once.
