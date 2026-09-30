@@ -61,3 +61,4 @@ verbs). Anything else is an *Update*.
 - [ADR-023](023-tool-contract-conventions.md) — Tool contracts name what comes next and leave the phases to one place
 - [ADR-024](024-reconstruction-fixtures-and-evaluation-loop.md) — Reconstruction is tested with computed fixtures, no
   model
+- [ADR-025](025-appearance-analysis.md) — Measure how a region is filled, and say so when it cannot be told

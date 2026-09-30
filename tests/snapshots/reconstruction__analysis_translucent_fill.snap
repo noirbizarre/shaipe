@@ -1,6 +1,6 @@
 ---
 source: tests/reconstruction.rs
-expression: "snapshot_text(analysis, 4)"
+expression: "snapshot_text(analysis, 1)"
 ---
 {
   "dimensions": {
@@ -9,43 +9,23 @@ expression: "snapshot_text(analysis, 4)"
     "aspect_ratio": 1.0
   },
   "background": {
-    "transparent_fraction": 0.0,
-    "border_colour": "#ffffff",
+    "transparent_fraction": 0.6,
+    "border_colour": null,
     "border_uniformity": 1.0
   },
   "dominant_colours": [
     {
-      "colour": "#f0f0f0",
-      "fraction": 0.6582
-    },
-    {
-      "colour": "#101010",
-      "fraction": 0.333
-    },
-    {
-      "colour": "#707070",
-      "fraction": 0.0039
-    },
-    {
-      "colour": "#303030",
-      "fraction": 0.002
-    },
-    {
-      "colour": "#d0d0d0",
-      "fraction": 0.002
-    },
-    {
-      "colour": "#505050",
-      "fraction": 0.001
+      "colour": "#d01010",
+      "fraction": 1.0
     }
   ],
   "foreground": {
-    "pixel_fraction": 0.3418,
+    "pixel_fraction": 0.4,
     "bounding_box": {
       "x": 12,
-      "y": 14,
+      "y": 12,
       "width": 40,
-      "height": 36
+      "height": 40
     }
   },
   "region_count": 1,
@@ -54,11 +34,11 @@ expression: "snapshot_text(analysis, 4)"
       "id": 0,
       "bounding_box": {
         "x": 12,
-        "y": 14,
+        "y": 12,
         "width": 40,
-        "height": 36
+        "height": 40
       },
-      "area": 1400,
+      "area": 1600,
       "centroid": {
         "x": 31.5,
         "y": 31.5
@@ -73,23 +53,23 @@ expression: "snapshot_text(analysis, 4)"
   },
   "appearance": {
     "alpha": {
-      "transparent_fraction": 0.0,
-      "translucent_fraction": 0.0,
-      "opaque_fraction": 1.0,
-      "interior_translucent_fraction": 0.0
+      "transparent_fraction": 0.6,
+      "translucent_fraction": 0.4,
+      "opaque_fraction": 0.0,
+      "interior_translucent_fraction": 0.4
     },
     "regions": [
       {
         "region_id": 0,
         "fill": {
           "kind": "flat",
-          "colour": "#18181b",
+          "colour": "#c81e1e",
           "spread": 0.0
         },
         "opacity": {
-          "min": 1.0,
-          "mean": 1.0,
-          "max": 1.0
+          "min": 0.5,
+          "mean": 0.5,
+          "max": 0.5
         },
         "stroke": null
       }

@@ -1,0 +1,126 @@
+---
+source: tests/reconstruction.rs
+expression: "snapshot_text(analysis, 1)"
+---
+{
+  "dimensions": {
+    "width": 64,
+    "height": 64,
+    "aspect_ratio": 1.0
+  },
+  "background": {
+    "transparent_fraction": 0.6,
+    "border_colour": null,
+    "border_uniformity": 1.0
+  },
+  "dominant_colours": [
+    {
+      "colour": "#503090",
+      "fraction": 0.1
+    },
+    {
+      "colour": "#703070",
+      "fraction": 0.1
+    },
+    {
+      "colour": "#903050",
+      "fraction": 0.1
+    },
+    {
+      "colour": "#3030d0",
+      "fraction": 0.1
+    },
+    {
+      "colour": "#b01030",
+      "fraction": 0.1
+    },
+    {
+      "colour": "#3030b0",
+      "fraction": 0.1
+    },
+    {
+      "colour": "#5030b0",
+      "fraction": 0.1
+    },
+    {
+      "colour": "#703090",
+      "fraction": 0.1
+    }
+  ],
+  "foreground": {
+    "pixel_fraction": 0.4,
+    "bounding_box": {
+      "x": 12,
+      "y": 12,
+      "width": 40,
+      "height": 40
+    }
+  },
+  "region_count": 1,
+  "regions": [
+    {
+      "id": 0,
+      "bounding_box": {
+        "x": 12,
+        "y": 12,
+        "width": 40,
+        "height": 40
+      },
+      "area": 1600,
+      "centroid": {
+        "x": 31.5,
+        "y": 31.5
+      }
+    }
+  ],
+  "hole_count": 0,
+  "holes": [],
+  "symmetry": {
+    "horizontal": 1.0,
+    "vertical": 1.0
+  },
+  "appearance": {
+    "alpha": {
+      "transparent_fraction": 0.6,
+      "translucent_fraction": 0.0,
+      "opaque_fraction": 0.4,
+      "interior_translucent_fraction": 0.0
+    },
+    "regions": [
+      {
+        "region_id": 0,
+        "fill": {
+          "kind": "linear_gradient",
+          "start": {
+            "x": 12.0,
+            "y": 31.5
+          },
+          "end": {
+            "x": 51.0,
+            "y": 31.5
+          },
+          "angle_degrees": 0.0,
+          "stops": [
+            {
+              "offset": 0.0,
+              "colour": "#c81e1e",
+              "opacity": 1.0
+            },
+            {
+              "offset": 1.0,
+              "colour": "#1e28d2",
+              "opacity": 1.0
+            }
+          ],
+          "fit": 1.0
+        },
+        "opacity": {
+          "min": 1.0,
+          "mean": 1.0,
+          "max": 1.0
+        },
+        "stroke": null
+      }
+    ]
+  }
+}

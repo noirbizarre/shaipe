@@ -295,7 +295,10 @@ impl Tool for GetReferenceAnalysis {
          dimensions, a background/foreground split, dominant colours, \
          connected regions with bounding boxes and centroids, holes, and \
          left-right/top-bottom symmetry scores, all in the reference's own \
-         pixels. This is measurement, not interpretation — it cannot say a \
+         pixels. `appearance` says, per region, whether its fill is flat, a \
+         linear or radial gradient (axis or centre, stops with opacity) or \
+         varied (not vouched for as a gradient), whether it looks like a \
+         stroke, and how transparent the image is. This is measurement, not interpretation — it cannot say a \
          region is a \"castle\" or a \"letter A\", only where it is, how big \
          and what colour; naming it remains your job. Call it after \
          `get_reference_image` and before `get_reference_trace` or \
@@ -2149,6 +2152,50 @@ mod tests {
                 .unwrap()
                 .mutates()
         );
+    }
+
+    #[test]
+    fn get_reference_analysis_tells_a_gradient_from_a_flat_fill() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+
+        // A square with a margin: one ramps left to right, the other is flat.
+        let square = |ramp: bool| {
+            let mut img = image::RgbaImage::new(64, 64);
+            for y in 12..52u32 {
+                for x in 12..52u32 {
+                    let shade = if ramp { (x - 12) * 6 } else { 90 };
+                    img.put_pixel(x, y, image::Rgba([shade as u8, 40, 120, 255]));
+                }
+            }
+            let mut bytes = Vec::new();
+            img.write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+            bytes
+        };
+        std::fs::write(directory.path().join("ramp.png"), square(true)).unwrap();
+        std::fs::write(directory.path().join("flat.png"), square(false)).unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        for name in ["ramp.png", "flat.png"] {
+            project
+                .metadata_mut()
+                .references
+                .push(Reference::new(name, ReferenceKind::Source));
+        }
+
+        let kind_of = |project: &mut Project, src: &str| {
+            let output = Registry::new()
+                .call("get_reference_analysis", project, &json!({ "src": src }))
+                .unwrap();
+            output.value["analysis"]["appearance"]["regions"][0]["fill"]["kind"].clone()
+        };
+        assert_eq!(kind_of(&mut project, "ramp.png"), "linear_gradient");
+        assert_eq!(kind_of(&mut project, "flat.png"), "flat");
     }
 
     #[test]

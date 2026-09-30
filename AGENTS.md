@@ -102,7 +102,7 @@ src/
 ├── tools/        the operations an agent can perform. The application layer
 ├── mcp/          those tools, spoken as MCP. A thin adapter
 ├── acp/          an ACP client, for driving an agent. A thin adapter
-├── analysis/     measuring a reference raster: regions, colours, background
+├── analysis/     measuring a reference raster: regions, colours, background, fills
 ├── compare/      a render against a reference: difference, overlay
 ├── vectorize/    deterministic raster-to-vector tracing. See ADR 014
 ├── workflow/     the reconstruction phases and the instructions built from them
