@@ -357,6 +357,166 @@ fn every_fixtures_trace_matches_its_golden() {
     }
 }
 
+/// A colour trace with appearance awareness on (the default) or off.
+fn colour_trace(session: &mut Session, appearance: bool) -> Value {
+    session.trace(&json!({ "mode": "colour", "appearance": appearance }))
+}
+
+/// A trace with the markup removed and its paths cut short, as a golden.
+fn trace_golden(mut trace: Value) -> String {
+    let object = trace.as_object_mut().expect("an object");
+    object.remove("svg");
+    if let Some(Value::Array(paths)) = object.get_mut("paths") {
+        paths.truncate(4);
+    }
+    snapshot_text(trace, 1)
+}
+
+#[test]
+fn a_gradient_is_traced_as_one_painted_path_rather_than_a_stack_of_layers() {
+    for fixture in [corpus::linear_gradient(), corpus::radial_gradient()] {
+        let mut session = Session::open(&fixture, &fixture.construction);
+
+        let plain = colour_trace(&mut session, false);
+        let aware = colour_trace(&mut session, true);
+
+        // Without it, one fade is a pile of unrelated colours; the pile is the
+        // reason this exists, so the test fails if the pile stops being one.
+        assert!(
+            plain["path_count"].as_u64().expect("a count") > 5,
+            "`{}`: {plain}",
+            fixture.name
+        );
+        assert_eq!(aware["path_count"], 1, "`{}`: {aware}", fixture.name);
+        let kind = &aware["paths"][0]["appearance"]["fill"]["kind"];
+        assert_eq!(
+            kind.as_str().map(|kind| kind.trim_end_matches("_gradient")),
+            fixture.name.strip_suffix("_gradient"),
+            "`{}`: {aware}",
+            fixture.name
+        );
+        insta::assert_snapshot!(format!("trace_{}", fixture.name), trace_golden(aware));
+    }
+}
+
+#[test]
+fn a_translucent_fill_is_traced_with_the_opacity_a_trace_would_drop() {
+    let fixture = corpus::translucent_fill();
+    let mut session = Session::open(&fixture, &fixture.construction);
+
+    let plain = colour_trace(&mut session, false);
+    let aware = colour_trace(&mut session, true);
+
+    assert!(
+        !plain["svg"]
+            .as_str()
+            .expect("markup")
+            .contains("fill-opacity"),
+        "{plain}"
+    );
+    let svg = aware["svg"].as_str().expect("markup");
+    assert!(svg.contains(r#"fill-opacity="0.5""#), "{svg}");
+    assert_eq!(aware["paths"][0]["fill_colour"], "#c81e1e");
+    insta::assert_snapshot!("trace_translucent_fill", trace_golden(aware));
+}
+
+#[test]
+fn a_hard_step_is_reported_as_a_fallback_and_traced_as_it_always_was() {
+    // The counterpart that lets the tests above fail: a trace that lifted
+    // anything varied would pass them, and would invent a gradient here.
+    let fixture = corpus::hard_step();
+    let mut session = Session::open(&fixture, &fixture.construction);
+
+    let plain = colour_trace(&mut session, false);
+    let aware = colour_trace(&mut session, true);
+
+    assert_eq!(aware["svg"], plain["svg"]);
+    assert_eq!(aware["fallbacks"][0]["region_id"], 0, "{aware}");
+    assert!(plain.get("fallbacks").is_none(), "{plain}");
+}
+
+#[test]
+fn a_traced_gradient_can_be_read_as_outline_and_as_fill_separately() {
+    let fixture = corpus::gradient_badge();
+    let mut session = Session::open(&fixture, &fixture.construction);
+    let analysis = session.analysis();
+    let aware = colour_trace(&mut session, true);
+
+    let lifted: Vec<&Value> = aware["paths"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter(|path| path.get("region_id").is_some())
+        .collect();
+    assert_eq!(lifted.len(), 1, "only the panel is a gradient: {aware}");
+    let path = lifted[0];
+
+    // The outline joins the analysis by `region_id`: the geometry the trace
+    // measured lands on the region the analysis measured.
+    let region = analysis["regions"]
+        .as_array()
+        .expect("regions")
+        .iter()
+        .find(|region| region["id"] == path["region_id"])
+        .expect("the region the path came from");
+    for (traced, measured) in [
+        ("bounding_box.x", "bounding_box.x"),
+        ("bounding_box.y", "bounding_box.y"),
+        ("bounding_box.width", "bounding_box.width"),
+        ("bounding_box.height", "bounding_box.height"),
+    ] {
+        assert!(
+            (number(path, traced) - number(region, measured)).abs() <= 1.5,
+            "{traced}: {path} against {region}"
+        );
+    }
+
+    // The fill is the analysis's own, unchanged, so what an agent reads from
+    // either tool is one fact.
+    assert_eq!(
+        path["appearance"]["fill"],
+        analysis["appearance"]["regions"]
+            .as_array()
+            .expect("regions")
+            .iter()
+            .find(|entry| entry["region_id"] == path["region_id"])
+            .expect("the region's appearance")["fill"]
+    );
+    insta::assert_snapshot!("trace_gradient_badge", trace_golden(aware));
+}
+
+#[test]
+fn keeping_a_gradient_as_a_gradient_reconstructs_it_more_faithfully_than_its_layers() {
+    let fixture = corpus::gradient_badge();
+    let mut session = Session::open(&fixture, &fixture.construction);
+
+    let aware = colour_trace(&mut session, true);
+    let plain = colour_trace(&mut session, false);
+
+    session.draw(trace_body(plain["svg"].as_str().expect("markup")));
+    let plain_error = number(&session.compare(), "pixel_error.mean_absolute_error");
+    session.draw(trace_body(aware["svg"].as_str().expect("markup")));
+    let comparison = session.compare();
+    let aware_error = number(&comparison, "pixel_error.mean_absolute_error");
+
+    // The hybrid is both smaller and closer: two paths, not dozens, and the
+    // ramp is drawn as a ramp instead of as its nearest few colours.
+    assert!(aware["path_count"].as_u64() < plain["path_count"].as_u64());
+    assert!(
+        aware_error < plain_error,
+        "aware {aware_error} against plain {plain_error}"
+    );
+    assert!(overlap(&comparison) > 0.9, "{comparison:#}");
+
+    // The window in the panel is still a window: the lifted outline kept its
+    // hole, and the gradient is painted around it and not across it.
+    let render = image::load_from_memory(&session.render(64))
+        .expect("a PNG")
+        .to_rgba8();
+    assert_eq!(render.get_pixel(32, 24)[3], 0, "the window is filled in");
+    assert_eq!(render.get_pixel(16, 24)[3], 255, "the panel is missing");
+}
+
 #[test]
 fn tracing_light_artwork_without_inverting_traces_the_background_instead() {
     let fixture = corpus::named("light_on_dark");

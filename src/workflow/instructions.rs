@@ -55,8 +55,12 @@ a letter, an animal or a shield, remains your judgement: measurement cannot name
 
 A region is not always one colour. The `appearance` in that analysis says per region whether \
 its fill is `flat`, a `linear_gradient` or `radial_gradient` with an axis or centre and stops, \
-or `varied`. A trace can only produce flat fills, so build a gradient yourself from those \
-stops. `varied` means it was not vouched for as a gradient, so do not assume one. A `stroke` \
+or `varied`. A `colour` trace does not fragment a gradient into flat layers: it returns the \
+region as one path with its `region_id` and the same measured `appearance`, and paints it \
+with that fill, so take the path's outline and the fill as two separate pieces of evidence \
+and check the result with `compare_reference`. `varied` means it was not vouched for as a \
+gradient, so do not assume one; the trace lists it under `fallbacks` and leaves it as flat \
+layers. A `silhouette` trace is geometry only. A `stroke` \
 is a candidate from the region's geometry alone: a ring may equally be a filled shape. \
 Opacity is reported apart from colour, so a translucent fill keeps its colour and an \
 `opacity` to apply.

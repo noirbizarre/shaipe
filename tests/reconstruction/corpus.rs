@@ -748,6 +748,42 @@ pub fn speckled_fill() -> Fixture {
     appearance_fixture("speckled_fill", &canvas, String::new())
 }
 
+/// A gradient panel with a transparent window cut through it, and a flat bar
+/// beneath: the smallest reference where a trace has both to keep apart.
+///
+/// The panel is one region whose outline has a hole and whose fill is a ramp;
+/// the bar is a second region of one flat colour. A control beside the corpus,
+/// like the other appearance fixtures. Its `strategy` is not asserted, because
+/// the recommendation reads no appearance (ADR 026).
+pub fn gradient_badge() -> Fixture {
+    const BAR: [u8; 4] = [20, 20, 40, 255];
+    let mut canvas = Canvas::transparent();
+    canvas.fill_with((8, 8, 56, 40), |x, y| {
+        if (26..38).contains(&x) && (18..30).contains(&y) {
+            [0, 0, 0, 0]
+        } else {
+            mix(RED, BLUE, x - 8, 47)
+        }
+    });
+    canvas.fill_with((8, 46, 56, 56), |_, _| BAR);
+    Fixture {
+        name: "gradient_badge",
+        png: canvas.png(),
+        construction: format!(
+            r#"<defs><linearGradient id="ramp" gradientUnits="userSpaceOnUse" x1="8" y1="0" x2="56" y2="0"><stop offset="0" stop-color="{}"/><stop offset="1" stop-color="{}"/></linearGradient></defs><path fill-rule="evenodd" d="M8 8H56V40H8Z M26 18H38V30H26Z" fill="url(#ramp)"/><rect x="8" y="46" width="48" height="10" fill="{}"/>"#,
+            hex([RED[0], RED[1], RED[2]]),
+            hex([BLUE[0], BLUE[1], BLUE[2]]),
+            hex([BAR[0], BAR[1], BAR[2]]),
+        ),
+        expected: Expected {
+            regions: 2..=2,
+            holes: 1..=1,
+            dominant_colours: 1..=8,
+            strategy: "hybrid",
+        },
+    }
+}
+
 /// The whole corpus, in a fixed order.
 pub fn all() -> Vec<Fixture> {
     vec![

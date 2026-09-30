@@ -3,7 +3,7 @@
 ## Status
 
 Accepted. Its scope was extended by [ADR-018](018-structured-reference-measurement.md)
-to [ADR-024](024-reconstruction-fixtures-and-evaluation-loop.md); see
+to [ADR-026](026-appearance-aware-tracing.md); see
 *Update: where this fits now* at the end, which corrects the statements
 below that are no longer true.
 

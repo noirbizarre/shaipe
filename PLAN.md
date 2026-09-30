@@ -290,6 +290,10 @@ see `docs/adr/004-tools-not-a-model.md`.
 - [x] Appearance analysis: per region, a flat, linear-gradient,
       radial-gradient or varied fill with axis or centre and stops, opacity
       apart from colour, and stroke-like geometry as a candidate — ADR-025
+- [x] Appearance-aware colour tracing: a gradient or translucent fill is traced
+      once as its outline and painted with the measured fill, geometry and
+      appearance joined by `region_id`, what varies but is no gradient listed
+      as a fallback, `appearance: false` for plain layers — ADR-026
 
 ## Artwork
 
@@ -337,7 +341,7 @@ Toolchain, docs, release.
 - [ ] Epic 2 — workflow-oriented TUI and workspace redesign: workflow-first information architecture, visual comparison, iteration history and human/agent interaction — #32.
 - [ ] Epic 3 — agent and harness integration: reusable skills, headless workflow access, permissions and external harness validation — #37.
 - [ ] Add appearance analysis for gradients, transparency and strokes — #28.
-- [ ] Make tracing gradient- and appearance-aware without turning it into a monolithic vectorizer — #29.
+- [x] Make tracing gradient- and appearance-aware without turning it into a monolithic vectorizer — #29.
 - [ ] Extend comparison with appearance-aware diagnostics — #30.
 - [ ] Add deterministic appearance fixtures and evaluation coverage — #31.
 - [ ] Define workflow-first workspace information architecture — #33.

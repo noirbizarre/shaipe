@@ -304,7 +304,7 @@ decided in your agent. Your agent is configured and authenticated in your agent.
 | `get_references` | Files attached for context, and whether they exist |
 | `get_reference_analysis` | Measure a reference's pixels into objective facts — dimensions, colours, regions, holes, symmetry, and how each region is filled (flat, gradient, transparency, stroke) |
 | `get_reference_image` | Look at an attached raster reference, with its pixel dimensions |
-| `get_reference_trace` | Trace a reference's pixels into vector paths, algorithmically |
+| `get_reference_trace` | Trace a reference's pixels into vector paths, algorithmically; a gradient stays one painted path |
 | `compare_reference` | Render a variant at a reference's size and report how they differ, with an overlay and a difference image |
 | `get_workflow` | Name the reconstruction workflow's phases for `from_scratch`/`reference`/`hybrid` work, and recommend a construction strategy |
 | `get_svg` | The document, exactly as it is |
@@ -336,7 +336,10 @@ infers it from what is attached.
 
 - **Tracing is measurement, not generation.** `get_reference_trace` reads pixels
   into paths, the same bytes giving the same output. It returns a candidate; the
-  agent decides what to keep and lands it with `write_variant`.
+  agent decides what to keep and lands it with `write_variant`. In `colour` mode
+  a gradient or translucent fill stays one path painted with its measured fill
+  ([ADR-026](docs/adr/026-appearance-aware-tracing.md)), rather than a stack of
+  flat layers.
 - **Deterministic Rust** decodes, measures, traces, renders, compares and
   validates a write. **The model** decides what the mark is, whether to trace,
   and what to change next. Nothing enforces the phases; they are guidance.

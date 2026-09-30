@@ -11,6 +11,11 @@
 //! module's later growth: a second, colour-aware mode, structured metadata
 //! measured off the traced result itself, and a standalone preview raster.
 //!
+//! In colour mode a region whose fill is a measured gradient, or a colour drawn
+//! translucent, is not fragmented into flat layers: it is traced once, as a
+//! silhouette, and painted with what [`crate::analysis`] measured. See
+//! ADR 026 and [`TraceOptions::appearance`].
+//!
 //! Self-contained and deterministic: bytes in, a typed [`Traced`] report out,
 //! no knowledge of `Project`, tools or MCP — mirroring [`crate::render`]'s
 //! isolation from the terminal. Given the same bytes and the same
@@ -25,7 +30,12 @@ use image::GenericImageView;
 use serde::Serialize;
 use vtracer::{ColorImage, Config, Preset};
 
+use crate::analysis::{self, Analysis};
 use crate::error::{Error, Result};
+
+mod lift;
+
+pub use lift::{Fallback, PathAppearance};
 
 /// How many entries [`Traced::paths`] holds at most. [`Traced::path_count`]
 /// still reports the true total, so a caller can tell a clean trace from a
@@ -69,7 +79,7 @@ impl std::fmt::Display for TraceMode {
 /// (watershed clustering, a fixed palette, mosaic compositing). Extend this
 /// further if real usage needs more, the way `set_` was "anticipated but not
 /// used" until it was (ADR-007).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct TraceOptions {
     /// Which frontend traces the reference.
     pub mode: TraceMode,
@@ -94,6 +104,26 @@ pub struct TraceOptions {
     /// merging the rest into their nearest neighbour. `None` lets vtracer's
     /// own clustering decide.
     pub max_colors: Option<usize>,
+    /// `Colour` only: keep a gradient, or a colour drawn translucent, as one
+    /// path painted with its measured fill rather than as stacked flat layers.
+    /// On by default; `false` gives the plain colour trace, which is the
+    /// evidence of what the layers would have been.
+    pub appearance: bool,
+}
+
+impl Default for TraceOptions {
+    fn default() -> Self {
+        Self {
+            mode: TraceMode::default(),
+            threshold: None,
+            invert: false,
+            max_colors: None,
+            // On, because the alternative is silently destroying the fill: an
+            // agent that did not know to ask would get ten unrelated colours
+            // for one gradient.
+            appearance: true,
+        }
+    }
 }
 
 /// A rectangle in the traced SVG's own coordinate space — pixels of the
@@ -136,6 +166,15 @@ pub struct TracedPath {
     /// output never produces the first two today, so this is `Some` in
     /// practice.
     pub fill_colour: Option<String>,
+    /// The [`crate::analysis::Region::id`] this path was lifted from, when it
+    /// was. `None` for an ordinary colour layer. It is the key between this
+    /// path and `analysis.regions` / `analysis.appearance.regions`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region_id: Option<usize>,
+    /// How a lifted path is painted, apart from its outline. Present exactly
+    /// when `region_id` is; the geometry above does not depend on it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<PathAppearance>,
 }
 
 /// Everything [`trace`] measured about a reference, alongside the SVG markup
@@ -160,6 +199,11 @@ pub struct Traced {
     /// Traced paths, largest bounding-box area first, capped at
     /// [`MAX_TRACED_PATHS`].
     pub paths: Vec<TracedPath>,
+    /// Regions whose colour varies but which could not be lifted as a
+    /// gradient, left as flat layers, and why. Empty in silhouette mode, with
+    /// `appearance` off, and when nothing varies.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fallbacks: Vec<Fallback>,
 }
 
 /// Decode `bytes` (PNG/JPEG/GIF/WEBP/BMP — the formats
@@ -186,6 +230,8 @@ pub fn trace(path: &Path, bytes: &[u8], options: TraceOptions) -> Result<Traced>
 
     let (width, height) = decoded.dimensions();
     let mut pixels = decoded.to_rgba8().into_raw();
+    let mut lifted = None;
+    let mut fallbacks = Vec::new();
 
     let config = match options.mode {
         TraceMode::Silhouette => {
@@ -211,30 +257,74 @@ pub fn trace(path: &Path, bytes: &[u8], options: TraceOptions) -> Result<Traced>
             if let Some(max_colors) = options.max_colors {
                 config.max_colors = Some(max_colors);
             }
+
+            if options.appearance {
+                let (analysis, region_map) = analysis::analyze_with_regions(path, bytes)?;
+                let decision = lift::decide(&analysis);
+                fallbacks = decision.fallbacks;
+                if !decision.lifts.is_empty() {
+                    lift::blank(
+                        &mut pixels,
+                        &region_map,
+                        &decision.lifts,
+                        background_of(&analysis),
+                    );
+                    lifted = Some(lift::render(
+                        path,
+                        &decision.lifts,
+                        &region_map,
+                        width as usize,
+                        height as usize,
+                    )?);
+                }
+            }
             config
         }
     };
 
-    let image = ColorImage {
-        pixels,
-        width: width as usize,
-        height: height as usize,
+    // vtracer's clustering divides by the number of opaque pixels, so an
+    // image with none panics rather than tracing to nothing. Colour tracing
+    // reaches that state either with a fully transparent reference or, now,
+    // once every region has been lifted out of it.
+    let has_ink = pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 0)
+        || options.mode == TraceMode::Silhouette;
+
+    let mut svg = if has_ink {
+        let image = ColorImage {
+            pixels,
+            width: width as usize,
+            height: height as usize,
+        };
+        // `Config::build` only fails for a config this module never produces
+        // (`Hierarchical::Cutout` needs an area frontend can't feed it — see
+        // vtracer's own `Compositing::Mosaic` docs); a config error here would be
+        // a bug in this function, not something a caller passed in, so it is not
+        // its own `Error` variant. Same for `Pipeline::to_svg`'s error: the only
+        // failure it can return beyond a bad config is `Cancelled`, and nothing
+        // here ever creates a `CancelToken` that gets tripped.
+        config
+            .build()
+            .and_then(|pipeline| pipeline.to_svg(&image))
+            .map_err(|source| Error::Trace {
+                path: path.to_path_buf(),
+                reason: source.to_string(),
+            })?
+    } else {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<svg version=\"1.1\" \
+             xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\">\n</svg>\n"
+        )
     };
 
-    // `Config::build` only fails for a config this module never produces
-    // (`Hierarchical::Cutout` needs an area frontend can't feed it — see
-    // vtracer's own `Compositing::Mosaic` docs); a config error here would be
-    // a bug in this function, not something a caller passed in, so it is not
-    // its own `Error` variant. Same for `Pipeline::to_svg`'s error: the only
-    // failure it can return beyond a bad config is `Cancelled`, and nothing
-    // here ever creates a `CancelToken` that gets tripped.
-    let svg = config
-        .build()
-        .and_then(|pipeline| pipeline.to_svg(&image))
-        .map_err(|source| Error::Trace {
-            path: path.to_path_buf(),
-            reason: source.to_string(),
-        })?;
+    // The lifted paths go last: they cover only the pixels that were blanked,
+    // so nothing they draw over belongs to another layer, and being last
+    // keeps a region's translucency composited over the background beneath.
+    if let Some(rendered) = &lifted {
+        let close = svg
+            .rfind("</svg>")
+            .expect("vtracer's own output, and the shell above, both close the root");
+        svg.insert_str(close, &rendered.markup);
+    }
 
     if !svg.contains("<path") {
         return Err(Error::EmptyTrace {
@@ -242,7 +332,14 @@ pub fn trace(path: &Path, bytes: &[u8], options: TraceOptions) -> Result<Traced>
         });
     }
 
-    let (bounding_box, path_count, paths) = measure(&svg);
+    let (bounding_box, path_count, mut paths) = measure(&svg);
+    if let Some(rendered) = lifted {
+        for traced in &mut paths {
+            traced.appearance = traced
+                .region_id
+                .and_then(|region| rendered.appearances.get(&region).cloned());
+        }
+    }
 
     Ok(Traced {
         mode: options.mode,
@@ -250,7 +347,19 @@ pub fn trace(path: &Path, bytes: &[u8], options: TraceOptions) -> Result<Traced>
         bounding_box,
         path_count,
         paths,
+        fallbacks,
     })
+}
+
+/// The colour the reference's border says its background is, when it has one.
+fn background_of(analysis: &Analysis) -> Option<[u8; 3]> {
+    let hex = analysis
+        .background
+        .border_colour
+        .as_deref()?
+        .strip_prefix('#')?;
+    let channel = |range: std::ops::Range<usize>| u8::from_str_radix(hex.get(range)?, 16).ok();
+    Some([channel(0..2)?, channel(2..4)?, channel(4..6)?])
 }
 
 /// Rasterise `svg` (as produced by [`trace`]) to PNG bytes, at its own native
@@ -315,6 +424,13 @@ fn invert_rgb(pixels: &mut [u8]) {
     }
 }
 
+/// A path as measured off the traced SVG, before it is numbered.
+struct Raw {
+    bounding_box: BoundingBox,
+    fill_colour: Option<String>,
+    region_id: Option<usize>,
+}
+
 /// Measure the SVG `trace` just produced: parse it back with `usvg` — the
 /// same library [`crate::render`] already parses every project SVG with, so
 /// "how big is what was traced" is answered by the same geometry engine that
@@ -329,7 +445,7 @@ fn measure(svg: &str) -> (BoundingBox, usize, Vec<TracedPath>) {
     let tree = usvg::Tree::from_str(svg, &usvg::Options::default())
         .expect("this module's own SVG output always parses back");
 
-    let mut raw: Vec<(BoundingBox, Option<String>)> = Vec::new();
+    let mut raw: Vec<Raw> = Vec::new();
     collect_paths(tree.root(), &mut raw);
 
     // Sorted by bounding-box area descending, ties broken by top-left corner
@@ -337,24 +453,27 @@ fn measure(svg: &str) -> (BoundingBox, usize, Vec<TracedPath>) {
     // `crate::analysis::Region` uses, so `id` survives truncation to
     // `MAX_TRACED_PATHS` unchanged regardless of tree-walk order.
     raw.sort_by(|a, b| {
-        area(&b.0)
-            .total_cmp(&area(&a.0))
-            .then(a.0.y.total_cmp(&b.0.y))
-            .then(a.0.x.total_cmp(&b.0.x))
+        area(&b.bounding_box)
+            .total_cmp(&area(&a.bounding_box))
+            .then(a.bounding_box.y.total_cmp(&b.bounding_box.y))
+            .then(a.bounding_box.x.total_cmp(&b.bounding_box.x))
     });
 
     let path_count = raw.len();
-    let bounding_box = union(raw.iter().map(|(bounding_box, _)| *bounding_box));
+    let bounding_box = union(raw.iter().map(|path| path.bounding_box));
 
     let paths = raw
         .into_iter()
         .take(MAX_TRACED_PATHS)
         .enumerate()
-        .map(|(id, (bounding_box, fill_colour))| TracedPath {
+        .map(|(id, path)| TracedPath {
             id,
-            bounding_box,
-            area: area(&bounding_box),
-            fill_colour,
+            bounding_box: path.bounding_box,
+            area: area(&path.bounding_box),
+            fill_colour: path.fill_colour,
+            region_id: path.region_id,
+            // Attached by `trace`, which is what holds the measurements.
+            appearance: None,
         })
         .collect();
 
@@ -365,7 +484,7 @@ fn measure(svg: &str) -> (BoundingBox, usize, Vec<TracedPath>) {
 /// fill colour (if any). Recurses into nested groups — vtracer's own writer
 /// does not currently nest paths inside a `<g>`, but nothing here assumes it
 /// never will.
-fn collect_paths(group: &usvg::Group, out: &mut Vec<(BoundingBox, Option<String>)>) {
+fn collect_paths(group: &usvg::Group, out: &mut Vec<Raw>) {
     for node in group.children() {
         match node {
             usvg::Node::Group(child) => collect_paths(child, out),
@@ -378,15 +497,16 @@ fn collect_paths(group: &usvg::Group, out: &mut Vec<(BoundingBox, Option<String>
                     )),
                     _ => None,
                 });
-                out.push((
-                    BoundingBox {
+                out.push(Raw {
+                    bounding_box: BoundingBox {
                         x: f64::from(bbox.x()),
                         y: f64::from(bbox.y()),
                         width: f64::from(bbox.width()),
                         height: f64::from(bbox.height()),
                     },
                     fill_colour,
-                ));
+                    region_id: lift::region_of(path.id()),
+                });
             }
             // vtracer's own writer emits only `<path>` elements (and the
             // `<svg>` root, which arrives here as the outer `Group`) — never
@@ -817,6 +937,240 @@ mod tests {
 
         assert_eq!(traced.path_count, 49, "{}", traced.svg);
         assert_eq!(traced.paths.len(), MAX_TRACED_PATHS);
+    }
+
+    /// A square that ramps from red on the left to blue on the right, on a
+    /// transparent canvas, with an optional flat bar beside it.
+    fn gradient_png(with_bar: bool) -> Vec<u8> {
+        let size = 64;
+        let mut img = image::RgbaImage::new(size, size);
+        for y in 12..40 {
+            for x in 12..52 {
+                let t = f64::from(x - 12) / 39.0;
+                img.put_pixel(
+                    x,
+                    y,
+                    image::Rgba([
+                        (200.0 - 170.0 * t) as u8,
+                        (30.0 + 10.0 * t) as u8,
+                        (30.0 + 180.0 * t) as u8,
+                        255,
+                    ]),
+                );
+            }
+        }
+        if with_bar {
+            for y in 46..54 {
+                for x in 12..52 {
+                    img.put_pixel(x, y, image::Rgba([20, 120, 40, 255]));
+                }
+            }
+        }
+        encode(&img)
+    }
+
+    fn colour_options(appearance: bool) -> TraceOptions {
+        TraceOptions {
+            mode: TraceMode::Colour,
+            appearance,
+            ..TraceOptions::default()
+        }
+    }
+
+    #[test]
+    fn a_gradient_is_one_painted_path_rather_than_a_stack_of_flat_layers() {
+        let bytes = gradient_png(false);
+        let path = Path::new("gradient.png");
+
+        let plain = trace(path, &bytes, colour_options(false)).unwrap();
+        let aware = trace(path, &bytes, colour_options(true)).unwrap();
+
+        // The harm this exists for: without it, one fade is many colours.
+        assert!(plain.path_count > 3, "{}", plain.svg);
+        assert_eq!(aware.path_count, 1, "{}", aware.svg);
+        assert!(aware.svg.contains("<linearGradient"), "{}", aware.svg);
+        let lifted = &aware.paths[0];
+        assert!(lifted.region_id.is_some());
+        assert!(
+            matches!(
+                lifted.appearance.as_ref().map(|a| &a.fill),
+                Some(crate::analysis::Fill::LinearGradient { .. })
+            ),
+            "{lifted:?}"
+        );
+        assert_eq!(lifted.fill_colour, None, "a gradient is not a solid fill");
+    }
+
+    #[test]
+    fn the_lifted_path_keeps_the_geometry_the_gradient_covers() {
+        let aware = trace(
+            Path::new("gradient.png"),
+            &gradient_png(false),
+            colour_options(true),
+        )
+        .unwrap();
+
+        let bbox = aware.paths[0].bounding_box;
+        assert!(
+            (bbox.x - 12.0).abs() < 1.5 && (bbox.width - 40.0).abs() < 2.5,
+            "{bbox:?}"
+        );
+        assert!(
+            (bbox.y - 12.0).abs() < 1.5 && (bbox.height - 28.0).abs() < 2.5,
+            "{bbox:?}"
+        );
+    }
+
+    #[test]
+    fn a_gradient_beside_a_flat_colour_lifts_only_the_gradient() {
+        let aware = trace(
+            Path::new("gradient.png"),
+            &gradient_png(true),
+            colour_options(true),
+        )
+        .unwrap();
+
+        let lifted: Vec<_> = aware
+            .paths
+            .iter()
+            .filter(|p| p.region_id.is_some())
+            .collect();
+        let layers: Vec<_> = aware
+            .paths
+            .iter()
+            .filter(|p| p.region_id.is_none())
+            .collect();
+        assert_eq!(lifted.len(), 1, "{}", aware.svg);
+        assert_eq!(layers.len(), 1, "{}", aware.svg);
+        assert!(layers[0].appearance.is_none());
+        assert!(layers[0].fill_colour.is_some());
+        assert!(aware.fallbacks.is_empty(), "{:?}", aware.fallbacks);
+    }
+
+    #[test]
+    fn a_translucent_flat_fill_keeps_its_opacity() {
+        let mut img = image::RgbaImage::new(64, 64);
+        for y in 12..52 {
+            for x in 12..52 {
+                img.put_pixel(x, y, image::Rgba([200, 30, 30, 128]));
+            }
+        }
+        let bytes = encode(&img);
+        let path = Path::new("translucent.png");
+
+        let aware = trace(path, &bytes, colour_options(true)).unwrap();
+
+        assert_eq!(aware.path_count, 1, "{}", aware.svg);
+        assert!(aware.svg.contains("fill-opacity=\"0.5\""), "{}", aware.svg);
+        assert_eq!(aware.paths[0].fill_colour.as_deref(), Some("#c81e1e"));
+        assert!(aware.paths[0].appearance.is_some());
+
+        // A plain trace has no way to say it: the fill comes back full strength.
+        let plain = trace(path, &bytes, colour_options(false)).unwrap();
+        assert!(!plain.svg.contains("fill-opacity"), "{}", plain.svg);
+    }
+
+    #[test]
+    fn colour_that_varies_without_being_a_gradient_is_reported_and_left_as_layers() {
+        // Two flat colours side by side: one region, a hard step, no ramp.
+        let mut img = image::RgbaImage::new(64, 64);
+        for y in 12..52 {
+            for x in 12..52 {
+                let colour = if x < 32 {
+                    [200, 30, 30, 255]
+                } else {
+                    [30, 40, 210, 255]
+                };
+                img.put_pixel(x, y, image::Rgba(colour));
+            }
+        }
+        let bytes = encode(&img);
+        let path = Path::new("step.png");
+
+        let aware = trace(path, &bytes, colour_options(true)).unwrap();
+        let plain = trace(path, &bytes, colour_options(false)).unwrap();
+
+        assert_eq!(
+            aware.svg, plain.svg,
+            "nothing was lifted, so nothing changed"
+        );
+        assert_eq!(aware.fallbacks.len(), 1, "{:?}", aware.fallbacks);
+        assert!(aware.fallbacks[0].reason.contains("flat colour layers"));
+        assert!(plain.fallbacks.is_empty());
+    }
+
+    #[test]
+    fn artwork_with_nothing_to_lift_traces_the_same_with_or_without_appearance() {
+        let bytes = coloured_discs_png(96, &[[220, 30, 30], [30, 90, 220], [40, 180, 60]]);
+        let path = Path::new("discs.png");
+
+        let aware = trace(path, &bytes, colour_options(true)).unwrap();
+        let plain = trace(path, &bytes, colour_options(false)).unwrap();
+
+        assert_eq!(aware.svg, plain.svg);
+        assert!(aware.paths.iter().all(|p| p.region_id.is_none()));
+    }
+
+    #[test]
+    fn appearance_aware_tracing_is_deterministic() {
+        let bytes = gradient_png(true);
+        let path = Path::new("gradient.png");
+
+        let first = trace(path, &bytes, colour_options(true)).unwrap();
+        let second = trace(path, &bytes, colour_options(true)).unwrap();
+
+        assert_eq!(first.svg, second.svg);
+    }
+
+    #[test]
+    fn silhouette_tracing_ignores_appearance() {
+        let bytes = gradient_png(false);
+        let path = Path::new("gradient.png");
+        let with = TraceOptions {
+            appearance: true,
+            ..TraceOptions::default()
+        };
+        let without = TraceOptions {
+            appearance: false,
+            ..TraceOptions::default()
+        };
+
+        assert_eq!(
+            trace(path, &bytes, with).unwrap().svg,
+            trace(path, &bytes, without).unwrap().svg
+        );
+    }
+
+    #[test]
+    fn a_fully_transparent_reference_is_an_empty_trace_not_a_panic() {
+        let bytes = encode(&image::RgbaImage::new(32, 32));
+
+        for appearance in [true, false] {
+            let error =
+                trace(Path::new("clear.png"), &bytes, colour_options(appearance)).unwrap_err();
+            assert!(matches!(error, Error::EmptyTrace { .. }), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn a_lifted_path_previews_with_its_gradient() {
+        let traced = trace(
+            Path::new("gradient.png"),
+            &gradient_png(false),
+            colour_options(true),
+        )
+        .unwrap();
+
+        let decoded = image::load_from_memory(&preview(&traced.svg))
+            .unwrap()
+            .to_rgba8();
+        let left = decoded.get_pixel(16, 26);
+        let right = decoded.get_pixel(48, 26);
+
+        assert!(
+            left[0] > 150 && right[2] > 150,
+            "left {left:?} right {right:?}"
+        );
     }
 
     #[test]
