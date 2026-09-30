@@ -1,0 +1,121 @@
+---
+source: tests/reconstruction.rs
+expression: "snapshot_text(analysis, 1)"
+---
+{
+  "dimensions": {
+    "width": 64,
+    "height": 64,
+    "aspect_ratio": 1.0
+  },
+  "background": {
+    "transparent_fraction": 0.7,
+    "border_colour": null,
+    "border_uniformity": 1.0
+  },
+  "dominant_colours": [
+    {
+      "colour": "#1030d0",
+      "fraction": 0.6
+    },
+    {
+      "colour": "#d01010",
+      "fraction": 0.2
+    },
+    {
+      "colour": "#703070",
+      "fraction": 0.1
+    }
+  ],
+  "foreground": {
+    "pixel_fraction": 0.3,
+    "bounding_box": {
+      "x": 10,
+      "y": 10,
+      "width": 44,
+      "height": 44
+    }
+  },
+  "region_count": 1,
+  "regions": [
+    {
+      "id": 0,
+      "bounding_box": {
+        "x": 10,
+        "y": 10,
+        "width": 44,
+        "height": 44
+      },
+      "area": 1432,
+      "centroid": {
+        "x": 31.1,
+        "y": 31.1
+      }
+    }
+  ],
+  "hole_count": 0,
+  "holes": [],
+  "symmetry": {
+    "horizontal": 0.5,
+    "vertical": 0.5
+  },
+  "appearance": {
+    "alpha": {
+      "transparent_fraction": 0.7,
+      "translucent_fraction": 0.1,
+      "opaque_fraction": 0.2,
+      "interior_translucent_fraction": 0.1
+    },
+    "regions": [
+      {
+        "region_id": 0,
+        "fill": {
+          "kind": "linear_gradient",
+          "start": {
+            "x": 10.0,
+            "y": 10.0
+          },
+          "end": {
+            "x": 53.0,
+            "y": 53.0
+          },
+          "angle_degrees": 45.0,
+          "stops": [
+            {
+              "offset": 0.0,
+              "colour": "#1e28d2",
+              "opacity": 1.0
+            },
+            {
+              "offset": 0.4,
+              "colour": "#1e28d2",
+              "opacity": 1.0
+            },
+            {
+              "offset": 0.5,
+              "colour": "#6a2481",
+              "opacity": 1.0
+            },
+            {
+              "offset": 0.7,
+              "colour": "#c71e20",
+              "opacity": 0.5
+            },
+            {
+              "offset": 1.0,
+              "colour": "#c81e1e",
+              "opacity": 0.5
+            }
+          ],
+          "fit": 0.9
+        },
+        "opacity": {
+          "min": 0.5,
+          "mean": 0.8,
+          "max": 1.0
+        },
+        "stroke": null
+      }
+    ]
+  }
+}

@@ -343,7 +343,7 @@ Toolchain, docs, release.
 - [ ] Add appearance analysis for gradients, transparency and strokes — #28.
 - [x] Make tracing gradient- and appearance-aware without turning it into a monolithic vectorizer — #29.
 - [x] Extend comparison with appearance-aware diagnostics — #30.
-- [ ] Add deterministic appearance fixtures and evaluation coverage — #31.
+- [x] Add deterministic appearance fixtures and evaluation coverage — #31.
 - [ ] Define workflow-first workspace information architecture — #33.
 - [ ] Build the workflow and comparison workspace — #34.
 - [ ] Rework agent interaction around workflow actions — #35.

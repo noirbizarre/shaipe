@@ -784,6 +784,116 @@ pub fn gradient_badge() -> Fixture {
     }
 }
 
+/// A radial gradient whose rim fades out over two pixels instead of ending
+/// hard: the edge has partial alpha that is not the interior's translucency.
+pub fn antialiased_gradient() -> Fixture {
+    let mut canvas = Canvas::transparent();
+    let radius = 22;
+    canvas.fill_with((8, 8, 56, 56), |x, y| {
+        let squared = (x - 32) * (x - 32) + (y - 32) * (y - 32);
+        let d = squared.isqrt();
+        let [r, g, b, _] = mix(RED, BLUE, d.min(radius) * 4, radius * 4);
+        match d {
+            0..=20 => [r, g, b, 255],
+            21 => [r, g, b, 170],
+            22 => [r, g, b, 85],
+            _ => [0, 0, 0, 0],
+        }
+    });
+    appearance_fixture(
+        "antialiased_gradient",
+        &canvas,
+        format!(
+            r#"<defs><radialGradient id="glow" gradientUnits="userSpaceOnUse" cx="32" cy="32" r="22"><stop offset="0" stop-color="{}"/><stop offset="1" stop-color="{}"/></radialGradient></defs><circle cx="32" cy="32" r="22" fill="url(#glow)"/>"#,
+            hex([RED[0], RED[1], RED[2]]),
+            hex([BLUE[0], BLUE[1], BLUE[2]]),
+        ),
+    )
+}
+
+/// A four-pixel ring, as a stroked circle draws it.
+pub fn stroked_ring() -> Fixture {
+    const INK: [u8; 4] = [20, 20, 20, 255];
+    let mut canvas = Canvas::transparent();
+    canvas.fill_with((8, 8, 56, 56), |x, y| {
+        let squared = (x - 32) * (x - 32) + (y - 32) * (y - 32);
+        if (18 * 18..22 * 22).contains(&squared) {
+            INK
+        } else {
+            [0, 0, 0, 0]
+        }
+    });
+    appearance_fixture(
+        "stroked_ring",
+        &canvas,
+        r##"<circle cx="32" cy="32" r="20" fill="none" stroke="#141414" stroke-width="4"/>"##
+            .to_owned(),
+    )
+}
+
+/// A three-pixel horizontal bar, as a stroked line draws it.
+pub fn stroked_bar() -> Fixture {
+    const INK: [u8; 4] = [20, 20, 20, 255];
+    let mut canvas = Canvas::transparent();
+    canvas.fill_with((12, 31, 52, 34), |_, _| INK);
+    appearance_fixture(
+        "stroked_bar",
+        &canvas,
+        r##"<line x1="12" y1="32.5" x2="52" y2="32.5" stroke="#141414" stroke-width="3"/>"##
+            .to_owned(),
+    )
+}
+
+/// An opaque blue square with a half-transparent red square across its corner.
+pub fn translucent_overlay() -> Fixture {
+    let mut canvas = Canvas::transparent();
+    canvas.fill_with((10, 10, 40, 40), |_, _| BLUE);
+    canvas.fill_with((28, 28, 54, 54), |x, y| {
+        if x < 40 && y < 40 {
+            mix(BLUE, RED, 128, 255)
+        } else {
+            [RED[0], RED[1], RED[2], 128]
+        }
+    });
+    Fixture {
+        name: "translucent_overlay",
+        png: canvas.png(),
+        construction: format!(
+            r#"<rect x="10" y="10" width="30" height="30" fill="{}"/><rect x="28" y="28" width="26" height="26" fill="{}" fill-opacity="0.5"/>"#,
+            hex([BLUE[0], BLUE[1], BLUE[2]]),
+            hex([RED[0], RED[1], RED[2]]),
+        ),
+        expected: Expected {
+            regions: 1..=4,
+            holes: 0..=0,
+            dominant_colours: 1..=8,
+            strategy: "construct",
+        },
+    }
+}
+
+/// A ramp of three colour levels over forty pixels: a gradient to the eye's
+/// arithmetic and not to anyone's.
+pub fn near_flat_ramp() -> Fixture {
+    let mut canvas = Canvas::transparent();
+    canvas.fill_with((12, 12, 52, 52), |x, _| {
+        let level = ((x - 12) * 3 / 39) as u8;
+        [100 + level, 100 + level, 100 + level, 255]
+    });
+    appearance_fixture("near_flat_ramp", &canvas, String::new())
+}
+
+/// Eight-pixel blocks, each a few levels off its neighbours: what a lossy
+/// codec leaves on a flat fill.
+pub fn blocky_artefacts() -> Fixture {
+    let mut canvas = Canvas::transparent();
+    canvas.fill_with((12, 12, 52, 52), |x, y| {
+        let offset = (((x - 12) / 8 * 7 + (y - 12) / 8 * 13) % 5) as u8;
+        [120 + offset * 2, 90 + offset, 150 - offset * 2, 255]
+    });
+    appearance_fixture("blocky_artefacts", &canvas, String::new())
+}
+
 /// The whole corpus, in a fixed order.
 pub fn all() -> Vec<Fixture> {
     vec![
