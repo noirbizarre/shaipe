@@ -302,7 +302,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
-    use crate::analysis::{Background, Dimensions, Foreground, Symmetry};
+    use crate::analysis::{Appearance, Background, Dimensions, Foreground, Symmetry};
 
     /// A minimal, otherwise-empty [`Analysis`] with the three fields
     /// [`recommend_strategy`] actually reads set to the given values —
@@ -337,6 +337,7 @@ mod tests {
                 horizontal: 1.0,
                 vertical: 1.0,
             },
+            appearance: Appearance::default(),
         }
     }
 

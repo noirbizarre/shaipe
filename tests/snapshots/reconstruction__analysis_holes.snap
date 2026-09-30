@@ -107,5 +107,50 @@ expression: "snapshot_text(analysis, 4)"
   "symmetry": {
     "horizontal": 1.0,
     "vertical": 1.0
+  },
+  "appearance": {
+    "alpha": {
+      "transparent_fraction": 0.0,
+      "translucent_fraction": 0.0,
+      "opaque_fraction": 1.0,
+      "interior_translucent_fraction": 0.0
+    },
+    "regions": [
+      {
+        "region_id": 0,
+        "fill": {
+          "kind": "flat",
+          "colour": "#18181b",
+          "spread": 0.0
+        },
+        "opacity": {
+          "min": 1.0,
+          "mean": 1.0,
+          "max": 1.0
+        },
+        "stroke": {
+          "width": 9.6667,
+          "length": 130.3448,
+          "elongation": 13.4839,
+          "width_uniformity": 0.9614,
+          "closed": true,
+          "confidence": 0.9614
+        }
+      },
+      {
+        "region_id": 1,
+        "fill": {
+          "kind": "flat",
+          "colour": "#18181b",
+          "spread": 0.0
+        },
+        "opacity": {
+          "min": 1.0,
+          "mean": 1.0,
+          "max": 1.0
+        },
+        "stroke": null
+      }
+    ]
   }
 }

@@ -175,6 +175,96 @@ fn symmetry_is_exactly_one_for_a_mirrored_mark_and_low_for_an_asymmetric_one() {
     assert!(control.symmetry.vertical < 0.6, "{control:?}");
 }
 
+/// The fill of the first region, as the report says it.
+fn first_fill(analysis: &Value) -> &Value {
+    &analysis["appearance"]["regions"][0]["fill"]
+}
+
+#[test]
+fn a_linear_gradient_is_reported_with_its_axis_and_end_colours() {
+    let fixture = corpus::linear_gradient();
+    let analysis = Session::open(&fixture, &fixture.construction).analysis();
+    let fill = first_fill(&analysis);
+
+    assert_eq!(fill["kind"], "linear_gradient", "{fill}");
+    assert!(number(fill, "angle_degrees").abs() <= 2.0, "{fill}");
+    let stops = fill["stops"].as_array().expect("stops");
+    assert_eq!(stops.first().unwrap()["colour"], "#c81e1e", "{fill}");
+    assert_eq!(stops.last().unwrap()["colour"], "#1e28d2", "{fill}");
+    // The axis runs across the square, left to right, along its middle row.
+    assert!(
+        number(fill, "start.x") < 16.0 && number(fill, "end.x") > 48.0,
+        "{fill}"
+    );
+    insta::assert_snapshot!("analysis_linear_gradient", snapshot_text(analysis, 1));
+}
+
+#[test]
+fn a_radial_gradient_is_reported_with_its_centre_and_extent() {
+    let fixture = corpus::radial_gradient();
+    let analysis = Session::open(&fixture, &fixture.construction).analysis();
+    let fill = first_fill(&analysis);
+
+    assert_eq!(fill["kind"], "radial_gradient", "{fill}");
+    // Drawn about (32, 32) with radius 22.
+    assert!((number(fill, "centre.x") - 32.0).abs() <= 2.0, "{fill}");
+    assert!((number(fill, "centre.y") - 32.0).abs() <= 2.0, "{fill}");
+    assert!((16.0..=24.0).contains(&number(fill, "radius")), "{fill}");
+    insta::assert_snapshot!("analysis_radial_gradient", snapshot_text(analysis, 1));
+}
+
+#[test]
+fn transparency_is_measured_apart_from_colour() {
+    let fixture = corpus::translucent_fill();
+    let analysis = Session::open(&fixture, &fixture.construction).analysis();
+    let region = &analysis["appearance"]["regions"][0];
+
+    // One flat colour, at about half strength: alpha is not folded into RGB.
+    assert_eq!(region["fill"]["kind"], "flat", "{region}");
+    assert_eq!(region["fill"]["colour"], "#c81e1e", "{region}");
+    assert!(
+        (number(region, "opacity.mean") - 128.0 / 255.0).abs() < 1e-6,
+        "{region}"
+    );
+    assert!(number(&analysis, "appearance.alpha.interior_translucent_fraction") > 0.3);
+    insta::assert_snapshot!("analysis_translucent_fill", snapshot_text(analysis, 1));
+}
+
+#[test]
+fn colour_variation_that_is_not_a_gradient_is_not_reported_as_one() {
+    // The controls that make the tests above able to fail: a detector that
+    // says "gradient" for any colour variation passes all of them.
+    let mut cases = vec![corpus::hard_step(), corpus::speckled_fill()];
+    // Every corpus fixture has anti-aliased edges and `noisy` has speckle.
+    cases.extend(corpus::all());
+    for fixture in cases {
+        let analysis = Session::open(&fixture, &fixture.construction).analysis();
+        for region in analysis["appearance"]["regions"]
+            .as_array()
+            .expect("regions")
+        {
+            let kind = region["fill"]["kind"].as_str().expect("a kind");
+            assert!(
+                matches!(kind, "flat" | "varied"),
+                "`{}`: region {} reported as {kind}: {}",
+                fixture.name,
+                region["region_id"],
+                region["fill"]
+            );
+        }
+    }
+}
+
+#[test]
+fn a_step_between_two_colours_is_varied_with_a_high_linear_fit() {
+    let fixture = corpus::hard_step();
+    let analysis = Session::open(&fixture, &fixture.construction).analysis();
+    let fill = first_fill(&analysis);
+
+    assert_eq!(fill["kind"], "varied", "{fill}");
+    assert!(number(fill, "linear_fit") > 0.9, "{fill}");
+}
+
 #[test]
 fn the_strategy_recommended_for_each_fixture_is_the_one_it_was_drawn_to_need() {
     // ADR 021 called `MEASURABLE_MAX_REGIONS = 6` and `MEASURABLE_MAX_COLOURS

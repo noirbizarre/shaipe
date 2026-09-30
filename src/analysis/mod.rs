@@ -7,9 +7,10 @@
 //! "plausible for this kind of icon", the same gap [`crate::vectorize`]
 //! closes for curves. This module closes it for layout and colour: [`analyze`]
 //! turns a reference's pixels into dimensions, a background/foreground split,
-//! dominant colours, connected regions, holes and symmetry scores. See ADR
-//! 018 for the decision and why this is a new module rather than an
-//! extension of `vectorize`.
+//! dominant colours, connected regions, holes and symmetry scores, and
+//! [`Appearance`] says how each region is filled. See ADR 018 for the
+//! decision and why this is a new module rather than an extension of
+//! `vectorize`, and ADR 025 for appearance.
 //!
 //! Self-contained and deterministic: bytes in, a typed [`Analysis`] out, no
 //! knowledge of `Project`, tools or MCP — mirroring [`crate::vectorize`]'s own
@@ -31,6 +32,15 @@ use image::GenericImageView;
 use serde::Serialize;
 
 use crate::error::{Error, Result};
+
+mod appearance;
+
+pub use appearance::{
+    AlphaSummary, Appearance, Fill, GradientStop, Opacity, Point, RegionAppearance, Stroke,
+};
+
+/// What a pixel's entry in the region map holds when it belongs to no region.
+const NO_REGION: u32 = u32::MAX;
 
 /// A pixel whose alpha is below this is still counted as fully transparent — real anti-aliased edges rarely land
 /// exactly at 0.
@@ -82,6 +92,10 @@ pub struct Analysis {
     pub holes: Vec<Hole>,
     /// Mirror-symmetry scores of the foreground shape.
     pub symmetry: Symmetry,
+    /// How the image is filled: its alpha, apart from colour, and for each
+    /// of `regions` whether it is a flat colour, a gradient or neither, and
+    /// whether it is shaped like a stroke.
+    pub appearance: Appearance,
 }
 
 /// An image's size, in pixels.
@@ -117,7 +131,10 @@ pub struct Background {
 pub struct DominantColour {
     /// The bucket's representative colour, as `#rrggbb`.
     pub colour: String,
-    /// Share of opaque pixels falling in this colour's bucket.
+    /// Share of the image's opaque weight falling in this colour's bucket. A
+    /// pixel weighs its alpha, so a half-transparent pixel counts half and a
+    /// translucent fill or a soft edge is not mistaken for a full-strength
+    /// colour.
     pub fraction: f64,
 }
 
@@ -340,29 +357,33 @@ pub fn analyze(path: &Path, bytes: &[u8]) -> Result<Analysis> {
 
     let foreground_count = foreground_mask.iter().filter(|&&value| value).count() as u64;
 
-    // --- dominant colours, among opaque pixels only ---
-    let mut colour_counts: BTreeMap<[u8; 3], u64> = BTreeMap::new();
-    let mut opaque_count: u64 = 0;
+    // --- dominant colours, among non-transparent pixels, weighed by alpha ---
+    // A pixel counts as much as it is opaque: counted whole, a translucent
+    // fill or a soft edge would read as a full-strength colour. For an
+    // opaque image every weight is 255 and this is a plain share of pixels.
+    let mut colour_weights: BTreeMap<[u8; 3], u64> = BTreeMap::new();
+    let mut total_weight: u64 = 0;
     for pixel in pixels.as_chunks::<4>().0 {
         if pixel[3] >= TRANSPARENT_ALPHA_THRESHOLD {
-            opaque_count += 1;
+            let weight = u64::from(pixel[3]);
+            total_weight += weight;
             let bucket = [
                 bucket_channel(pixel[0]),
                 bucket_channel(pixel[1]),
                 bucket_channel(pixel[2]),
             ];
-            *colour_counts.entry(bucket).or_insert(0) += 1;
+            *colour_weights.entry(bucket).or_insert(0) += weight;
         }
     }
-    let dominant_colours = top_by_count(colour_counts)
+    let dominant_colours = top_by_count(colour_weights)
         .into_iter()
         .take(MAX_DOMINANT_COLOURS)
-        .map(|(colour, count)| DominantColour {
+        .map(|(colour, weight)| DominantColour {
             colour: hex(colour),
-            fraction: if opaque_count == 0 {
+            fraction: if total_weight == 0 {
                 0.0
             } else {
-                count as f64 / opaque_count as f64
+                weight as f64 / total_weight as f64
             },
         })
         .collect();
@@ -375,11 +396,12 @@ pub fn analyze(path: &Path, bytes: &[u8]) -> Result<Analysis> {
     };
 
     // --- regions: 4-connected components of the foreground mask ---
-    let raw_regions = label_components(&foreground_mask, width_usize, height_usize);
+    let (raw_regions, labels) = label_components(&foreground_mask, width_usize, height_usize);
     let region_count = raw_regions.len();
     let mut region_stats: Vec<_> = raw_regions
         .iter()
-        .map(|component| (bbox(component), component.area, centroid(component)))
+        .enumerate()
+        .map(|(index, component)| (bbox(component), component.area, centroid(component), index))
         .collect();
     // Sorted by shape (area, then top-left corner), never by which pixel a
     // flood fill happened to start from, so `id` is stable regardless of scan
@@ -389,21 +411,37 @@ pub fn analyze(path: &Path, bytes: &[u8]) -> Result<Analysis> {
             .then(a.0.y.cmp(&b.0.y))
             .then(a.0.x.cmp(&b.0.x))
     });
+    // Which region each flood-fill component became once sorted, so a pixel's
+    // label can be turned into the id a caller sees.
+    let mut region_of_component = vec![NO_REGION; raw_regions.len()];
+    for (id, stats) in region_stats.iter().enumerate() {
+        region_of_component[stats.3] = id as u32;
+    }
+    let region_map: Vec<u32> = labels
+        .iter()
+        .map(|&label| {
+            if label == NO_REGION {
+                NO_REGION
+            } else {
+                region_of_component[label as usize]
+            }
+        })
+        .collect();
     let all_regions: Vec<Region> = region_stats
         .into_iter()
         .enumerate()
-        .map(|(id, (bounding_box, area, centroid))| Region {
+        .map(|(id, (bounding_box, area, centroid, _))| Region {
             id,
             bounding_box,
             area,
             centroid,
         })
         .collect();
-    let regions = all_regions.iter().take(MAX_REGIONS).cloned().collect();
+    let regions: Vec<Region> = all_regions.iter().take(MAX_REGIONS).cloned().collect();
 
     // --- holes: background components that never touch the canvas border ---
     let background_mask: Vec<bool> = foreground_mask.iter().map(|value| !value).collect();
-    let raw_background = label_components(&background_mask, width_usize, height_usize);
+    let (raw_background, _) = label_components(&background_mask, width_usize, height_usize);
     let mut hole_stats: Vec<_> = raw_background
         .iter()
         .filter(|component| !component.touches_border)
@@ -415,7 +453,7 @@ pub fn analyze(path: &Path, bytes: &[u8]) -> Result<Analysis> {
             .then(a.0.y.cmp(&b.0.y))
             .then(a.0.x.cmp(&b.0.x))
     });
-    let holes = hole_stats
+    let holes: Vec<Hole> = hole_stats
         .into_iter()
         .take(MAX_HOLES)
         .map(|(bounding_box, area, centroid)| {
@@ -450,6 +488,16 @@ pub fn analyze(path: &Path, bytes: &[u8]) -> Result<Analysis> {
         vertical: mirror_iou(&foreground_mask, width_usize, height_usize, Axis::Vertical),
     };
 
+    // --- appearance: how each reported region is filled ---
+    let appearance = appearance::measure(
+        &pixels,
+        width_usize,
+        height_usize,
+        &region_map,
+        &regions,
+        &holes,
+    );
+
     Ok(Analysis {
         dimensions,
         background,
@@ -460,6 +508,7 @@ pub fn analyze(path: &Path, bytes: &[u8]) -> Result<Analysis> {
         hole_count,
         holes,
         symmetry,
+        appearance,
     })
 }
 
@@ -616,8 +665,13 @@ struct RawComponent {
 /// reported statistic is a property of the region's shape, not of scan
 /// order, so relabelling by area afterwards never changes what is measured —
 /// only the order and the `id` it is measured under.
-fn label_components(mask: &[bool], width: usize, height: usize) -> Vec<RawComponent> {
+///
+/// Also returns each pixel's component, as an index into the list —
+/// [`NO_REGION`] for a pixel outside the mask — so a caller can get from a
+/// region back to its pixels.
+fn label_components(mask: &[bool], width: usize, height: usize) -> (Vec<RawComponent>, Vec<u32>) {
     let mut visited = vec![false; mask.len()];
+    let mut labels = vec![NO_REGION; mask.len()];
     let mut components = Vec::new();
 
     for start in 0..mask.len() {
@@ -625,6 +679,7 @@ fn label_components(mask: &[bool], width: usize, height: usize) -> Vec<RawCompon
             continue;
         }
 
+        let label = components.len() as u32;
         let mut stack = vec![start];
         visited[start] = true;
         let mut min_x = u32::MAX;
@@ -637,6 +692,7 @@ fn label_components(mask: &[bool], width: usize, height: usize) -> Vec<RawCompon
         let mut touches_border = false;
 
         while let Some(index) = stack.pop() {
+            labels[index] = label;
             let x = (index % width) as u32;
             let y = (index / width) as u32;
 
@@ -677,7 +733,7 @@ fn label_components(mask: &[bool], width: usize, height: usize) -> Vec<RawCompon
         });
     }
 
-    components
+    (components, labels)
 }
 
 fn bbox(component: &RawComponent) -> BoundingBox {

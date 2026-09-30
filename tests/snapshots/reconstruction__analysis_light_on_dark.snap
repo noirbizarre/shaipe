@@ -78,5 +78,29 @@ expression: "snapshot_text(analysis, 4)"
   "symmetry": {
     "horizontal": 0.5676,
     "vertical": 0.7576
+  },
+  "appearance": {
+    "alpha": {
+      "transparent_fraction": 0.0,
+      "translucent_fraction": 0.0,
+      "opaque_fraction": 1.0,
+      "interior_translucent_fraction": 0.0
+    },
+    "regions": [
+      {
+        "region_id": 0,
+        "fill": {
+          "kind": "flat",
+          "colour": "#ffffff",
+          "spread": 0.0
+        },
+        "opacity": {
+          "min": 1.0,
+          "mean": 1.0,
+          "max": 1.0
+        },
+        "stroke": null
+      }
+    ]
   }
 }

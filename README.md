@@ -302,7 +302,7 @@ decided in your agent. Your agent is configured and authenticated in your agent.
 | `get_variants` | The named parts of the document that can be drawn alone |
 | `get_palette` | The colours, with their names and roles |
 | `get_references` | Files attached for context, and whether they exist |
-| `get_reference_analysis` | Measure a reference's pixels into objective facts — dimensions, colours, regions, holes, symmetry |
+| `get_reference_analysis` | Measure a reference's pixels into objective facts — dimensions, colours, regions, holes, symmetry, and how each region is filled (flat, gradient, transparency, stroke) |
 | `get_reference_image` | Look at an attached raster reference, with its pixel dimensions |
 | `get_reference_trace` | Trace a reference's pixels into vector paths, algorithmically |
 | `compare_reference` | Render a variant at a reference's size and report how they differ, with an overlay and a difference image |

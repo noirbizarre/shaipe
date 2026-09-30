@@ -53,6 +53,14 @@ colours and symmetry, and `get_reference_trace` for outlines. Treat what they re
 fact, and treat your own reading of pixel positions as a guess. What a region is, whether \
 a letter, an animal or a shield, remains your judgement: measurement cannot name it.
 
+A region is not always one colour. The `appearance` in that analysis says per region whether \
+its fill is `flat`, a `linear_gradient` or `radial_gradient` with an axis or centre and stops, \
+or `varied`. A trace can only produce flat fills, so build a gradient yourself from those \
+stops. `varied` means it was not vouched for as a gradient, so do not assume one. A `stroke` \
+is a candidate from the region's geometry alone: a ring may equally be a filled shape. \
+Opacity is reported apart from colour, so a translucent fill keeps its colour and an \
+`opacity` to apply.
+
 Trace when the reference is a clean, flat-colour mark with few regions and few colours. \
 Construct it yourself, with real shapes, when it is a photograph, busy or textured, or when \
 you need clean primitives such as circles, rectangles and text. Mix the two when part of it \

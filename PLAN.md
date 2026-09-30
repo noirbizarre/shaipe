@@ -287,6 +287,9 @@ see `docs/adr/004-tools-not-a-model.md`.
       workflows, analysis, the loop, deterministic vs. model, SVG as source of
       truth, the three texts), ADR-001 and ADR-004 point at it, and the README
       says so. No UX change — that is the next epic's
+- [x] Appearance analysis: per region, a flat, linear-gradient,
+      radial-gradient or varied fill with axis or centre and stops, opacity
+      apart from colour, and stroke-like geometry as a candidate — ADR-025
 
 ## Artwork
 
