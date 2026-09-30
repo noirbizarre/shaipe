@@ -797,3 +797,70 @@ fn comparing_a_reconstruction_twice_produces_identical_reports() {
     };
     assert_eq!(report(), report());
 }
+
+fn findings(comparison: &serde_json::Value) -> Vec<String> {
+    comparison["appearance"]["findings"]
+        .as_array()
+        .expect("appearance.findings is a list")
+        .iter()
+        .map(|f| f.as_str().expect("a sentence").to_owned())
+        .collect()
+}
+
+#[test]
+fn an_exact_gradient_construction_has_no_appearance_findings() {
+    let fixture = corpus::linear_gradient();
+    let comparison = Session::open(&fixture, &fixture.construction).compare();
+
+    assert!(findings(&comparison).is_empty(), "{comparison:#}");
+}
+
+#[test]
+fn a_flat_colour_in_place_of_a_gradient_is_the_right_shape_with_the_wrong_fill() {
+    let fixture = corpus::linear_gradient();
+    let flat = r##"<rect x="12" y="12" width="40" height="40" fill="#800080"/>"##;
+    let comparison = Session::open(&fixture, flat).compare();
+
+    // The silhouette is right, which is why appearance is reported apart.
+    assert!(overlap(&comparison) > 0.95, "{comparison:#}");
+    let found = findings(&comparison);
+    assert!(
+        found
+            .iter()
+            .any(|f| f.contains("linear_gradient") && f.contains("linearGradient")),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_reversed_gradient_is_reported_as_a_colour_error_on_the_same_shape() {
+    let fixture = corpus::linear_gradient();
+    let reversed = fixture.construction.replace(
+        r#"x1="12" y1="0" x2="52" y2="0""#,
+        r#"x1="52" y1="0" x2="12" y2="0""#,
+    );
+    let comparison = Session::open(&fixture, &reversed).compare();
+
+    assert!(overlap(&comparison) > 0.95, "{comparison:#}");
+    assert!(
+        findings(&comparison)
+            .iter()
+            .any(|f| f.contains("colours differ")),
+        "{comparison:#}"
+    );
+}
+
+#[test]
+fn an_opaque_render_of_a_translucent_reference_reports_the_opacity() {
+    let fixture = corpus::translucent_fill();
+    let matching = Session::open(&fixture, &fixture.construction).compare();
+    let opaque = fixture.construction.replace(" fill-opacity=\"0.5\"", "");
+    let comparison = Session::open(&fixture, &opaque).compare();
+
+    assert!(findings(&matching).is_empty(), "{matching:#}");
+    assert!(
+        number(&comparison, "appearance.alpha.interior_translucent_delta") < -0.05,
+        "{comparison:#}"
+    );
+    assert!(!findings(&comparison).is_empty(), "{comparison:#}");
+}

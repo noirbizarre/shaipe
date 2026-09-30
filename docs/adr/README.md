@@ -63,3 +63,4 @@ verbs). Anything else is an *Update*.
   model
 - [ADR-025](025-appearance-analysis.md) — Measure how a region is filled, and say so when it cannot be told
 - [ADR-026](026-appearance-aware-tracing.md) — Trace a gradient once, and paint it with what was measured
+- [ADR-027](027-appearance-aware-comparison.md) — Compare how a render is filled, reported apart from its geometry

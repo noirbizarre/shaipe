@@ -32,6 +32,8 @@
 //! and its per-pixel diff image becomes [`ComparisonImages::difference`] for
 //! free.
 
+mod appearance;
+
 use std::path::Path;
 
 use image::{DynamicImage, RgbaImage};
@@ -39,6 +41,8 @@ use serde::Serialize;
 
 use crate::analysis::{self, Background, BoundingBox, Centroid, Classified, Dimensions};
 use crate::error::{Error, Result};
+
+pub use appearance::{AlphaComparison, AppearanceComparison, RegionComparison};
 
 /// A per-channel difference below this (out of 255) is not counted as
 /// "changed" for [`PixelError::changed_pixel_fraction`] — real
@@ -82,6 +86,10 @@ pub struct Comparison {
     pub pixel_error: PixelError,
     /// SSIM-based perceptual similarity.
     pub perceptual_similarity: PerceptualSimilarity,
+    /// How the two are filled: gradients, colours, opacity and strokes,
+    /// region against region. Reported apart from the geometry above so a
+    /// render that is the right shape with the wrong fill says so.
+    pub appearance: AppearanceComparison,
 }
 
 /// Overlap of two boolean masks of the same canvas — shared shape for
@@ -251,6 +259,19 @@ pub fn compare(
         aspect_ratio: f64::from(width) / f64::from(height),
     };
 
+    // Appearance is a second look at the same bytes: `analyze` re-decodes, which
+    // is cheap beside the perceptual pass and keeps `analysis` the only place a
+    // region is defined.
+    let (reference_analysis, reference_map) =
+        analysis::analyze_with_regions(reference_path, reference_bytes)?;
+    let (render_analysis, render_map) = analysis::analyze_with_regions(render_path, render_bytes)?;
+    let appearance = appearance::compare_appearance(
+        &reference_analysis,
+        &reference_map,
+        &render_analysis,
+        &render_map,
+    );
+
     let reference_background = background_of(&reference);
     let render_background = background_of(&render);
 
@@ -304,6 +325,7 @@ pub fn compare(
             centroid,
             pixel_error,
             perceptual_similarity,
+            appearance,
         },
         ComparisonImages {
             overlay,

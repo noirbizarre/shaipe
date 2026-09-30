@@ -75,7 +75,9 @@ Work in a loop, not in one pass. Write with `write_variant` or `write_svg`, look
 `render_svg`, and for a `reference` or `hybrid` compare with `compare_reference`, which \
 renders your variant at the reference's own size and reports what differs and by how much \
 as numbers and as an overlay and a difference image. Fix what the comparison shows, \
-largest offset first, and go round again. `compare_reference` and `render_svg` measure and \
+largest offset first, and go round again. When the shape already matches, read \
+`appearance.findings` in the comparison: it says where a fill, gradient or transparency \
+differs. `compare_reference` and `render_svg` measure and \
 show; they never say you are finished.
 
 A valid SVG is not a finished one. `write_svg` succeeding means the document parses, not \
