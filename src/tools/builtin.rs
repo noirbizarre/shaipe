@@ -694,9 +694,11 @@ impl Tool for CompareReference {
          written, in one call. Renders `variant` on a transparent background \
          at the reference's own pixel size — nothing is resampled — and \
          reports foreground-mask overlap, bounding-box and centroid offsets \
-         (render minus reference), area difference, pixel error, an \
-         SSIM-based perceptual similarity and edge overlap, each separately \
-         rather than as one score. Returns four images, in order: the \
+         (render minus reference), pixel error, an SSIM-based perceptual \
+         similarity and edge overlap, each separately rather than as one \
+         score. `appearance` separately reports fill mismatches (kind, \
+         gradient, opacity, stroke) per region; its `findings` say what to \
+         change. Returns four images, in order: the \
          reference, the render, an overlay (only in the reference: red \
          `#ff2060`; only in the render: cyan `#20c8ff`; in both: white) and a \
          difference heatmap. Measurement, not judgement: it says what \

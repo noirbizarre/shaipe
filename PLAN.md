@@ -342,7 +342,7 @@ Toolchain, docs, release.
 - [ ] Epic 3 — agent and harness integration: reusable skills, headless workflow access, permissions and external harness validation — #37.
 - [ ] Add appearance analysis for gradients, transparency and strokes — #28.
 - [x] Make tracing gradient- and appearance-aware without turning it into a monolithic vectorizer — #29.
-- [ ] Extend comparison with appearance-aware diagnostics — #30.
+- [x] Extend comparison with appearance-aware diagnostics — #30.
 - [ ] Add deterministic appearance fixtures and evaluation coverage — #31.
 - [ ] Define workflow-first workspace information architecture — #33.
 - [ ] Build the workflow and comparison workspace — #34.
