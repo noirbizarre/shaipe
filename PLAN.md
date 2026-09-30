@@ -326,3 +326,23 @@ Toolchain, docs, release.
 - [ ] First release
 - [ ] Publish to crates.io
 - [ ] Compatibility matrix for terminals in the README
+
+
+## Roadmap
+
+- [ ] Epic 1.5 — visual understanding and appearance analysis: gradients, transparency, strokes and appearance-aware reference evidence — #27.
+- [ ] Epic 2 — workflow-oriented TUI and workspace redesign: workflow-first information architecture, visual comparison, iteration history and human/agent interaction — #32.
+- [ ] Epic 3 — agent and harness integration: reusable skills, headless workflow access, permissions and external harness validation — #37.
+- [ ] Add appearance analysis for gradients, transparency and strokes — #28.
+- [ ] Make tracing gradient- and appearance-aware without turning it into a monolithic vectorizer — #29.
+- [ ] Extend comparison with appearance-aware diagnostics — #30.
+- [ ] Add deterministic appearance fixtures and evaluation coverage — #31.
+- [ ] Define workflow-first workspace information architecture — #33.
+- [ ] Build the workflow and comparison workspace — #34.
+- [ ] Rework agent interaction around workflow actions — #35.
+- [ ] Add iteration history and visual review — #36.
+- [ ] Define Shaipe capability and skill packaging — #38.
+- [ ] Make the Shaipe workflow consumable headlessly outside the TUI — #39.
+- [ ] Add reusable skills for OpenCode, Pi and generic harnesses — #40.
+- [ ] Define permissions and mutation boundaries for external agents — #41.
+- [ ] Validate external harness integration end to end — #42.
