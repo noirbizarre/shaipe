@@ -24,7 +24,7 @@ agent to reconstruct noise as a smooth ramp.
 
 **`Analysis` gains an `appearance` field, so one call answers it.** It holds an
 alpha summary for the image and, for each reported region, a `fill`, an
-`opacity` and an optional `stroke`. A separate tool was considered and
+`opacity` and a `stroke` that is `null` when the region is not stroke-like. A separate tool was considered and
 rejected: the agent would have to know to call it, and a flat-versus-gradient
 answer belongs beside the region it is about.
 
@@ -58,7 +58,9 @@ image nothing changes.
 
 **A stroke is a candidate from geometry alone.** A region much longer than it
 is wide, of even width, is reported with its width, length and whether it
-encloses a hole. A filled ring and a stroked circle are the same pixels, so the
+encloses a hole. It must be at least 12 pixels, at least 4 times longer than
+wide and of at least 0.6 width uniformity (`elongation`, `width_uniformity`),
+with a `confidence` that rises to full at 12 times. A filled ring and a stroked circle are the same pixels, so the
 report says what the geometry looks like and leaves what to draw to the agent.
 
 **Only the interior is sampled.** A region's anti-aliased rim is eroded away

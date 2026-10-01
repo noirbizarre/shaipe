@@ -113,8 +113,10 @@ of the failure it was built to show. Its specks are 5x5.
   tested there. A very thin-lined logo has proportionally more fringe and
   could push a bucket over it; there is no such fixture yet.
 - The fixtures are 64 pixels. They cover the geometry of each case, not the
-  scale of a real export, and say nothing about photographs, gradients or JPEG
-  artefacts, which the tracer and the analysis do not claim to handle.
+  scale of a real export, and say nothing about photographs or JPEG
+  artefacts, which the tracer and the analysis do not claim to handle. The
+  gradient, translucent and stroke fixtures were added later
+  ([ADR-025](025-appearance-analysis.md)).
 - The four private image generators in the module tests are left where they
   are: they are unit fixtures, and moving them is a refactor with no test to
   gain.
