@@ -296,6 +296,19 @@ see `docs/adr/004-tools-not-a-model.md`.
       as a fallback, `appearance: false` for plain layers — ADR-026
 - [x] Appearance-aware comparison: fill, gradient and opacity differences
       reported in an `appearance` diff apart from the geometry metrics — ADR-027
+- [x] Typography analysis: candidate text lines with baseline, letter heights,
+      spacing, words, blocks and per-word appearance, left out when there is no
+      lettering — ADR-028
+- [x] Typography comparison: baseline, size, spacing and colour reported per
+      text line, and the variant's `<text>` listed with the confidence its
+      author gave it — ADR-028
+- [x] `get_reference_image` enlarges an area, so small lettering can be read —
+      ADR-028
+- [x] Reconstruction instructions on reading lettering, admitting doubt with
+      `data-shaipe-confidence`, and preferring `<text>` in a declared font
+- [x] Typography fixtures and evaluation: computed lettering, controls that
+      must not be called lettering, and a baseline fixed from the comparison
+      alone
 
 ## Artwork
 
@@ -346,6 +359,7 @@ Toolchain, docs, release.
 - [x] Make tracing gradient- and appearance-aware without turning it into a monolithic vectorizer — #29.
 - [x] Extend comparison with appearance-aware diagnostics — #30.
 - [x] Add deterministic appearance fixtures and evaluation coverage — #31.
+- [x] Improve typography recognition and reconstruction — #49.
 - [ ] Define workflow-first workspace information architecture — #33.
 - [ ] Build the workflow and comparison workspace — #34.
 - [ ] Rework agent interaction around workflow actions — #35.
@@ -355,3 +369,4 @@ Toolchain, docs, release.
 - [ ] Add reusable skills for OpenCode, Pi and generic harnesses — #40.
 - [ ] Define permissions and mutation boundaries for external agents — #41.
 - [ ] Validate external harness integration end to end — #42.
+- [ ] Epic 1.75 — structured logo reconstruction and typography: lettering, components, silhouettes, planning and complex fixtures — #48.

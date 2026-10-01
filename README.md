@@ -302,10 +302,10 @@ decided in your agent. Your agent is configured and authenticated in your agent.
 | `get_variants` | The named parts of the document that can be drawn alone |
 | `get_palette` | The colours, with their names and roles |
 | `get_references` | Files attached for context, and whether they exist |
-| `get_reference_analysis` | Measure a reference's pixels into objective facts — dimensions, colours, regions, holes, symmetry, and how each region is filled (flat, gradient, transparency, stroke) |
-| `get_reference_image` | Look at an attached raster reference, with its pixel dimensions |
+| `get_reference_analysis` | Measure a reference's pixels into objective facts — dimensions, colours, regions, holes, symmetry, how each region is filled (flat, gradient, transparency, stroke), and which regions are lettering (baseline, letter height, spacing, words) |
+| `get_reference_image` | Look at an attached raster reference, with its pixel dimensions; give an area to see it enlarged |
 | `get_reference_trace` | Trace a reference's pixels into vector paths, algorithmically; a gradient stays one painted path |
-| `compare_reference` | Render a variant at a reference's size and report how they differ, with an overlay and a difference image, and an `appearance` diff of fill, gradient and opacity |
+| `compare_reference` | Render a variant at a reference's size and report how they differ, with an overlay and a difference image, an `appearance` diff of fill, gradient and opacity, and a `typography` diff per text line |
 | `get_workflow` | Name the reconstruction workflow's phases for `from_scratch`/`reference`/`hybrid` work, and recommend a construction strategy |
 | `get_svg` | The document, exactly as it is |
 | `render_svg` | Draw one variant and **look at it** |
@@ -342,6 +342,11 @@ infers it from what is attached.
   flat layers. How each region is filled is measured by
   [ADR-025](docs/adr/025-appearance-analysis.md) and compared apart from
   geometry by [ADR-027](docs/adr/027-appearance-aware-comparison.md).
+- **Lettering is measured, never read.** The analysis reports rows of regions
+  that behave like text, with their baseline, letter height and spacing; the
+  agent reads what they say, sets it as `<text>` in a declared font, and marks
+  anything it is unsure of with `data-shaipe-confidence`
+  ([ADR-028](docs/adr/028-typography-analysis.md)).
 - **Deterministic Rust** decodes, measures, traces, renders, compares and
   validates a write. **The model** decides what the mark is, whether to trace,
   and what to change next. Nothing enforces the phases; they are guidance.
