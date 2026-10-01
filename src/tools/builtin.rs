@@ -603,27 +603,47 @@ impl Tool for GetReferenceTrace {
         // bounds, so a value outside them is a mistake the model should be
         // told about, not one it should have quietly corrected to a
         // different trace than the one it asked for.
-        let threshold = match input.get("threshold").and_then(Value::as_u64) {
+        // A key that is present but of the wrong type is refused like one out
+        // of range: `"128"` silently becoming the default would trace
+        // something other than what was asked for.
+        let present = |key: &str| input.get(key).filter(|value| !value.is_null());
+        let threshold = match present("threshold") {
             None => None,
-            Some(value) => Some(u8::try_from(value).map_err(|_| {
-                refuse(format!(
-                    "`threshold` must be between 0 and 255, got {value}"
-                ))
-            })?),
-        };
-        let invert = input
-            .get("invert")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let max_colors = match input.get("max_colors").and_then(Value::as_u64) {
-            None => None,
-            Some(0) => {
-                return Err(refuse(
-                    "`max_colors` must be at least 1; omit it to let the clustering decide"
-                        .to_owned(),
-                ));
+            Some(raw) => {
+                let value = raw.as_u64().ok_or_else(|| {
+                    refuse(format!(
+                        "`threshold` must be an integer from 0 to 255, got {raw}"
+                    ))
+                })?;
+                Some(u8::try_from(value).map_err(|_| {
+                    refuse(format!(
+                        "`threshold` must be between 0 and 255, got {value}"
+                    ))
+                })?)
             }
-            Some(value) => usize::try_from(value).ok(),
+        };
+        let invert = match present("invert") {
+            None => false,
+            Some(raw) => raw
+                .as_bool()
+                .ok_or_else(|| refuse(format!("`invert` must be true or false, got {raw}")))?,
+        };
+        let max_colors = match present("max_colors") {
+            None => None,
+            Some(raw) => match raw.as_u64() {
+                None => {
+                    return Err(refuse(format!(
+                        "`max_colors` must be an integer of at least 1, got {raw}"
+                    )));
+                }
+                Some(0) => {
+                    return Err(refuse(
+                        "`max_colors` must be at least 1; omit it to let the clustering decide"
+                            .to_owned(),
+                    ));
+                }
+                Some(value) => usize::try_from(value).ok(),
+            },
         };
 
         // Refused when present and not a boolean, not read as the default:
@@ -2089,6 +2109,35 @@ mod tests {
                 .unwrap()
                 .contains("<path")
         );
+    }
+
+    #[test]
+    fn get_reference_trace_refuses_an_option_of_the_wrong_type() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        std::fs::write(directory.path().join("mockup.png"), ring_png(64)).unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+
+        for bad in [
+            json!({ "src": "mockup.png", "threshold": "128" }),
+            json!({ "src": "mockup.png", "threshold": -1 }),
+            json!({ "src": "mockup.png", "invert": "yes" }),
+            json!({ "src": "mockup.png", "max_colors": 2.5 }),
+        ] {
+            let error = Registry::new()
+                .call("get_reference_trace", &mut project, &bad)
+                .unwrap_err();
+            assert!(
+                matches!(error, Error::InvalidToolInput { .. }),
+                "{bad} should be refused, got {error:?}"
+            );
+        }
     }
 
     #[test]
