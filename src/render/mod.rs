@@ -26,9 +26,11 @@
 pub mod asset;
 pub mod fonts;
 mod isolate;
+pub mod text;
 
 pub use asset::RenderedAsset;
 pub use fonts::FontPolicy;
+pub use text::{DeclaredText, declared_text};
 
 use tiny_skia::{Pixmap, Transform};
 

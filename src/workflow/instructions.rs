@@ -65,6 +65,21 @@ is a candidate from the region's geometry alone: a ring may equally be a filled 
 Opacity is reported apart from colour, so a translucent fill keeps its colour and an \
 `opacity` to apply.
 
+Lettering is typography, not shape. When `get_reference_analysis` reports `typography`, each \
+line is a candidate: regions that share a baseline and are spaced like letters, with the \
+baseline, letter height, spacing, words and the colour of each word. It cannot say what the \
+letters say or which font sets them; that is your reading. Enlarge a line with \
+`get_reference_image` and its `bounding_box` before you read it, and never invent text: \
+when a letter or the font is doubtful, write your best reading and say so with \
+`data-shaipe-confidence` (`high`, `medium` or `low`) and a `data-shaipe-note` naming what is \
+doubtful on the `<text>`, and tell the user. Prefer `<text>` in a font the project declares \
+(`get_project` lists them) to drawing the letters as paths, so the words stay editable; draw \
+them as paths only when no declared font is close, and say that. Size the text from the \
+measured letter height, not by eye (font size is about the tall height over the typeface's \
+cap height, near 0.7). Keep each word's and symbol's fill as its own assignment; do not give \
+a wordmark and the mark beside it one colour because they sit together. `compare_reference` \
+reports `typography` per line and `declared_text` for what you set.
+
 Trace when the reference is a clean, flat-colour mark with few regions and few colours. \
 Construct it yourself, with real shapes, when it is a photograph, busy or textured, or when \
 you need clean primitives such as circles, rectangles and text. Mix the two when part of it \
@@ -151,6 +166,14 @@ mod tests {
         let text = reconstruction();
         assert!(text.contains("Inspect the reference before you edit anything"));
         assert!(text.contains("Measure; do not estimate"));
+    }
+
+    #[test]
+    fn the_instructions_say_to_read_lettering_and_admit_doubt_rather_than_invent_it() {
+        let text = reconstruction();
+        assert!(text.contains("never invent text"));
+        assert!(text.contains("`data-shaipe-confidence`"));
+        assert!(text.contains("Prefer `<text>` in a font the project declares"));
     }
 
     #[test]
