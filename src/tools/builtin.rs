@@ -486,8 +486,8 @@ impl Tool for GetReferenceTrace {
         "Trace an attached raster reference into vector paths by measuring \
          its pixels, not by describing its shape: exact curves, corner radii \
          and tapering that cannot be reproduced by eye. Call it after \
-         `get_reference_analysis`, and only for a clean, flat-colour mark; \
-         construct photographs and busy artwork yourself. `silhouette` \
+         `get_reference_analysis`, and only for a clean mark of flat or \
+         gradient fills; construct photographs and busy artwork yourself. `silhouette` \
          (default) separates one foreground colour from one background into \
          a single shape with holes, for a single-colour mark. `colour` \
          traces each region as its own path, for multi-colour artwork; a \

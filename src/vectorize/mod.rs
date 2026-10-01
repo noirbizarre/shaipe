@@ -162,9 +162,8 @@ pub struct TracedPath {
     /// pixels.
     pub area: f64,
     /// The path's fill colour, as `#rrggbb`, when it is a solid colour.
-    /// `None` for a gradient, a pattern, or no fill at all — vtracer's own
-    /// output never produces the first two today, so this is `Some` in
-    /// practice.
+    /// `None` for a gradient, a pattern, or no fill at all. A lifted gradient
+    /// path is `None` here; its fill is in `appearance` instead.
     pub fill_colour: Option<String>,
     /// The [`crate::analysis::Region::id`] this path was lifted from, when it
     /// was. `None` for an ordinary colour layer. It is the key between this
@@ -185,8 +184,9 @@ pub struct Traced {
     /// only the JSON, not the call that produced it, still knows.
     pub mode: TraceMode,
     /// The traced SVG markup: one `<path>` per silhouette or colour region,
-    /// holes cut by winding, no `fill` beyond whatever solid colour the
-    /// frontend assigned. Recolouring it, or grafting it into a project, is
+    /// holes cut by winding, filled with whatever solid colour the
+    /// frontend assigned — or, for a lifted gradient or translucent region,
+    /// with a `url(#shaipe-fill-N)` reference to a gradient it defines. Recolouring it, or grafting it into a project, is
     /// the caller's decision — via `write_variant`/`write_svg`, the same as
     /// any other hand-composed markup.
     pub svg: String,
