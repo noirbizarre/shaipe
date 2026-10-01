@@ -27,14 +27,14 @@ use std::path::Path;
 use serde::Serialize;
 use vtracer::{ColorImage, Config, Preset};
 
+use crate::analysis::OPAQUE_FLOOR;
 use crate::analysis::{Analysis, Fill, GradientStop, NO_REGION, Opacity, Region};
 use crate::error::{Error, Result};
 
 /// Interior opacity below which a flat region counts as drawn translucent.
-/// Matches the analysis's own line between opaque and not (240 of 255), a
-/// little under one so that the rounding of a nominally opaque pixel is not
-/// mistaken for a choice.
-const TRANSLUCENT_BELOW: f64 = 0.95;
+/// Derived from the analysis's own line between opaque and not, so a region
+/// is never "opaque" in `AlphaSummary` yet lifted as translucent.
+const TRANSLUCENT_BELOW: f64 = OPAQUE_FLOOR as f64 / 255.0;
 
 /// Fewest pixels a flat region needs before its translucency is believed. A
 /// hairline is nothing but anti-aliased edge, whose alpha is partial by
