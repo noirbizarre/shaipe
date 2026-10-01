@@ -894,6 +894,152 @@ pub fn blocky_artefacts() -> Fixture {
     appearance_fixture("blocky_artefacts", &canvas, String::new())
 }
 
+/// One letter-shaped block: left edge, right edge, top and bottom, in pixels.
+type Block = (i64, i64, i64, i64);
+
+const ACCENT: [u8; 3] = [200, 30, 30];
+
+/// Lettering, as geometry: blocks of varied widths and heights standing on a
+/// shared baseline, in the colours given.
+///
+/// There is no font here. A glyph rasteriser would make the corpus depend on
+/// anti-aliasing a platform chose, and what the typography analysis measures is
+/// layout — where letters stand, how tall they are, how far apart — which
+/// blocks carry exactly. `blocks` pairs each block with its colour.
+fn lettering(name: &'static str, blocks: &[(Block, [u8; 3])]) -> Fixture {
+    let mut canvas = Canvas::opaque(WHITE);
+    let mut construction = String::new();
+    for &((x0, x1, y0, y1), colour) in blocks {
+        canvas.paint(Shape::Rect { x0, y0, x1, y1 }, colour);
+        construction.push_str(&format!(
+            r#"<rect x="{x0}" y="{y0}" width="{}" height="{}" fill="{}"/>"#,
+            x1 - x0,
+            y1 - y0,
+            hex(colour),
+        ));
+    }
+    Fixture {
+        name,
+        png: canvas.png(),
+        construction,
+        expected: Expected {
+            regions: 1..=16,
+            holes: 0..=0,
+            dominant_colours: 1..=3,
+            strategy: "construct",
+        },
+    }
+}
+
+/// `blocks` all in one colour.
+fn in_ink(blocks: &[Block]) -> Vec<(Block, [u8; 3])> {
+    blocks.iter().map(|&block| (block, INK)).collect()
+}
+
+/// One line of lettering with everything a line of mixed-case text has: a
+/// capital, short letters, a narrow stem with a dot over it, and a descender.
+///
+/// The baseline is y=36. The capital is 12 tall and the short letters 8; the
+/// fifth letter hangs to y=41 as a g does; the dot is a 2x2 block over the
+/// stem.
+pub fn text_line() -> Fixture {
+    lettering(
+        "text_line",
+        &in_ink(&[
+            (6, 13, 24, 36),
+            (16, 22, 28, 36),
+            (25, 33, 28, 36),
+            (36, 39, 28, 36),
+            (36, 38, 24, 26),
+            (42, 48, 28, 41),
+            (51, 58, 28, 36),
+        ]),
+    )
+}
+
+/// Two words, the first in ink and the second in red: a wide gap between
+/// them, and one appearance for each.
+pub fn coloured_words() -> Fixture {
+    let first = [(4, 10, 24, 36), (13, 18, 24, 36), (21, 28, 24, 36)];
+    let second = [(38, 44, 24, 36), (47, 54, 24, 36), (57, 62, 24, 36)];
+    let blocks: Vec<_> = first
+        .iter()
+        .map(|&b| (b, INK))
+        .chain(second.iter().map(|&b| (b, ACCENT)))
+        .collect();
+    lettering("coloured_words", &blocks)
+}
+
+/// Two lines set as one block, centred on x=32, the second narrower and
+/// shorter than the first.
+pub fn centred_block() -> Fixture {
+    lettering(
+        "centred_block",
+        &in_ink(&[
+            (10, 16, 14, 26),
+            (19, 27, 14, 26),
+            (30, 35, 14, 26),
+            (38, 45, 14, 26),
+            (48, 54, 14, 26),
+            (16, 21, 34, 44),
+            (24, 30, 34, 44),
+            (33, 40, 34, 44),
+            (43, 48, 34, 44),
+        ]),
+    )
+}
+
+/// Four letters one above another, centred on x=32: vertical lettering.
+pub fn stacked_letters() -> Fixture {
+    lettering(
+        "stacked_letters",
+        &in_ink(&[
+            (26, 38, 4, 14),
+            (28, 36, 18, 28),
+            (25, 39, 32, 42),
+            (27, 37, 46, 56),
+        ]),
+    )
+}
+
+/// Control: shapes of varied size scattered with no common baseline. Nothing
+/// here is lettering, and the analysis must not say it is.
+pub fn scattered_shapes() -> Fixture {
+    lettering(
+        "scattered_shapes",
+        &in_ink(&[
+            (4, 12, 6, 18),
+            (30, 38, 3, 9),
+            (50, 58, 14, 30),
+            (10, 20, 30, 36),
+            (36, 44, 40, 58),
+            (52, 60, 44, 52),
+        ]),
+    )
+}
+
+/// Control: seven identical squares evenly spaced, one missing — a dotted
+/// pattern, which has every property of a row of letters except that the
+/// letters differ.
+pub fn row_of_dots() -> Fixture {
+    lettering(
+        "row_of_dots",
+        &in_ink(&[
+            (4, 9, 30, 35),
+            (13, 18, 30, 35),
+            (22, 27, 30, 35),
+            (40, 45, 30, 35),
+            (49, 54, 30, 35),
+            (58, 63, 30, 35),
+        ]),
+    )
+}
+
+/// Control: one large block. A single shape is not a line.
+pub fn single_large_letter() -> Fixture {
+    lettering("single_large_letter", &in_ink(&[(14, 50, 10, 54)]))
+}
+
 /// The whole corpus, in a fixed order.
 pub fn all() -> Vec<Fixture> {
     vec![
