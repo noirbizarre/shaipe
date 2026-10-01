@@ -92,6 +92,34 @@ fn the_corpus_is_deterministic_and_small_enough_to_redistribute() {
 }
 
 #[test]
+fn the_appearance_controls_are_deterministic_and_small_enough_to_redistribute() {
+    let controls = || {
+        vec![
+            corpus::linear_gradient(),
+            corpus::radial_gradient(),
+            corpus::translucent_fill(),
+            corpus::hard_step(),
+            corpus::speckled_fill(),
+            corpus::antialiased_gradient(),
+            corpus::stroked_ring(),
+            corpus::stroked_bar(),
+            corpus::translucent_overlay(),
+            corpus::near_flat_ramp(),
+            corpus::blocky_artefacts(),
+        ]
+    };
+    for (a, b) in controls().iter().zip(&controls()) {
+        assert_eq!(a.png, b.png, "`{}` differs between two generations", a.name);
+        assert!(
+            a.png.len() < 8 * 1024,
+            "`{}` is {} bytes",
+            a.name,
+            a.png.len()
+        );
+    }
+}
+
+#[test]
 fn every_fixture_analyses_to_the_facts_it_was_drawn_with() {
     for fixture in corpus::all() {
         let mut session = Session::open(&fixture, &fixture.construction);
@@ -234,7 +262,12 @@ fn transparency_is_measured_apart_from_colour() {
 fn colour_variation_that_is_not_a_gradient_is_not_reported_as_one() {
     // The controls that make the tests above able to fail: a detector that
     // says "gradient" for any colour variation passes all of them.
-    let mut cases = vec![corpus::hard_step(), corpus::speckled_fill()];
+    let mut cases = vec![
+        corpus::hard_step(),
+        corpus::speckled_fill(),
+        corpus::near_flat_ramp(),
+        corpus::blocky_artefacts(),
+    ];
     // Every corpus fixture has anti-aliased edges and `noisy` has speckle.
     cases.extend(corpus::all());
     for fixture in cases {
@@ -863,4 +896,62 @@ fn an_opaque_render_of_a_translucent_reference_reports_the_opacity() {
         "{comparison:#}"
     );
     assert!(!findings(&comparison).is_empty(), "{comparison:#}");
+}
+
+#[test]
+fn a_gradient_with_antialiased_edges_is_still_a_gradient() {
+    let fixture = corpus::antialiased_gradient();
+    let analysis = Session::open(&fixture, &fixture.construction).analysis();
+    let fill = first_fill(&analysis);
+
+    assert_eq!(fill["kind"], "radial_gradient", "{fill}");
+    assert!((number(fill, "centre.x") - 32.0).abs() <= 2.0, "{fill}");
+    insta::assert_snapshot!("analysis_antialiased_gradient", snapshot_text(analysis, 1));
+}
+
+#[test]
+fn a_stroked_ring_is_a_closed_stroke_and_a_bar_an_open_one() {
+    let ring = corpus::stroked_ring();
+    let analysis = Session::open(&ring, &ring.construction).analysis();
+    let stroke = &analysis["appearance"]["regions"][0]["stroke"];
+    assert!((number(stroke, "width") - 4.0).abs() <= 1.5, "{stroke}");
+    assert_eq!(stroke["closed"], true, "{stroke}");
+
+    let bar = corpus::stroked_bar();
+    let analysis = Session::open(&bar, &bar.construction).analysis();
+    let stroke = &analysis["appearance"]["regions"][0]["stroke"];
+    assert!((number(stroke, "width") - 3.0).abs() <= 1.0, "{stroke}");
+    assert_eq!(stroke["closed"], false, "{stroke}");
+}
+
+#[test]
+fn a_translucent_overlay_keeps_its_alpha_apart_from_its_colour() {
+    let fixture = corpus::translucent_overlay();
+    let analysis = Session::open(&fixture, &fixture.construction).analysis();
+
+    assert!(number(&analysis, "appearance.alpha.interior_translucent_fraction") > 0.1);
+    insta::assert_snapshot!("analysis_translucent_overlay", snapshot_text(analysis, 1));
+}
+
+#[test]
+fn an_exact_overlay_has_no_findings_and_a_dropped_opacity_has_some() {
+    let fixture = corpus::translucent_overlay();
+    let matching = Session::open(&fixture, &fixture.construction).compare();
+    let opaque = fixture.construction.replace(" fill-opacity=\"0.5\"", "");
+    let comparison = Session::open(&fixture, &opaque).compare();
+
+    assert!(findings(&matching).is_empty(), "{matching:#}");
+    assert!(!findings(&comparison).is_empty(), "{comparison:#}");
+}
+
+#[test]
+fn a_stroke_drawn_too_thick_is_not_an_exact_match() {
+    let fixture = corpus::stroked_ring();
+    let matching = Session::open(&fixture, &fixture.construction).compare();
+    let thick = fixture
+        .construction
+        .replace("stroke-width=\"4\"", "stroke-width=\"9\"");
+    let comparison = Session::open(&fixture, &thick).compare();
+
+    assert!(overlap(&matching) > overlap(&comparison), "{comparison:#}");
 }
