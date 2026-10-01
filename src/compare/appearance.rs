@@ -383,7 +383,7 @@ fn rgb(hex: &str) -> [f64; 3] {
 }
 
 /// Mean absolute channel difference of two `#rrggbb` colours, 0-1.
-fn hex_distance(a: &str, b: &str) -> f64 {
+pub(super) fn hex_distance(a: &str, b: &str) -> f64 {
     let (a, b) = (rgb(a), rgb(b));
     (0..3).map(|i| (a[i] - b[i]).abs()).sum::<f64>() / (3.0 * 255.0)
 }

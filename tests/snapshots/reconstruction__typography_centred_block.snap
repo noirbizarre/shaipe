@@ -1,0 +1,144 @@
+---
+source: tests/reconstruction.rs
+expression: "snapshot_text(typography, 1)"
+---
+{
+  "line_count": 2,
+  "lines": [
+    {
+      "id": 0,
+      "region_ids": [
+        0,
+        1,
+        2,
+        3,
+        5
+      ],
+      "bounding_box": {
+        "x": 10,
+        "y": 14,
+        "width": 44,
+        "height": 12
+      },
+      "orientation": "horizontal",
+      "baseline": 26.0,
+      "baseline_edge": "bottom",
+      "slope_degrees": 0.0,
+      "tall_height": 12.0,
+      "short_height": null,
+      "glyph_count": 5,
+      "mark_count": 0,
+      "off_baseline_count": 0,
+      "letter_gap": {
+        "mean": 3.0,
+        "deviation": 0.0
+      },
+      "word_gap": null,
+      "words": [
+        {
+          "region_ids": [
+            0,
+            1,
+            2,
+            3,
+            5
+          ],
+          "bounding_box": {
+            "x": 10,
+            "y": 14,
+            "width": 44,
+            "height": 12
+          },
+          "glyph_count": 5,
+          "appearance": {
+            "uniform": true,
+            "fill_kinds": [
+              "flat"
+            ],
+            "colour": "#18181b"
+          }
+        }
+      ],
+      "confidence": 0.8,
+      "appearance": {
+        "uniform": true,
+        "fill_kinds": [
+          "flat"
+        ],
+        "colour": "#18181b"
+      }
+    },
+    {
+      "id": 1,
+      "region_ids": [
+        4,
+        6,
+        7,
+        8
+      ],
+      "bounding_box": {
+        "x": 16,
+        "y": 34,
+        "width": 32,
+        "height": 10
+      },
+      "orientation": "horizontal",
+      "baseline": 44.0,
+      "baseline_edge": "bottom",
+      "slope_degrees": 0.0,
+      "tall_height": 10.0,
+      "short_height": null,
+      "glyph_count": 4,
+      "mark_count": 0,
+      "off_baseline_count": 0,
+      "letter_gap": {
+        "mean": 3.0,
+        "deviation": 0.0
+      },
+      "word_gap": null,
+      "words": [
+        {
+          "region_ids": [
+            4,
+            6,
+            7,
+            8
+          ],
+          "bounding_box": {
+            "x": 16,
+            "y": 34,
+            "width": 32,
+            "height": 10
+          },
+          "glyph_count": 4,
+          "appearance": {
+            "uniform": true,
+            "fill_kinds": [
+              "flat"
+            ],
+            "colour": "#18181b"
+          }
+        }
+      ],
+      "confidence": 0.7,
+      "appearance": {
+        "uniform": true,
+        "fill_kinds": [
+          "flat"
+        ],
+        "colour": "#18181b"
+      }
+    }
+  ],
+  "blocks": [
+    {
+      "line_ids": [
+        0,
+        1
+      ],
+      "alignment": "centre",
+      "line_pitch": 18.0,
+      "pitch_deviation": 0.0
+    }
+  ]
+}

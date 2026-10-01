@@ -296,17 +296,19 @@ impl Tool for GetReferenceAnalysis {
          connected regions with bounding boxes and centroids, holes, and \
          left-right/top-bottom symmetry scores, all in the reference's own \
          pixels. `appearance` says, per region, whether its fill is flat, a \
-         linear or radial gradient (axis or centre, stops with opacity) or \
-         varied (not vouched for as a gradient), whether it looks like a \
-         stroke, and how transparent the image is. This is measurement, not interpretation — it cannot say a \
-         region is a \"castle\" or a \"letter A\", only where it is, how big \
-         and what colour; naming it remains your job. Call it after \
+         linear or radial gradient or varied, whether it looks like a \
+         stroke, and how transparent the image is. `typography`, present \
+         only when something behaves like lettering, lists candidate text \
+         lines: their regions, baseline, letter height, spacing, words and \
+         colour. It is geometry, not reading: what the letters say and which \
+         font sets them is yours to read (enlarge a line with \
+         `get_reference_image`) and to say you are unsure of. Measurement, \
+         not interpretation — it cannot say a region is a \"castle\" or a \
+         \"letter A\"; naming it remains your job. Call it after \
          `get_reference_image` and before `get_reference_trace` or \
-         constructing a variant by hand, to ground layout and colour in real \
-         pixels rather than in a guess. Not for photographs, busy \
+         constructing a variant by hand. Not for photographs, busy \
          backgrounds, or artwork that touches the canvas edge: it separates \
-         only one background colour, sampled from the border, from \
-         everything else."
+         only one background colour, sampled from the border."
     }
 
     fn input_schema(&self) -> Value {
@@ -365,24 +367,61 @@ impl Tool for GetReferenceImage {
          shows, so look before you measure, trace or write anything. Cannot \
          show an SVG or PDF reference. The image is returned as it is, \
          unresized; its dimensions are the size `compare_reference` will \
-         render at."
+         render at. To read small or stylised lettering, give `x`, `y`, \
+         `width` and `height` (a text line's `bounding_box` from \
+         `get_reference_analysis`) to get just that area enlarged by `scale`; \
+         the coordinates are the full image's, not the crop's."
     }
 
     fn input_schema(&self) -> Value {
-        object(
-            &[(
-                "src",
-                string(
-                    "Which reference to look at. One of the paths from \
-                     `get_references`, matched exactly.",
+        let area = |what: &str| {
+            json!({
+                "type": "integer",
+                "minimum": if what == "width" || what == "height" { 1 } else { 0 },
+                "description": format!(
+                    "The {what} of the area to enlarge, in the full image's \
+                     pixels. Give all four of `x`, `y`, `width` and `height` \
+                     or none."
                 ),
-            )],
+            })
+        };
+        object(
+            &[
+                (
+                    "src",
+                    string(
+                        "Which reference to look at. One of the paths from \
+                         `get_references`, matched exactly.",
+                    ),
+                ),
+                ("x", area("left edge")),
+                ("y", area("top edge")),
+                ("width", area("width")),
+                ("height", area("height")),
+                (
+                    "scale",
+                    json!({
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_CROP_SCALE,
+                        "description": format!(
+                            "How many times to enlarge the area; default \
+                             {DEFAULT_CROP_SCALE}. Only with an area. The result \
+                             may not exceed {MAX_CROP_SIDE} pixels on a side."
+                        ),
+                    }),
+                ),
+            ],
             &["src"],
         )
     }
 
     fn call(&self, project: &mut Project, input: &Value) -> Result<ToolOutput> {
         let src = PathBuf::from(required_str(self.name(), input, "src")?);
+
+        // Parsed before anything is read: a half-specified area is a mistake
+        // to report, not a reason to touch the filesystem.
+        let crop = CropRequest::parse(self.name(), input)?;
 
         // Resolved before anything is read, so a name that was never attached
         // is reported without ever touching the filesystem.
@@ -404,7 +443,7 @@ impl Tool for GetReferenceImage {
         let bytes =
             std::fs::read(&resolved).map_err(|error| crate::Error::io(resolved.clone(), error))?;
 
-        Ok(ToolOutput::json(json!({
+        let mut report = json!({
             "src": reference.src.display().to_string(),
             "resolved": resolved.display().to_string(),
             "kind": reference.kind.to_string(),
@@ -415,12 +454,181 @@ impl Tool for GetReferenceImage {
             // bytes that do not decode: this tool has never refused those, and
             // `get_reference_analysis` is where a bad image is reported.
             "dimensions": pixel_dimensions(&bytes),
-        }))
-        .with_image(ToolImage::new(
-            format!("{} ({})", reference.src.display(), reference.kind),
-            mime_type,
-            bytes,
+        });
+
+        let Some(crop) = crop else {
+            return Ok(ToolOutput::json(report).with_image(ToolImage::new(
+                format!("{} ({})", reference.src.display(), reference.kind),
+                mime_type,
+                bytes,
+            )));
+        };
+
+        let (enlarged, output) = crop.apply(self.name(), &resolved, &bytes)?;
+        report["crop"] = json!({
+            "x": crop.x,
+            "y": crop.y,
+            "width": crop.width,
+            "height": crop.height,
+            "scale": crop.scale,
+            // Always PNG, whatever the reference was: it was re-encoded.
+            "mime_type": "image/png",
+            "output": { "width": output.0, "height": output.1 },
+        });
+        Ok(ToolOutput::json(report).with_image(ToolImage::png(
+            format!(
+                "{} enlarged x{}: x={} y={} {}x{}",
+                reference.src.display(),
+                crop.scale,
+                crop.x,
+                crop.y,
+                crop.width,
+                crop.height
+            ),
+            enlarged,
         )))
+    }
+}
+
+/// How many times a crop may be enlarged.
+const MAX_CROP_SCALE: u32 = 8;
+/// The enlargement used when `scale` is omitted.
+const DEFAULT_CROP_SCALE: u32 = 4;
+/// The most pixels an enlarged crop may have along a side: a request for the
+/// whole of a large photograph at x8 would be an unbounded quantity of image
+/// in one response, the same reason `render_grid` caps its list.
+const MAX_CROP_SIDE: u32 = 2048;
+
+/// An area of a reference to look at enlarged.
+struct CropRequest {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    scale: u32,
+}
+
+impl CropRequest {
+    /// Read the optional area out of a tool call: all four of `x`, `y`,
+    /// `width` and `height`, or none. `None` when none are given.
+    ///
+    /// Refused rather than defaulted or clamped, like `get_reference_trace`'s
+    /// options: an area that is quietly a different one is a model reading
+    /// the wrong letters.
+    fn parse(tool: &str, input: &Value) -> Result<Option<Self>> {
+        let refuse = |reason: String| crate::Error::InvalidToolInput {
+            tool: tool.to_owned(),
+            reason,
+        };
+        let present = |key: &str| input.get(key).filter(|value| !value.is_null());
+        let number = |key: &str| -> Result<Option<u32>> {
+            present(key)
+                .map(|raw| {
+                    raw.as_u64()
+                        .and_then(|value| u32::try_from(value).ok())
+                        .ok_or_else(|| {
+                            refuse(format!(
+                                "`{key}` must be a whole number of pixels, got {raw}"
+                            ))
+                        })
+                })
+                .transpose()
+        };
+
+        let (x, y, width, height) = (
+            number("x")?,
+            number("y")?,
+            number("width")?,
+            number("height")?,
+        );
+        let scale = number("scale")?;
+
+        let given = [x, y, width, height].iter().filter(|v| v.is_some()).count();
+        if given == 0 {
+            return match scale {
+                None => Ok(None),
+                Some(_) => Err(refuse(
+                    "`scale` enlarges an area; give `x`, `y`, `width` and `height` as well, or \
+                     omit `scale` to look at the whole image"
+                        .to_owned(),
+                )),
+            };
+        }
+        let (Some(x), Some(y), Some(width), Some(height)) = (x, y, width, height) else {
+            return Err(refuse(
+                "give all four of `x`, `y`, `width` and `height`, or none of them; a text \
+                 line's `bounding_box` from `get_reference_analysis` has all four"
+                    .to_owned(),
+            ));
+        };
+        if width == 0 || height == 0 {
+            return Err(refuse(format!(
+                "`width` and `height` must be at least 1, got {width}x{height}"
+            )));
+        }
+
+        let scale = scale.unwrap_or(DEFAULT_CROP_SCALE);
+        if !(1..=MAX_CROP_SCALE).contains(&scale) {
+            return Err(refuse(format!(
+                "`scale` must be between 1 and {MAX_CROP_SCALE}, got {scale}"
+            )));
+        }
+        let (out_width, out_height) = (
+            u64::from(width) * u64::from(scale),
+            u64::from(height) * u64::from(scale),
+        );
+        if out_width.max(out_height) > u64::from(MAX_CROP_SIDE) {
+            return Err(refuse(format!(
+                "{width}x{height} enlarged x{scale} is {out_width}x{out_height}, over the \
+                 {MAX_CROP_SIDE} pixel limit on a side; lower `scale` or ask for a smaller area"
+            )));
+        }
+        Ok(Some(Self {
+            x,
+            y,
+            width,
+            height,
+            scale,
+        }))
+    }
+
+    /// Cut the area out of `bytes` and enlarge it. Returns the PNG and its
+    /// size.
+    fn apply(&self, tool: &str, path: &Path, bytes: &[u8]) -> Result<(Vec<u8>, (u32, u32))> {
+        let decoded =
+            image::load_from_memory(bytes).map_err(|source| crate::Error::AnalysisDecode {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        let (full_width, full_height) = image::GenericImageView::dimensions(&decoded);
+        let (right, bottom) = (
+            u64::from(self.x) + u64::from(self.width),
+            u64::from(self.y) + u64::from(self.height),
+        );
+        if right > u64::from(full_width) || bottom > u64::from(full_height) {
+            return Err(crate::Error::InvalidToolInput {
+                tool: tool.to_owned(),
+                reason: format!(
+                    "the area x={} y={} {}x{} reaches beyond the {full_width}x{full_height} \
+                     image; it must fit inside it",
+                    self.x, self.y, self.width, self.height
+                ),
+            });
+        }
+
+        let cut = decoded.crop_imm(self.x, self.y, self.width, self.height);
+        let output = (self.width * self.scale, self.height * self.scale);
+        // CatmullRom: sharp enough that a thin serif survives, and unlike
+        // Lanczos it does not ring visibly round a hard edge.
+        let enlarged =
+            cut.resize_exact(output.0, output.1, image::imageops::FilterType::CatmullRom);
+        let mut png = Vec::new();
+        // Same as `compare`'s own encoder: a buffer that decoded cannot fail
+        // to encode, and an error variant for it would never be seen.
+        enlarged
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .expect("encoding an already-decoded image to PNG never fails");
+        Ok((png, output))
     }
 }
 
@@ -493,7 +701,8 @@ impl Tool for GetReferenceTrace {
          traces each region as its own path, for multi-colour artwork; a \
          gradient or translucent fill stays one path painted with its \
          measured fill, and `fallbacks` lists regions that vary but are not \
-         one. The background becomes one more region. \
+         one. The background becomes one more region. Prefer `<text>` to \
+         the paths of any `typography` line. \
          Returns a standalone SVG in the reference's own pixel space with no \
          `viewBox` — give a grafted element a `viewBox` or a transform — an \
          overall bounding box, up to 32 paths (bounding box, approximate area \
@@ -716,12 +925,14 @@ impl Tool for CompareReference {
          reports foreground-mask overlap, bounding-box and centroid offsets \
          (render minus reference), pixel error, an SSIM-based perceptual \
          similarity and edge overlap, each separately rather than as one \
-         score. `appearance` separately reports fill mismatches (kind, \
-         gradient, opacity, stroke) per region; its `findings` say what to \
-         change. Returns four images, in order: the \
-         reference, the render, an overlay (only in the reference: red \
-         `#ff2060`; only in the render: cyan `#20c8ff`; in both: white) and a \
-         difference heatmap. Measurement, not judgement: it says what \
+         score. `appearance` reports fill mismatches per region and \
+         `typography`, when either image has lettering, reports baseline, \
+         letter height, length, spacing and colour per text line; their \
+         `findings` say what to change. `declared_text` lists the variant's \
+         `<text>` with the confidence you gave it. Returns four images, in \
+         order: the reference, the render, an overlay (only in the reference: \
+         red `#ff2060`; only in the render: cyan `#20c8ff`; in both: white) \
+         and a difference heatmap. Measurement, not judgement: it says what \
          differs and by how much, never that you are finished. Use it after \
          each `write_variant` or `write_svg` when reproducing a `source` \
          reference, fix the largest offset, and call it again; use \
@@ -787,7 +998,8 @@ impl Tool for CompareReference {
             // if nothing else was painted behind it.
             background: Background::Transparent,
         };
-        let asset = Renderer::new(project, RenderOptions::default())?.render(&spec)?;
+        let renderer = Renderer::new(project, RenderOptions::default())?;
+        let asset = renderer.render(&spec)?;
 
         // A synthetic label, never read: the render was just produced from
         // bytes this call encoded itself, so a decode failure here would be
@@ -796,10 +1008,29 @@ impl Tool for CompareReference {
         let (comparison, images) =
             crate::compare::compare(&resolved, &reference_bytes, &render_label, &asset.bytes)?;
 
-        Ok(ToolOutput::json(
-            serde_json::to_value(&comparison).expect("Comparison always serialises"),
-        )
-        .with_images([
+        let mut report = serde_json::to_value(&comparison).expect("Comparison always serialises");
+
+        // The variant's own `<text>`, which no pixel can tell: read from the
+        // isolated SVG the renderer draws, so it is exactly the text this
+        // variant paints and not another variant's. Left out when neither
+        // side has any lettering, so a comparison of plain artwork reads as
+        // it always did.
+        let svg_spec = RenderSpec {
+            format: Format::Svg,
+            ..spec.clone()
+        };
+        let svg_asset = renderer.render(&svg_spec)?;
+        let texts = crate::render::declared_text(&String::from_utf8_lossy(&svg_asset.bytes));
+        let findings = crate::compare::declared_text_findings(
+            &texts,
+            comparison.typography.reference_line_count,
+            comparison.typography.render_line_count,
+        );
+        if !texts.is_empty() || !findings.is_empty() {
+            report["declared_text"] = json!({ "elements": texts, "findings": findings });
+        }
+
+        Ok(ToolOutput::json(report).with_images([
             ToolImage::new(
                 format!("{} ({})", reference.src.display(), reference.kind),
                 mime_type,
@@ -3396,6 +3627,193 @@ mod tests {
             )
             .unwrap();
         assert_eq!(output.value["dimensions"], Value::Null);
+    }
+
+    /// A project with a reference attached, on disk, as `mockup.png`.
+    fn project_with_reference(png: Vec<u8>) -> (tempfile::TempDir, Project) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        std::fs::write(directory.path().join("mockup.png"), png).unwrap();
+        let mut project = Project::open(&path).unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+        (directory, project)
+    }
+
+    #[test]
+    fn get_reference_image_enlarges_the_area_it_is_asked_for() {
+        let (_directory, mut project) = project_with_reference(ring_png(64));
+
+        let output = Registry::new()
+            .call(
+                "get_reference_image",
+                &mut project,
+                &json!({ "src": "mockup.png", "x": 8, "y": 4, "width": 20, "height": 10, "scale": 3 }),
+            )
+            .unwrap();
+
+        // The report still says what the file is; the crop says what was cut.
+        assert_eq!(output.value["dimensions"]["width"], 64);
+        assert_eq!(output.value["crop"]["output"]["width"], 60);
+        assert_eq!(output.value["crop"]["output"]["height"], 30);
+        let [image] = &output.images[..] else {
+            panic!("expected one image");
+        };
+        assert_eq!(image.mime_type, "image/png");
+        let decoded = image::load_from_memory(&image.bytes).unwrap();
+        assert_eq!(image::GenericImageView::dimensions(&decoded), (60, 30));
+    }
+
+    #[test]
+    fn get_reference_image_without_an_area_still_returns_the_file_untouched() {
+        let png = ring_png(64);
+        let (_directory, mut project) = project_with_reference(png.clone());
+
+        let output = Registry::new()
+            .call(
+                "get_reference_image",
+                &mut project,
+                &json!({ "src": "mockup.png" }),
+            )
+            .unwrap();
+
+        assert_eq!(output.images[0].bytes, png);
+        assert!(output.value.get("crop").is_none());
+    }
+
+    #[test]
+    fn get_reference_image_refuses_an_area_it_cannot_cut() {
+        let (_directory, mut project) = project_with_reference(ring_png(300));
+
+        for (input, mentions) in [
+            (json!({ "x": 0, "y": 0, "width": 10 }), "all four"),
+            (json!({ "scale": 2 }), "scale"),
+            (
+                json!({ "x": 295, "y": 0, "width": 10, "height": 10 }),
+                "300x300",
+            ),
+            (
+                json!({ "x": 0, "y": 0, "width": 0, "height": 10 }),
+                "at least 1",
+            ),
+            (
+                json!({ "x": 0, "y": 0, "width": 64, "height": 64, "scale": 9 }),
+                "between 1 and 8",
+            ),
+            (
+                json!({ "x": 0, "y": 0, "width": 300, "height": 300, "scale": 8 }),
+                "limit",
+            ),
+            (
+                json!({ "x": "0", "y": 0, "width": 10, "height": 10 }),
+                "`x`",
+            ),
+        ] {
+            let mut call = json!({ "src": "mockup.png" });
+            call.as_object_mut()
+                .unwrap()
+                .extend(input.as_object().unwrap().clone());
+
+            let error = Registry::new()
+                .call("get_reference_image", &mut project, &call)
+                .unwrap_err();
+
+            assert!(
+                matches!(error, Error::InvalidToolInput { .. }),
+                "{call}: {error:?}"
+            );
+            assert!(error.to_string().contains(mentions), "{call}: {error}");
+        }
+    }
+
+    /// The fixture project with its `icon` symbol replaced by `body`.
+    fn project_drawing(body: &str) -> (tempfile::TempDir, Project) {
+        let source = fixtures::PROJECT.replace(
+            r##"<symbol id="icon" viewBox="0 0 64 64"><rect width="64" height="64" fill="#f05032"/></symbol>"##,
+            &format!(r#"<symbol id="icon" viewBox="0 0 64 64">{body}</symbol>"#),
+        );
+        assert_ne!(
+            source,
+            fixtures::PROJECT,
+            "the fixture changed under this test"
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, source).unwrap();
+        std::fs::write(directory.path().join("mockup.png"), ring_png(64)).unwrap();
+        let mut project = Project::open(&path).unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("mockup.png", ReferenceKind::Source));
+        (directory, project)
+    }
+
+    #[test]
+    fn compare_reference_reports_the_variants_text_and_how_sure_its_author_was() {
+        let (_directory, mut project) = project_drawing(
+            r#"<text x="4" y="40" font-size="12" font-family="sans-serif" data-shaipe-confidence="low" data-shaipe-note="second letter is a or o">Acme</text>"#,
+        );
+
+        let output = Registry::new()
+            .call(
+                "compare_reference",
+                &mut project,
+                &json!({ "src": "mockup.png", "variant": "icon" }),
+            )
+            .unwrap();
+
+        let declared = &output.value["declared_text"];
+        assert_eq!(declared["elements"][0]["content"], "Acme");
+        assert_eq!(declared["elements"][0]["confidence"], "low");
+        assert_eq!(declared["elements"][0]["note"], "second letter is a or o");
+        let findings = declared["findings"].to_string();
+        assert!(findings.contains("low-confidence"), "{findings}");
+    }
+
+    #[test]
+    fn text_carrying_shaipe_attributes_renders_the_same_as_without_them() {
+        // The claim the convention rests on: the renderer does not see them.
+        let plain = r##"<rect x="4" y="4" width="30" height="20" fill="#18181b"/><text x="4" y="50" font-size="12" font-family="sans-serif">Acme</text>"##;
+        let marked = plain.replace(
+            "<text ",
+            r#"<text data-shaipe-confidence="low" data-shaipe-note="a guess" "#,
+        );
+
+        let render = |body: &str| {
+            let (_directory, mut project) = project_drawing(body);
+            Registry::new()
+                .call(
+                    "render_svg",
+                    &mut project,
+                    &json!({ "variant": "icon", "width": 64 }),
+                )
+                .unwrap()
+                .images[0]
+                .bytes
+                .clone()
+        };
+
+        assert_eq!(render(plain), render(&marked));
+    }
+
+    #[test]
+    fn compare_reference_of_plain_artwork_has_no_text_section() {
+        let (_directory, mut project) = project_with_reference(ring_png(64));
+
+        let output = Registry::new()
+            .call(
+                "compare_reference",
+                &mut project,
+                &json!({ "src": "mockup.png", "variant": "icon" }),
+            )
+            .unwrap();
+
+        assert!(output.value.get("declared_text").is_none());
+        assert!(output.value.get("typography").is_none());
     }
 
     #[test]

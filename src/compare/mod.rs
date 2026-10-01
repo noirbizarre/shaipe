@@ -33,6 +33,7 @@
 //! free.
 
 mod appearance;
+mod typography;
 
 use std::path::Path;
 
@@ -43,6 +44,7 @@ use crate::analysis::{self, Background, BoundingBox, Centroid, Classified, Dimen
 use crate::error::{Error, Result};
 
 pub use appearance::{AlphaComparison, AppearanceComparison, RegionComparison};
+pub use typography::{LineComparison, TypographyComparison, declared_text_findings};
 
 /// A per-channel difference below this (out of 255) is not counted as
 /// "changed" for [`PixelError::changed_pixel_fraction`] — real
@@ -90,6 +92,11 @@ pub struct Comparison {
     /// region against region. Reported apart from the geometry above so a
     /// render that is the right shape with the wrong fill says so.
     pub appearance: AppearanceComparison,
+    /// Lettering, line against line: baseline, letter height, width, spacing
+    /// and colour. Left out when neither image has any, so a comparison of
+    /// artwork without text reads as it always did.
+    #[serde(skip_serializing_if = "TypographyComparison::is_empty")]
+    pub typography: TypographyComparison,
 }
 
 /// Overlap of two boolean masks of the same canvas — shared shape for
@@ -272,6 +279,9 @@ pub fn compare(
         &render_map,
     );
 
+    let typography =
+        typography::compare_typography(&reference_analysis.typography, &render_analysis.typography);
+
     let reference_background = background_of(&reference);
     let render_background = background_of(&render);
 
@@ -326,6 +336,7 @@ pub fn compare(
             pixel_error,
             perceptual_similarity,
             appearance,
+            typography,
         },
         ComparisonImages {
             overlay,

@@ -955,3 +955,311 @@ fn a_stroke_drawn_too_thick_is_not_an_exact_match() {
 
     assert!(overlap(&matching) > overlap(&comparison), "{comparison:#}");
 }
+
+// --- typography (ADR 028) ---------------------------------------------------
+
+fn text_fixtures() -> Vec<corpus::Fixture> {
+    vec![
+        corpus::text_line(),
+        corpus::coloured_words(),
+        corpus::centred_block(),
+        corpus::stacked_letters(),
+    ]
+}
+
+/// Everything that is a reference but not lettering: the corpus, the
+/// appearance controls and the typography controls.
+fn fixtures_without_lettering() -> Vec<corpus::Fixture> {
+    let mut fixtures = corpus::all();
+    fixtures.extend([
+        corpus::linear_gradient(),
+        corpus::radial_gradient(),
+        corpus::translucent_fill(),
+        corpus::hard_step(),
+        corpus::speckled_fill(),
+        corpus::antialiased_gradient(),
+        corpus::stroked_ring(),
+        corpus::stroked_bar(),
+        corpus::translucent_overlay(),
+        corpus::near_flat_ramp(),
+        corpus::blocky_artefacts(),
+        corpus::scattered_shapes(),
+        corpus::row_of_dots(),
+        corpus::single_large_letter(),
+    ]);
+    fixtures
+}
+
+fn typography_of(fixture: &corpus::Fixture) -> Value {
+    Session::open(fixture, &fixture.construction).analysis()["typography"].clone()
+}
+
+#[test]
+fn the_text_fixtures_are_deterministic_and_small_enough_to_redistribute() {
+    for (a, b) in text_fixtures().iter().zip(&text_fixtures()) {
+        assert_eq!(a.png, b.png, "`{}` differs between two generations", a.name);
+        assert!(
+            a.png.len() < 8 * 1024,
+            "`{}` is {} bytes",
+            a.name,
+            a.png.len()
+        );
+    }
+}
+
+#[test]
+fn a_line_of_mixed_case_text_is_found_with_its_baseline_heights_and_marks() {
+    let fixture = corpus::text_line();
+    let typography = typography_of(&fixture);
+    let line = &typography["lines"][0];
+
+    assert_eq!(typography["line_count"], 1, "{typography:#}");
+    assert_eq!(line["orientation"], "horizontal");
+    assert_eq!(line["baseline"], 36.0, "drawn standing on y=36");
+    assert_eq!(line["baseline_edge"], "bottom");
+    assert_eq!(line["tall_height"], 12.0, "the capital");
+    assert_eq!(line["short_height"], 8.0, "the short letters");
+    assert_eq!(line["glyph_count"], 6, "the dot is not a letter");
+    assert_eq!(line["mark_count"], 1, "the dot over the stem");
+    assert_eq!(line["off_baseline_count"], 1, "the descender");
+    assert_eq!(line["words"].as_array().expect("words").len(), 1);
+    insta::assert_snapshot!("typography_text_line", snapshot_text(typography, 1));
+}
+
+#[test]
+fn two_words_are_split_and_each_keeps_its_own_appearance() {
+    let fixture = corpus::coloured_words();
+    let typography = typography_of(&fixture);
+    let line = &typography["lines"][0];
+    let words = line["words"].as_array().expect("words");
+
+    assert_eq!(words.len(), 2, "{typography:#}");
+    assert_eq!(words[0]["appearance"]["uniform"], true);
+    assert_eq!(words[0]["appearance"]["colour"], "#18181b");
+    assert_eq!(words[1]["appearance"]["colour"], "#c81e1e");
+    assert_eq!(
+        line["appearance"]["uniform"], false,
+        "the line as a whole is two colours: {line:#}"
+    );
+    insta::assert_snapshot!("typography_coloured_words", snapshot_text(typography, 1));
+}
+
+#[test]
+fn two_centred_lines_are_one_block_with_their_alignment_and_pitch() {
+    let fixture = corpus::centred_block();
+    let typography = typography_of(&fixture);
+    let block = &typography["blocks"][0];
+
+    assert_eq!(typography["line_count"], 2, "{typography:#}");
+    assert_eq!(block["alignment"], "centre", "{block}");
+    // Baselines at y=26 and y=44.
+    assert_eq!(block["line_pitch"], 18.0, "{block}");
+    insta::assert_snapshot!("typography_centred_block", snapshot_text(typography, 1));
+}
+
+#[test]
+fn stacked_letters_are_vertical_lettering() {
+    let fixture = corpus::stacked_letters();
+    let typography = typography_of(&fixture);
+    let line = &typography["lines"][0];
+
+    assert_eq!(line["orientation"], "vertical", "{typography:#}");
+    assert_eq!(line["baseline_edge"], "centre");
+    assert_eq!(line["baseline"], 32.0, "centred on x=32");
+    insta::assert_snapshot!("typography_stacked_letters", snapshot_text(typography, 1));
+}
+
+#[test]
+fn shapes_that_are_not_lettering_are_not_reported_as_lettering() {
+    for fixture in fixtures_without_lettering() {
+        let analysis = Session::open(&fixture, &fixture.construction).analysis();
+        assert!(
+            analysis.get("typography").is_none(),
+            "`{}` was reported as lettering: {:#}",
+            fixture.name,
+            analysis["typography"]
+        );
+    }
+}
+
+#[test]
+fn typography_is_measured_identically_every_time() {
+    for fixture in text_fixtures() {
+        assert_eq!(
+            typography_of(&fixture),
+            typography_of(&fixture),
+            "`{}`",
+            fixture.name
+        );
+    }
+}
+
+fn baseline_offset(comparison: &Value) -> f64 {
+    comparison["typography"]["lines"][0]["baseline_offset"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("no baseline offset in {comparison:#}"))
+}
+
+fn typography_findings(comparison: &Value) -> Vec<String> {
+    comparison["typography"]["findings"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .map(|f| f.as_str().expect("a sentence").to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn an_exact_reconstruction_of_lettering_has_no_typography_findings() {
+    for fixture in text_fixtures() {
+        let comparison = Session::open(&fixture, &fixture.construction).compare();
+
+        assert!(
+            typography_findings(&comparison).is_empty(),
+            "`{}`: {comparison:#}",
+            fixture.name
+        );
+        assert!(
+            comparison["typography"]["reference_line_count"].as_u64() > Some(0),
+            "`{}` should be compared as lettering",
+            fixture.name
+        );
+    }
+}
+
+#[test]
+fn lettering_set_too_low_says_how_far_and_which_way_to_move_it() {
+    let fixture = corpus::text_line();
+    let shifted = format!(
+        r#"<g transform="translate(0 4)">{}</g>"#,
+        fixture.construction
+    );
+    let comparison = Session::open(&fixture, &shifted).compare();
+
+    assert_eq!(baseline_offset(&comparison), 4.0, "{comparison:#}");
+    assert!(
+        typography_findings(&comparison)
+            .iter()
+            .any(|f| f.contains("up") && f.contains("4.0px")),
+        "{comparison:#}"
+    );
+}
+
+#[test]
+fn lettering_set_too_small_says_how_much_to_scale_the_font() {
+    let fixture = corpus::text_line();
+    // Half the size, standing on the same baseline.
+    let small = format!(
+        r#"<g transform="translate(0 18) scale(1 0.5)">{}</g>"#,
+        fixture.construction
+    );
+    let comparison = Session::open(&fixture, &small).compare();
+
+    assert!(
+        typography_findings(&comparison)
+            .iter()
+            .any(|f| f.contains("shorter") && f.contains("font-size")),
+        "{comparison:#}"
+    );
+}
+
+#[test]
+fn lettering_that_is_missing_is_reported_where_the_reference_has_it() {
+    let fixture = corpus::text_line();
+    let comparison = Session::open(&fixture, "").compare();
+
+    assert!(
+        typography_findings(&comparison)
+            .iter()
+            .any(|f| f.contains("render sets none")),
+        "{comparison:#}"
+    );
+    // Without a `<text>`, the comparison says so as well.
+    assert!(
+        comparison["declared_text"]["findings"]
+            .to_string()
+            .contains("no `<text>`"),
+        "{comparison:#}"
+    );
+}
+
+#[test]
+fn two_words_set_in_one_colour_are_not_the_two_colours_the_reference_has() {
+    let fixture = corpus::coloured_words();
+    let one_colour = fixture.construction.replace("#c81e1e", "#18181b");
+    let comparison = Session::open(&fixture, &one_colour).compare();
+
+    assert!(
+        typography_findings(&comparison)
+            .iter()
+            .any(|f| f.contains("one colour")),
+        "{comparison:#}"
+    );
+}
+
+#[test]
+fn a_baseline_found_by_comparison_alone_is_enough_to_fix_it() {
+    // The model-free version of what an agent does: read the offset the
+    // comparison reports, move the text by it, and compare again.
+    let fixture = corpus::text_line();
+    let wrap = |dy: f64| {
+        format!(
+            r#"<g transform="translate(0 {dy})">{}</g>"#,
+            fixture.construction
+        )
+    };
+
+    let mut session = Session::open(&fixture, &wrap(5.0));
+    let before = session.compare();
+    let offset = baseline_offset(&before);
+    assert_eq!(offset, 5.0);
+
+    session.draw(&wrap(5.0 - offset));
+    let after = session.compare();
+
+    assert!(overlap(&after) > overlap(&before), "{after:#}");
+    assert!(typography_findings(&after).is_empty(), "{after:#}");
+    assert_eq!(baseline_offset(&after), 0.0);
+}
+
+#[test]
+fn a_text_line_can_be_looked_at_enlarged_by_its_own_bounding_box() {
+    let fixture = corpus::text_line();
+    let mut session = Session::open(&fixture, &fixture.construction);
+    let line = session.analysis()["typography"]["lines"][0].clone();
+    let b = &line["bounding_box"];
+
+    let output = session.call(
+        "get_reference_image",
+        &json!({
+            "src": "reference.png",
+            "x": b["x"], "y": b["y"], "width": b["width"], "height": b["height"],
+            "scale": 4,
+        }),
+    );
+
+    let (width, height) = (b["width"].as_u64().unwrap(), b["height"].as_u64().unwrap());
+    assert_eq!(output.value["crop"]["output"]["width"], width * 4);
+    assert_eq!(output.value["crop"]["output"]["height"], height * 4);
+}
+
+#[test]
+fn text_a_variant_declares_is_reported_with_the_confidence_it_was_given() {
+    let fixture = corpus::text_line();
+    let body = format!(
+        r#"{}<text x="6" y="36" font-size="16" font-family="sans-serif" data-shaipe-confidence="low" data-shaipe-note="the fourth letter may be an l">Acme</text>"#,
+        fixture.construction
+    );
+    let comparison = Session::open(&fixture, &body).compare();
+    let declared = &comparison["declared_text"];
+
+    assert_eq!(declared["elements"][0]["content"], "Acme");
+    assert!(
+        declared["findings"]
+            .to_string()
+            .contains("low-confidence text"),
+        "{declared:#}"
+    );
+}

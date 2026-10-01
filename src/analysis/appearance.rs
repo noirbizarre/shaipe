@@ -311,6 +311,49 @@ pub(super) fn measure(
     }
 }
 
+/// How one region looks, in the two terms a group of regions is summarised by.
+pub(super) struct MemberLook {
+    /// The fill's kind: `flat`, `linear_gradient`, `radial_gradient` or
+    /// `varied`.
+    pub kind: &'static str,
+    /// Mean red, green and blue over the interior pixels, 0-255.
+    pub colour: [f64; 3],
+}
+
+/// [`MemberLook`] for any region, reported or not.
+///
+/// [`measure`] only covers the regions [`super::Analysis::regions`] lists, but
+/// a line of lettering has more glyphs than that, and its colour is a fact
+/// about all of them. This is the same measurement, run on one region.
+pub(super) fn member_look(
+    pixels: &[u8],
+    width: usize,
+    region_map: &[u32],
+    region: &Region,
+) -> MemberLook {
+    let local = local_mask(region, region_map, width);
+    let samples = interior_samples(&local, pixels, width);
+    let fill = classify_fill(&samples, &footprint(&local), region);
+    // Never divides by zero: a region has at least one pixel and the erosion
+    // in `interior_samples` stops before it would empty one.
+    let count = samples.len().max(1) as f64;
+    let mut colour = [0.0; 3];
+    for sample in &samples {
+        for (total, channel) in colour.iter_mut().zip(sample.c) {
+            *total += channel / count;
+        }
+    }
+    MemberLook {
+        kind: match fill {
+            Fill::Flat { .. } => "flat",
+            Fill::LinearGradient { .. } => "linear_gradient",
+            Fill::RadialGradient { .. } => "radial_gradient",
+            Fill::Varied { .. } => "varied",
+        },
+        colour,
+    }
+}
+
 /// Fractions of the image by alpha class, and the translucent interior.
 fn alpha_summary(pixels: &[u8], width: usize, height: usize) -> AlphaSummary {
     let alpha = |x: usize, y: usize| pixels[(y * width + x) * 4 + 3];

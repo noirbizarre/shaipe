@@ -1,0 +1,76 @@
+---
+source: tests/reconstruction.rs
+expression: "snapshot_text(typography, 1)"
+---
+{
+  "line_count": 1,
+  "lines": [
+    {
+      "id": 0,
+      "region_ids": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "bounding_box": {
+        "x": 6,
+        "y": 24,
+        "width": 52,
+        "height": 17
+      },
+      "orientation": "horizontal",
+      "baseline": 36.0,
+      "baseline_edge": "bottom",
+      "slope_degrees": 0.0,
+      "tall_height": 12.0,
+      "short_height": 8.0,
+      "glyph_count": 6,
+      "mark_count": 1,
+      "off_baseline_count": 1,
+      "letter_gap": {
+        "mean": 3.0,
+        "deviation": 0.0
+      },
+      "word_gap": null,
+      "words": [
+        {
+          "region_ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "bounding_box": {
+            "x": 6,
+            "y": 24,
+            "width": 52,
+            "height": 17
+          },
+          "glyph_count": 6,
+          "appearance": {
+            "uniform": true,
+            "fill_kinds": [
+              "flat"
+            ],
+            "colour": "#18181b"
+          }
+        }
+      ],
+      "confidence": 0.9,
+      "appearance": {
+        "uniform": true,
+        "fill_kinds": [
+          "flat"
+        ],
+        "colour": "#18181b"
+      }
+    }
+  ]
+}

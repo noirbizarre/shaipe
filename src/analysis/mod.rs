@@ -34,10 +34,15 @@ use serde::Serialize;
 use crate::error::{Error, Result};
 
 mod appearance;
+mod typography;
 pub(crate) use appearance::OPAQUE_FLOOR;
 
 pub use appearance::{
     AlphaSummary, Appearance, Fill, GradientStop, Opacity, Point, RegionAppearance, Stroke,
+};
+pub use typography::{
+    Alignment, BaselineEdge, Gap, GroupAppearance, Orientation, TextBlock, TextLine, TextWord,
+    Typography,
 };
 
 /// What a pixel's entry in the region map holds when it belongs to no region.
@@ -97,6 +102,11 @@ pub struct Analysis {
     /// of `regions` whether it is a flat colour, a gradient or neither, and
     /// whether it is shaped like a stroke.
     pub appearance: Appearance,
+    /// Which regions behave like lettering, and how it is set out. Left out
+    /// of the report when there is none, so a reference without text reads
+    /// exactly as it did before this existed. See ADR 028.
+    #[serde(skip_serializing_if = "Typography::is_empty")]
+    pub typography: Typography,
 }
 
 /// An image's size, in pixels.
@@ -511,6 +521,11 @@ pub(crate) fn analyze_with_regions(path: &Path, bytes: &[u8]) -> Result<(Analysi
         &holes,
     );
 
+    // --- typography: rows of regions that behave like lettering ---
+    // Given every region, not the reported ones: a wordmark can have more
+    // letters than `MAX_REGIONS`.
+    let typography = typography::measure(&pixels, width_usize, &region_map, &all_regions);
+
     Ok((
         Analysis {
             dimensions,
@@ -523,6 +538,7 @@ pub(crate) fn analyze_with_regions(path: &Path, bytes: &[u8]) -> Result<(Analysi
             holes,
             symmetry,
             appearance,
+            typography,
         },
         region_map,
     ))

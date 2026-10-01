@@ -1,0 +1,96 @@
+---
+source: tests/reconstruction.rs
+expression: "snapshot_text(typography, 1)"
+---
+{
+  "line_count": 1,
+  "lines": [
+    {
+      "id": 0,
+      "region_ids": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "bounding_box": {
+        "x": 4,
+        "y": 24,
+        "width": 58,
+        "height": 12
+      },
+      "orientation": "horizontal",
+      "baseline": 36.0,
+      "baseline_edge": "bottom",
+      "slope_degrees": 0.0,
+      "tall_height": 12.0,
+      "short_height": null,
+      "glyph_count": 6,
+      "mark_count": 0,
+      "off_baseline_count": 0,
+      "letter_gap": {
+        "mean": 3.0,
+        "deviation": 0.0
+      },
+      "word_gap": 10.0,
+      "words": [
+        {
+          "region_ids": [
+            0,
+            2,
+            4
+          ],
+          "bounding_box": {
+            "x": 4,
+            "y": 24,
+            "width": 24,
+            "height": 12
+          },
+          "glyph_count": 3,
+          "appearance": {
+            "uniform": true,
+            "fill_kinds": [
+              "flat"
+            ],
+            "colour": "#18181b"
+          }
+        },
+        {
+          "region_ids": [
+            1,
+            3,
+            5
+          ],
+          "bounding_box": {
+            "x": 38,
+            "y": 24,
+            "width": 24,
+            "height": 12
+          },
+          "glyph_count": 3,
+          "appearance": {
+            "uniform": true,
+            "fill_kinds": [
+              "flat"
+            ],
+            "colour": "#c81e1e"
+          }
+        }
+      ],
+      "confidence": 0.8,
+      "appearance": {
+        "uniform": false,
+        "fill_kinds": [
+          "flat"
+        ],
+        "colour": null,
+        "colours": [
+          "#18181b",
+          "#c81e1e"
+        ]
+      }
+    }
+  ]
+}
