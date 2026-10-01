@@ -277,7 +277,7 @@ see `docs/adr/004-tools-not-a-model.md`.
       point at `render_svg`/`compare_reference`, and an MCP error carries its
       cause; guarded by tests that fail on a dangling name, an overclaim or a
       copy of the phase order — ADR-023
-- [x] The reconstruction loop proven without a model: seven computed reference
+- [x] The reconstruction loop proven without a model: computed reference
       fixtures, insta goldens for analysis and tracing, known-behaviour checks
       on every comparison metric, and a loop that improves from a bad start;
       it found that anti-aliasing fringes inflated the strategy's colour
@@ -294,6 +294,8 @@ see `docs/adr/004-tools-not-a-model.md`.
       once as its outline and painted with the measured fill, geometry and
       appearance joined by `region_id`, what varies but is no gradient listed
       as a fallback, `appearance: false` for plain layers — ADR-026
+- [x] Appearance-aware comparison: fill, gradient and opacity differences
+      reported in an `appearance` diff apart from the geometry metrics — ADR-027
 
 ## Artwork
 
@@ -337,10 +339,10 @@ Toolchain, docs, release.
 
 ## Roadmap
 
-- [ ] Epic 1.5 — visual understanding and appearance analysis: gradients, transparency, strokes and appearance-aware reference evidence — #27.
+- [x] Epic 1.5 — visual understanding and appearance analysis: gradients, transparency, strokes and appearance-aware reference evidence — #27.
 - [ ] Epic 2 — workflow-oriented TUI and workspace redesign: workflow-first information architecture, visual comparison, iteration history and human/agent interaction — #32.
 - [ ] Epic 3 — agent and harness integration: reusable skills, headless workflow access, permissions and external harness validation — #37.
-- [ ] Add appearance analysis for gradients, transparency and strokes — #28.
+- [x] Add appearance analysis for gradients, transparency and strokes — #28.
 - [x] Make tracing gradient- and appearance-aware without turning it into a monolithic vectorizer — #29.
 - [x] Extend comparison with appearance-aware diagnostics — #30.
 - [x] Add deterministic appearance fixtures and evaluation coverage — #31.

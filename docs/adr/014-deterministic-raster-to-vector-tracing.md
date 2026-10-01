@@ -3,7 +3,7 @@
 ## Status
 
 Accepted. Its scope was extended by [ADR-018](018-structured-reference-measurement.md)
-to [ADR-026](026-appearance-aware-tracing.md); see
+to [ADR-027](027-appearance-aware-comparison.md); see
 *Update: where this fits now* at the end, which corrects the statements
 below that are no longer true.
 
@@ -199,15 +199,19 @@ names them and the agent chooses; Shaipe never infers one from what is attached.
 **What reference analysis is for.** `get_reference_analysis`
 ([ADR-018](018-structured-reference-measurement.md)) turns pixels into facts —
 dimensions, background and foreground, dominant colours, regions, holes,
-symmetry — before anyone chooses how to draw. Its measurements are the only
-input to `get_workflow`'s trace-or-construct recommendation, which is why a
+symmetry, and how each region is filled (flat, gradient, opacity, stroke;
+[ADR-025](025-appearance-analysis.md)) — before anyone chooses how to draw. Its measurements are the only
+input to `get_workflow`'s trace-or-construct recommendation (it ignores the
+appearance measurements, [ADR-026](026-appearance-aware-tracing.md)), which is why a
 reference is analysed before it is traced: a photograph traces into noise, and
 the region and colour counts say so before that is discovered.
 
 **The loop.** Construct or trace, `write_svg`/`write_variant`, `render_svg`,
 `compare_reference`, refine. `compare_reference` renders the variant at the
 reference's own pixel size ([ADR-019](019-compare-reference.md)) and reports
-overlap, bounding-box and centroid offsets, area difference and pixel error, so
+overlap, bounding-box and centroid offsets, area difference and pixel error, plus an `appearance` diff of fill, gradient
+and opacity reported apart from them
+([ADR-027](027-appearance-aware-comparison.md)), so
 the agent steers by numbers instead of an impression. A write that is accepted
 is a valid document, not a finished one, and its result says so
 ([ADR-023](023-tool-contract-conventions.md)).

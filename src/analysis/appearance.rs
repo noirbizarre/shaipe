@@ -37,7 +37,7 @@ const TRANSLUCENT_FLOOR: u8 = super::TRANSPARENT_ALPHA_THRESHOLD;
 
 /// Alpha at or above this counts as fully opaque. A little under 255 so that
 /// the 8-bit rounding of a nominally opaque pixel is not called translucent.
-const OPAQUE_FLOOR: u8 = 240;
+pub(crate) const OPAQUE_FLOOR: u8 = 240;
 
 /// The root-mean-square deviation of a region's channels, in levels of 0-255,
 /// under which it is called flat. Roughly the noise floor of a lossy export:

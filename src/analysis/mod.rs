@@ -34,6 +34,7 @@ use serde::Serialize;
 use crate::error::{Error, Result};
 
 mod appearance;
+pub(crate) use appearance::OPAQUE_FLOOR;
 
 pub use appearance::{
     AlphaSummary, Appearance, Fill, GradientStop, Opacity, Point, RegionAppearance, Stroke,
