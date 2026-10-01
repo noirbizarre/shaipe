@@ -337,10 +337,10 @@ Toolchain, docs, release.
 
 ## Roadmap
 
-- [ ] Epic 1.5 — visual understanding and appearance analysis: gradients, transparency, strokes and appearance-aware reference evidence — #27.
+- [x] Epic 1.5 — visual understanding and appearance analysis: gradients, transparency, strokes and appearance-aware reference evidence — #27.
 - [ ] Epic 2 — workflow-oriented TUI and workspace redesign: workflow-first information architecture, visual comparison, iteration history and human/agent interaction — #32.
 - [ ] Epic 3 — agent and harness integration: reusable skills, headless workflow access, permissions and external harness validation — #37.
-- [ ] Add appearance analysis for gradients, transparency and strokes — #28.
+- [x] Add appearance analysis for gradients, transparency and strokes — #28.
 - [x] Make tracing gradient- and appearance-aware without turning it into a monolithic vectorizer — #29.
 - [x] Extend comparison with appearance-aware diagnostics — #30.
 - [x] Add deterministic appearance fixtures and evaluation coverage — #31.
