@@ -80,6 +80,19 @@ cap height, near 0.7). Keep each word's and symbol's fill as its own assignment;
 a wordmark and the mark beside it one colour because they sit together. `compare_reference` \
 reports `typography` per line and `declared_text` for what you set.
 
+A logo is put together from parts. When `get_reference_analysis` reports `composition`, its \
+`components` group regions that belong together, each with a `role` (`primary`, `secondary`, \
+`decorative` or `lettering`, judged by size alone) and a `contour`. Build one element or \
+group per component and keep a `decorative` one separate from the primary artwork. A \
+contour that is `open` is a stroke that does not close: draw it as an unclosed path with \
+`fill=\"none\"` and a `stroke`, never as a closed shape; `closed` encloses a hole, so keep \
+the hole. Place parts from the measured `relationships`, `alignments` and `spacings`, not \
+by eye: components on one line share it, and a run whose spacing is `even` takes one gap. \
+`repeats` are parts of one size, so draw one and reuse it. Geometry and `appearance` are \
+separate evidence, so a part's colour is not a reason to move it. A `composition` is \
+absent when the artwork is one shape or too fragmented to group, and you then work from \
+`regions` alone.
+
 Trace when the reference is a clean, flat-colour mark with few regions and few colours. \
 Construct it yourself, with real shapes, when it is a photograph, busy or textured, or when \
 you need clean primitives such as circles, rectangles and text. Mix the two when part of it \
@@ -174,6 +187,14 @@ mod tests {
         assert!(text.contains("never invent text"));
         assert!(text.contains("`data-shaipe-confidence`"));
         assert!(text.contains("Prefer `<text>` in a font the project declares"));
+    }
+
+    #[test]
+    fn the_instructions_say_to_compose_from_components_and_keep_open_contours_open() {
+        let text = reconstruction();
+        assert!(text.contains("keep a `decorative` one separate from the primary artwork"));
+        assert!(text.contains("draw it as an unclosed path"));
+        assert!(text.contains("Place parts from the measured `relationships`"));
     }
 
     #[test]

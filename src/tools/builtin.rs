@@ -300,11 +300,11 @@ impl Tool for GetReferenceAnalysis {
          stroke, and how transparent the image is. `typography`, present \
          only when something behaves like lettering, lists candidate text \
          lines: their regions, baseline, letter height, spacing, words and \
-         colour. It is geometry, not reading: what the letters say and which \
-         font sets them is yours to read (enlarge a line with \
-         `get_reference_image`) and to say you are unsure of. Measurement, \
-         not interpretation — it cannot say a region is a \"castle\" or a \
-         \"letter A\"; naming it remains your job. Call it after \
+         colour. It is geometry, not reading: what the letters say is yours \
+         to read (enlarge a line with `get_reference_image`). `composition`, \
+         with two or more parts, groups regions into components: role, open \
+         or closed contour, placement, alignment, spacing, repeats. \
+         Measurement, not interpretation: naming a region is your job. Call it after \
          `get_reference_image` and before `get_reference_trace` or \
          constructing a variant by hand. Not for photographs, busy \
          backgrounds, or artwork that touches the canvas edge: it separates \
@@ -2532,12 +2532,71 @@ mod tests {
             analysis["regions"][0]["id"]
         );
 
+        // One shape is not a composition, so the section is left out.
+        assert!(analysis.get("composition").is_none());
+
         // No mutation: this is a `get_` tool.
         assert!(
             !Registry::new()
                 .get("get_reference_analysis")
                 .unwrap()
                 .mutates()
+        );
+    }
+
+    #[test]
+    fn get_reference_analysis_groups_two_shapes_into_components_with_their_placement() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+
+        // A frame and a block to its right, on one centre line.
+        let mut img = image::RgbaImage::new(96, 96);
+        for (x0, y0, x1, y1) in [(8, 20, 38, 50), (60, 20, 88, 50)] {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let hole = (14..32).contains(&x) && (26..44).contains(&y);
+                    if !hole {
+                        img.put_pixel(x, y, image::Rgba([20, 20, 20, 255]));
+                    }
+                }
+            }
+        }
+        let mut bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        std::fs::write(directory.path().join("pair.png"), bytes).unwrap();
+
+        let mut project = Project::open(&path).unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("pair.png", ReferenceKind::Source));
+
+        let output = Registry::new()
+            .call(
+                "get_reference_analysis",
+                &mut project,
+                &json!({ "src": "pair.png" }),
+            )
+            .unwrap();
+
+        let composition = &output.value["analysis"]["composition"];
+        assert_eq!(composition["component_count"], 2);
+        // Largest first: the solid block, then the frame with its hole.
+        let kind = |index: usize| &composition["components"][index]["geometry"]["contour"]["kind"];
+        assert_eq!(kind(0), "filled");
+        assert_eq!(kind(1), "closed");
+        assert_eq!(composition["relationships"][0]["relation"], "right_of");
+        assert!(
+            composition["alignments"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|group| group["line"] == "horizontal" && group["edge"] == "centre")
         );
     }
 

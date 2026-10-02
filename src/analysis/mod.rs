@@ -34,11 +34,16 @@ use serde::Serialize;
 use crate::error::{Error, Result};
 
 mod appearance;
+mod composition;
 mod typography;
 pub(crate) use appearance::OPAQUE_FLOOR;
 
 pub use appearance::{
     AlphaSummary, Appearance, Fill, GradientStop, Opacity, Point, RegionAppearance, Stroke,
+};
+pub use composition::{
+    AlignedEdge, AlignedGroup, Component, ComponentGeometry, Composition, Contour, ContourKind,
+    Direction, Relation, Relationship, Repeat, Role, Spacing,
 };
 pub use typography::{
     Alignment, BaselineEdge, Gap, GroupAppearance, Orientation, TextBlock, TextLine, TextWord,
@@ -107,6 +112,12 @@ pub struct Analysis {
     /// exactly as it did before this existed. See ADR 028.
     #[serde(skip_serializing_if = "Typography::is_empty")]
     pub typography: Typography,
+    /// How the regions group into visual components, and how those sit
+    /// against each other: relative position, shared alignment, spacing and
+    /// repetition. Left out when there are fewer than two components, so a
+    /// single shape reads exactly as it did before this existed. See ADR 029.
+    #[serde(skip_serializing_if = "Composition::is_empty")]
+    pub composition: Composition,
 }
 
 /// An image's size, in pixels.
@@ -464,7 +475,8 @@ pub(crate) fn analyze_with_regions(path: &Path, bytes: &[u8]) -> Result<(Analysi
 
     // --- holes: background components that never touch the canvas border ---
     let background_mask: Vec<bool> = foreground_mask.iter().map(|value| !value).collect();
-    let (raw_background, _) = label_components(&background_mask, width_usize, height_usize);
+    let (raw_background, background_labels) =
+        label_components(&background_mask, width_usize, height_usize);
     let mut hole_stats: Vec<_> = raw_background
         .iter()
         .filter(|component| !component.touches_border)
@@ -526,6 +538,28 @@ pub(crate) fn analyze_with_regions(path: &Path, bytes: &[u8]) -> Result<(Analysi
     // letters than `MAX_REGIONS`.
     let typography = typography::measure(&pixels, width_usize, &region_map, &all_regions);
 
+    // --- composition: regions grouped into components, and how they sit ---
+    // Needs every hole of every region, not the reported 32: whether a
+    // component is closed is a fact about all of its regions.
+    let enclosed = hole_counts(
+        &raw_background,
+        &background_labels,
+        &region_map,
+        &all_regions,
+        width_usize,
+    );
+    let composition = composition::measure(
+        &composition::Input {
+            pixels: &pixels,
+            width: width_usize,
+            height: height_usize,
+            region_map: &region_map,
+            regions: &all_regions,
+            hole_counts: &enclosed,
+        },
+        &typography,
+    );
+
     Ok((
         Analysis {
             dimensions,
@@ -539,6 +573,7 @@ pub(crate) fn analyze_with_regions(path: &Path, bytes: &[u8]) -> Result<(Analysi
             symmetry,
             appearance,
             typography,
+            composition,
         },
         region_map,
     ))
@@ -766,6 +801,60 @@ fn label_components(mask: &[bool], width: usize, height: usize) -> (Vec<RawCompo
     }
 
     (components, labels)
+}
+
+/// How many holes each region encloses, indexed by region id: every hole, not
+/// the capped list [`Analysis::holes`] reports, and decided by which region a
+/// hole actually touches rather than by whose bounding box contains it.
+///
+/// A hole is a background component that never touches the border. The
+/// regions it touches are the one around it and any that sit inside it; the
+/// one around it has the largest bounding box, since a region inside the hole
+/// fits within the hole's own box. Ties go to the lower id, so the answer does
+/// not depend on scan order.
+fn hole_counts(
+    background: &[RawComponent],
+    background_labels: &[u32],
+    region_map: &[u32],
+    regions: &[Region],
+    width: usize,
+) -> Vec<u32> {
+    // For each hole, the regions it touches.
+    let mut touching: BTreeMap<u32, std::collections::BTreeSet<u32>> = BTreeMap::new();
+    for (index, &label) in background_labels.iter().enumerate() {
+        if label == NO_REGION || background[label as usize].touches_border {
+            continue;
+        }
+        let (x, y) = (index % width, index / width);
+        let neighbours = [
+            (x > 0).then(|| index - 1),
+            (x + 1 < width).then(|| index + 1),
+            (y > 0).then(|| index - width),
+            (index + width < region_map.len()).then(|| index + width),
+        ];
+        for neighbour in neighbours.into_iter().flatten() {
+            if region_map[neighbour] != NO_REGION {
+                touching
+                    .entry(label)
+                    .or_default()
+                    .insert(region_map[neighbour]);
+            }
+        }
+    }
+
+    let mut counts = vec![0u32; regions.len()];
+    for ids in touching.values() {
+        let enclosing = ids.iter().copied().max_by(|&a, &b| {
+            let (a, b) = (&regions[a as usize], &regions[b as usize]);
+            let extent =
+                |r: &Region| u64::from(r.bounding_box.width) * u64::from(r.bounding_box.height);
+            extent(a).cmp(&extent(b)).then(b.id.cmp(&a.id))
+        });
+        if let Some(id) = enclosing {
+            counts[id as usize] += 1;
+        }
+    }
+    counts
 }
 
 fn bbox(component: &RawComponent) -> BoundingBox {
