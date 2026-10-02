@@ -302,7 +302,7 @@ decided in your agent. Your agent is configured and authenticated in your agent.
 | `get_variants` | The named parts of the document that can be drawn alone |
 | `get_palette` | The colours, with their names and roles |
 | `get_references` | Files attached for context, and whether they exist |
-| `get_reference_analysis` | Measure a reference's pixels into objective facts — dimensions, colours, regions, holes, symmetry, how each region is filled (flat, gradient, transparency, stroke), and which regions are lettering (baseline, letter height, spacing, words) |
+| `get_reference_analysis` | Measure a reference's pixels into objective facts — dimensions, colours, regions, holes, symmetry, how each region is filled (flat, gradient, transparency, stroke), which regions are lettering (baseline, letter height, spacing, words), and how the regions group into components (role, open or closed contour, placement, alignment, spacing, repeats) |
 | `get_reference_image` | Look at an attached raster reference, with its pixel dimensions; give an area to see it enlarged |
 | `get_reference_trace` | Trace a reference's pixels into vector paths, algorithmically; a gradient stays one painted path |
 | `compare_reference` | Render a variant at a reference's size and report how they differ, with an overlay and a difference image, an `appearance` diff of fill, gradient and opacity, and a `typography` diff per text line |
@@ -347,6 +347,13 @@ infers it from what is attached.
   agent reads what they say, sets it as `<text>` in a declared font, and marks
   anything it is unsure of with `data-shaipe-confidence`
   ([ADR-028](docs/adr/028-typography-analysis.md)).
+- **Composition is measured apart from colour.** The analysis groups regions
+  into components, says whether each is primary artwork, a secondary part, an
+  ornament or lettering, whether its contour is closed, open or filled, and
+  how the components sit: what is beside or inside what, which share an edge
+  or a centre line, which are evenly spaced, which repeat. Geometry and
+  appearance are separate evidence, so recolouring changes one and not the
+  other ([ADR-029](docs/adr/029-component-and-composition-analysis.md)).
 - **Deterministic Rust** decodes, measures, traces, renders, compares and
   validates a write. **The model** decides what the mark is, whether to trace,
   and what to change next. Nothing enforces the phases; they are guidance.
