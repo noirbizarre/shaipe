@@ -895,14 +895,20 @@ fn group_appearance(
     ordered.sort_by(|p, q| p.a_mid().total_cmp(&q.a_mid()).then(p.id.cmp(&q.id)));
     let members: Vec<&appearance::MemberLook> =
         ordered.iter().filter_map(|i| looks.get(&i.id)).collect();
+    summarise(&members)
+}
 
+/// Summarise how `members` are filled, in the order given: one colour, or
+/// several. Shared with the composition, which groups regions that are not
+/// lettering by the same rules, so a word and a component are described alike.
+pub(super) fn summarise(members: &[&appearance::MemberLook]) -> GroupAppearance {
     let mut kinds: Vec<&'static str> = members.iter().map(|m| m.kind).collect();
     kinds.sort_unstable();
     kinds.dedup();
 
     let count = members.len().max(1) as f64;
     let mut mean = [0.0; 3];
-    for member in &members {
+    for member in members {
         for (total, channel) in mean.iter_mut().zip(member.colour) {
             *total += channel / count;
         }
@@ -930,7 +936,7 @@ fn group_appearance(
 
     let mut colours: Vec<[f64; 3]> = Vec::new();
     if !uniform {
-        for member in &members {
+        for member in members {
             if colours.len() < MAX_GROUP_COLOURS
                 && colours
                     .iter()

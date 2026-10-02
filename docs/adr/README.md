@@ -66,3 +66,5 @@ verbs). Anything else is an *Update*.
 - [ADR-027](027-appearance-aware-comparison.md) — Compare how a render is filled, reported apart from its geometry
 - [ADR-028](028-typography-analysis.md) — Measure lettering as geometry, and let the agent read it and admit what it
   cannot
+- [ADR-029](029-component-and-composition-analysis.md) — Group regions into components and report how they sit, as
+  geometry apart from appearance

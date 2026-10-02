@@ -1,0 +1,318 @@
+---
+source: tests/reconstruction.rs
+expression: "snapshot_text(composition, 1)"
+---
+{
+  "component_count": 5,
+  "components": [
+    {
+      "id": 0,
+      "role": "primary",
+      "region_ids": [
+        0
+      ],
+      "geometry": {
+        "bounding_box": {
+          "x": 20,
+          "y": 20,
+          "width": 24,
+          "height": 24
+        },
+        "area": 468,
+        "area_share": 0.9,
+        "centroid": {
+          "x": 31.5,
+          "y": 31.5
+        },
+        "region_count": 1,
+        "contour": {
+          "kind": "filled",
+          "hole_count": 0
+        }
+      },
+      "appearance": {
+        "uniform": true,
+        "fill_kinds": [
+          "flat"
+        ],
+        "colour": "#18181b"
+      }
+    },
+    {
+      "id": 1,
+      "role": "decorative",
+      "region_ids": [
+        1
+      ],
+      "geometry": {
+        "bounding_box": {
+          "x": 30,
+          "y": 4,
+          "width": 4,
+          "height": 4
+        },
+        "area": 16,
+        "area_share": 0.0,
+        "centroid": {
+          "x": 31.5,
+          "y": 5.5
+        },
+        "region_count": 1,
+        "contour": {
+          "kind": "filled",
+          "hole_count": 0
+        }
+      },
+      "appearance": {
+        "uniform": true,
+        "fill_kinds": [
+          "flat"
+        ],
+        "colour": "#d24848"
+      }
+    },
+    {
+      "id": 2,
+      "role": "decorative",
+      "region_ids": [
+        2
+      ],
+      "geometry": {
+        "bounding_box": {
+          "x": 4,
+          "y": 30,
+          "width": 4,
+          "height": 4
+        },
+        "area": 16,
+        "area_share": 0.0,
+        "centroid": {
+          "x": 5.5,
+          "y": 31.5
+        },
+        "region_count": 1,
+        "contour": {
+          "kind": "filled",
+          "hole_count": 0
+        }
+      },
+      "appearance": {
+        "uniform": true,
+        "fill_kinds": [
+          "flat"
+        ],
+        "colour": "#d24848"
+      }
+    },
+    {
+      "id": 3,
+      "role": "decorative",
+      "region_ids": [
+        3
+      ],
+      "geometry": {
+        "bounding_box": {
+          "x": 56,
+          "y": 30,
+          "width": 4,
+          "height": 4
+        },
+        "area": 16,
+        "area_share": 0.0,
+        "centroid": {
+          "x": 57.5,
+          "y": 31.5
+        },
+        "region_count": 1,
+        "contour": {
+          "kind": "filled",
+          "hole_count": 0
+        }
+      },
+      "appearance": {
+        "uniform": true,
+        "fill_kinds": [
+          "flat"
+        ],
+        "colour": "#d24848"
+      }
+    },
+    {
+      "id": 4,
+      "role": "decorative",
+      "region_ids": [
+        4
+      ],
+      "geometry": {
+        "bounding_box": {
+          "x": 30,
+          "y": 56,
+          "width": 4,
+          "height": 4
+        },
+        "area": 16,
+        "area_share": 0.0,
+        "centroid": {
+          "x": 31.5,
+          "y": 57.5
+        },
+        "region_count": 1,
+        "contour": {
+          "kind": "filled",
+          "hole_count": 0
+        }
+      },
+      "appearance": {
+        "uniform": true,
+        "fill_kinds": [
+          "flat"
+        ],
+        "colour": "#d24848"
+      }
+    }
+  ],
+  "relationships": [
+    {
+      "from": 0,
+      "to": 3,
+      "relation": "right_of",
+      "gap": 12,
+      "centre_offset": {
+        "x": 26.0,
+        "y": 0.0
+      },
+      "size_ratio": 0.0
+    },
+    {
+      "from": 0,
+      "to": 4,
+      "relation": "below",
+      "gap": 12,
+      "centre_offset": {
+        "x": 0.0,
+        "y": 26.0
+      },
+      "size_ratio": 0.0
+    },
+    {
+      "from": 1,
+      "to": 0,
+      "relation": "below",
+      "gap": 12,
+      "centre_offset": {
+        "x": 0.0,
+        "y": 26.0
+      },
+      "size_ratio": 29.3
+    },
+    {
+      "from": 2,
+      "to": 0,
+      "relation": "right_of",
+      "gap": 12,
+      "centre_offset": {
+        "x": 26.0,
+        "y": 0.0
+      },
+      "size_ratio": 29.3
+    }
+  ],
+  "alignments": [
+    {
+      "line": "vertical",
+      "edge": "start",
+      "position": 30.0,
+      "component_ids": [
+        1,
+        4
+      ]
+    },
+    {
+      "line": "vertical",
+      "edge": "centre",
+      "position": 32.0,
+      "component_ids": [
+        0,
+        1,
+        4
+      ]
+    },
+    {
+      "line": "vertical",
+      "edge": "end",
+      "position": 34.0,
+      "component_ids": [
+        1,
+        4
+      ]
+    },
+    {
+      "line": "horizontal",
+      "edge": "start",
+      "position": 30.0,
+      "component_ids": [
+        2,
+        3
+      ]
+    },
+    {
+      "line": "horizontal",
+      "edge": "centre",
+      "position": 32.0,
+      "component_ids": [
+        0,
+        2,
+        3
+      ]
+    },
+    {
+      "line": "horizontal",
+      "edge": "end",
+      "position": 34.0,
+      "component_ids": [
+        2,
+        3
+      ]
+    }
+  ],
+  "spacings": [
+    {
+      "along": "horizontal",
+      "component_ids": [
+        2,
+        0,
+        3
+      ],
+      "gap": {
+        "mean": 12.0,
+        "deviation": 0.0
+      },
+      "even": true
+    },
+    {
+      "along": "vertical",
+      "component_ids": [
+        1,
+        0,
+        4
+      ],
+      "gap": {
+        "mean": 12.0,
+        "deviation": 0.0
+      },
+      "even": true
+    }
+  ],
+  "repeats": [
+    {
+      "component_ids": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "width": 4.0,
+      "height": 4.0
+    }
+  ]
+}

@@ -1,0 +1,192 @@
+---
+source: tests/reconstruction.rs
+expression: "snapshot_text(composition, 1)"
+---
+{
+  "component_count": 3,
+  "components": [
+    {
+      "id": 0,
+      "role": "primary",
+      "region_ids": [
+        0
+      ],
+      "geometry": {
+        "bounding_box": {
+          "x": 36,
+          "y": 8,
+          "width": 20,
+          "height": 20
+        },
+        "area": 332,
+        "area_share": 0.4,
+        "centroid": {
+          "x": 45.5,
+          "y": 17.5
+        },
+        "region_count": 1,
+        "contour": {
+          "kind": "filled",
+          "hole_count": 0
+        }
+      },
+      "appearance": {
+        "uniform": true,
+        "fill_kinds": [
+          "flat"
+        ],
+        "colour": "#18181b"
+      }
+    },
+    {
+      "id": 1,
+      "role": "primary",
+      "region_ids": [
+        1
+      ],
+      "geometry": {
+        "bounding_box": {
+          "x": 8,
+          "y": 8,
+          "width": 20,
+          "height": 20
+        },
+        "area": 236,
+        "area_share": 0.3,
+        "centroid": {
+          "x": 17.5,
+          "y": 17.5
+        },
+        "region_count": 1,
+        "contour": {
+          "kind": "closed",
+          "hole_count": 1,
+          "stroke_width": 4.3
+        }
+      },
+      "appearance": {
+        "uniform": true,
+        "fill_kinds": [
+          "flat"
+        ],
+        "colour": "#18181b"
+      }
+    },
+    {
+      "id": 2,
+      "role": "primary",
+      "region_ids": [
+        2
+      ],
+      "geometry": {
+        "bounding_box": {
+          "x": 8,
+          "y": 44,
+          "width": 48,
+          "height": 4
+        },
+        "area": 192,
+        "area_share": 0.3,
+        "centroid": {
+          "x": 31.5,
+          "y": 45.5
+        },
+        "region_count": 1,
+        "contour": {
+          "kind": "open",
+          "hole_count": 0,
+          "stroke_width": 3.0
+        }
+      },
+      "appearance": {
+        "uniform": true,
+        "fill_kinds": [
+          "flat"
+        ],
+        "colour": "#18181b"
+      }
+    }
+  ],
+  "relationships": [
+    {
+      "from": 0,
+      "to": 2,
+      "relation": "below",
+      "gap": 16,
+      "centre_offset": {
+        "x": -14.0,
+        "y": 28.0
+      },
+      "size_ratio": 0.6
+    },
+    {
+      "from": 1,
+      "to": 0,
+      "relation": "right_of",
+      "gap": 8,
+      "centre_offset": {
+        "x": 28.0,
+        "y": 0.0
+      },
+      "size_ratio": 1.4
+    },
+    {
+      "from": 1,
+      "to": 2,
+      "relation": "below",
+      "gap": 16,
+      "centre_offset": {
+        "x": 14.0,
+        "y": 28.0
+      },
+      "size_ratio": 0.8
+    }
+  ],
+  "alignments": [
+    {
+      "line": "vertical",
+      "edge": "start",
+      "position": 8.0,
+      "component_ids": [
+        1,
+        2
+      ]
+    },
+    {
+      "line": "vertical",
+      "edge": "end",
+      "position": 56.0,
+      "component_ids": [
+        0,
+        2
+      ]
+    },
+    {
+      "line": "horizontal",
+      "edge": "start",
+      "position": 8.0,
+      "component_ids": [
+        0,
+        1
+      ]
+    },
+    {
+      "line": "horizontal",
+      "edge": "centre",
+      "position": 18.0,
+      "component_ids": [
+        0,
+        1
+      ]
+    },
+    {
+      "line": "horizontal",
+      "edge": "end",
+      "position": 28.0,
+      "component_ids": [
+        0,
+        1
+      ]
+    }
+  ]
+}

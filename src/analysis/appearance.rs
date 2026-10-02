@@ -354,6 +354,17 @@ pub(super) fn member_look(
     }
 }
 
+/// [`Stroke`] for any region, reported or not, or `None` when it is not
+/// stroke-like.
+///
+/// A component of the composition can be built from regions beyond the
+/// reported ones, and whether it is a line or a shape is a fact about its
+/// pixels. `closed` is left `false`: callers of this know the holes
+/// themselves, exactly, and do not rely on the capped list [`measure`] reads.
+pub(super) fn stroke_of(region: &Region, region_map: &[u32], width: usize) -> Option<Stroke> {
+    stroke_candidate(&local_mask(region, region_map, width), region.area, false)
+}
+
 /// Fractions of the image by alpha class, and the translucent interior.
 fn alpha_summary(pixels: &[u8], width: usize, height: usize) -> AlphaSummary {
     let alpha = |x: usize, y: usize| pixels[(y * width + x) * 4 + 3];

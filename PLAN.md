@@ -309,6 +309,15 @@ see `docs/adr/004-tools-not-a-model.md`.
 - [x] Typography fixtures and evaluation: computed lettering, controls that
       must not be called lettering, and a baseline fixed from the comparison
       alone
+- [x] Component and composition analysis: regions grouped into components with
+      a role and an open, closed or filled contour, and their relative
+      position, shared alignment, spacing and repetition, left out when there
+      are fewer than two components — ADR-029
+- [x] Reconstruction instructions on building a mark from components, keeping
+      open contours open and placing parts from the measured relationships
+- [x] Composition fixtures and evaluation: a symbol over a wordmark, ornament
+      round a disc, even and uneven rows, closed against open contours, and
+      controls that must not be called a composition
 
 ## Artwork
 
@@ -360,6 +369,7 @@ Toolchain, docs, release.
 - [x] Extend comparison with appearance-aware diagnostics — #30.
 - [x] Add deterministic appearance fixtures and evaluation coverage — #31.
 - [x] Improve typography recognition and reconstruction — #49.
+- [x] Add structured component and composition understanding — #50.
 - [ ] Define workflow-first workspace information architecture — #33.
 - [ ] Build the workflow and comparison workspace — #34.
 - [ ] Rework agent interaction around workflow actions — #35.

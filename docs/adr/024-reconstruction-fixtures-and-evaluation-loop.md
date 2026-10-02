@@ -116,8 +116,9 @@ of the failure it was built to show. Its specks are 5x5.
   scale of a real export, and say nothing about photographs or JPEG
   artefacts, which the tracer and the analysis do not claim to handle. The
   gradient, translucent and stroke fixtures were added later
-  ([ADR-025](025-appearance-analysis.md)), and lettering fixtures after those
-  ([ADR-028](028-typography-analysis.md)).
+  ([ADR-025](025-appearance-analysis.md)), lettering fixtures after those
+  ([ADR-028](028-typography-analysis.md)), and composition fixtures
+  ([ADR-029](029-component-and-composition-analysis.md)) after them.
 - The four private image generators in the module tests are left where they
   are: they are unit fixtures, and moving them is a refactor with no test to
   gain.

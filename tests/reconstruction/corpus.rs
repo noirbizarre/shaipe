@@ -1040,6 +1040,215 @@ pub fn single_large_letter() -> Fixture {
     lettering("single_large_letter", &in_ink(&[(14, 50, 10, 54)]))
 }
 
+/// What one part of a composition is drawn as: its shape and colour on the
+/// canvas, and the SVG that draws the same thing.
+struct Part {
+    shape: Shape,
+    colour: [u8; 3],
+    svg: String,
+}
+
+fn disc(cx: i64, cy: i64, r: i64, colour: [u8; 3]) -> Part {
+    Part {
+        shape: Shape::Disc { cx, cy, r },
+        colour,
+        svg: format!(
+            r#"<circle cx="{cx}" cy="{cy}" r="{r}" fill="{}"/>"#,
+            hex(colour)
+        ),
+    }
+}
+
+fn square(x0: i64, y0: i64, x1: i64, y1: i64, colour: [u8; 3]) -> Part {
+    Part {
+        shape: Shape::Rect { x0, y0, x1, y1 },
+        colour,
+        svg: format!(
+            r#"<rect x="{x0}" y="{y0}" width="{}" height="{}" fill="{}"/>"#,
+            x1 - x0,
+            y1 - y0,
+            hex(colour)
+        ),
+    }
+}
+
+/// A ring: a disc with a disc of the background cut out of it. Drawn in SVG as
+/// the stroked circle it is.
+fn ring(cx: i64, cy: i64, outer: i64, inner: i64, colour: [u8; 3]) -> Part {
+    Part {
+        shape: Shape::Disc { cx, cy, r: outer },
+        colour,
+        svg: format!(
+            r#"<circle cx="{cx}" cy="{cy}" r="{}" fill="none" stroke="{}" stroke-width="{}"/>"#,
+            (outer + inner) / 2,
+            hex(colour),
+            outer - inner
+        ),
+    }
+}
+
+/// A frame: a square with a square of the background cut out of it.
+fn frame(x0: i64, y0: i64, x1: i64, y1: i64, thickness: i64, colour: [u8; 3]) -> Part {
+    Part {
+        shape: Shape::Rect { x0, y0, x1, y1 },
+        colour,
+        svg: format!(
+            r#"<rect x="{}" y="{}" width="{}" height="{}" fill="none" stroke="{}" stroke-width="{thickness}"/>"#,
+            x0 + thickness / 2,
+            y0 + thickness / 2,
+            x1 - x0 - thickness,
+            y1 - y0 - thickness,
+            hex(colour)
+        ),
+    }
+}
+
+/// A composition of parts on a white canvas, drawn in order. A part drawn with
+/// [`ring`] or [`frame`] has its hole cut by painting the background over it,
+/// so `holes` names the hollow parts as `(index, inner shape)`.
+fn composition(
+    name: &'static str,
+    parts: &[Part],
+    holes: &[(usize, Shape)],
+    lettering: &[Block],
+) -> Fixture {
+    let mut canvas = Canvas::opaque(WHITE);
+    let mut construction = String::new();
+    for (index, part) in parts.iter().enumerate() {
+        canvas.paint(part.shape, part.colour);
+        // A hole is cut straight after its part, before the next part is
+        // painted, so a part inside it is not wiped out.
+        for (_, hole) in holes.iter().filter(|(owner, _)| *owner == index) {
+            canvas.paint(*hole, WHITE);
+        }
+        construction.push_str(&part.svg);
+    }
+    for &(x0, x1, y0, y1) in lettering {
+        canvas.paint(Shape::Rect { x0, y0, x1, y1 }, INK);
+        construction.push_str(&format!(
+            r#"<rect x="{x0}" y="{y0}" width="{}" height="{}" fill="{}"/>"#,
+            x1 - x0,
+            y1 - y0,
+            hex(INK),
+        ));
+    }
+    Fixture {
+        name,
+        png: canvas.png(),
+        construction,
+        expected: Expected {
+            regions: 2..=16,
+            holes: 0..=2,
+            dominant_colours: 1..=4,
+            strategy: "construct",
+        },
+    }
+}
+
+/// A ringed mark with a dot in its hole, over a line of lettering centred
+/// beneath it: a symbol and a wordmark on one vertical centre line.
+///
+/// The ring is centred on x=32, and the lettering spans 10..54, so both sit on
+/// x=32.
+pub fn icon_with_wordmark() -> Fixture {
+    composition(
+        "icon_with_wordmark",
+        &[ring(32, 20, 14, 8, INK), disc(32, 20, 4, ACCENT)],
+        &[(
+            0,
+            Shape::Disc {
+                cx: 32,
+                cy: 20,
+                r: 8,
+            },
+        )],
+        &[
+            (10, 16, 44, 56),
+            (19, 27, 44, 56),
+            (30, 35, 44, 56),
+            (38, 45, 44, 56),
+            (48, 54, 44, 56),
+        ],
+    )
+}
+
+/// A disc with four equal small dots round it, one on each side: the dots are
+/// ornament, and repeat.
+pub fn satellite_dots() -> Fixture {
+    composition(
+        "satellite_dots",
+        &[
+            disc(32, 32, 12, INK),
+            disc(32, 6, 2, ACCENT),
+            disc(58, 32, 2, ACCENT),
+            disc(32, 58, 2, ACCENT),
+            disc(6, 32, 2, ACCENT),
+        ],
+        &[],
+        &[],
+    )
+}
+
+/// Four equal squares at an even pitch: a row with one gap, shared top and
+/// bottom edges, and one size.
+pub fn even_row() -> Fixture {
+    row("even_row", &[4, 20, 36, 52])
+}
+
+/// Control: the same four squares, spaced unevenly. Same size, same row, and a
+/// gap that is not one value.
+pub fn uneven_row() -> Fixture {
+    row("uneven_row", &[4, 16, 36, 52])
+}
+
+fn row(name: &'static str, lefts: &[i64]) -> Fixture {
+    let parts: Vec<Part> = lefts
+        .iter()
+        .map(|&x| square(x, 28, x + 8, 36, INK))
+        .collect();
+    composition(name, &parts, &[], &[])
+}
+
+/// A ring, a long bar and a solid disc, far apart: a closed contour, an open
+/// one and a filled one.
+pub fn open_and_closed() -> Fixture {
+    composition(
+        "open_and_closed",
+        &[
+            ring(18, 18, 10, 6, INK),
+            square(8, 44, 56, 48, INK),
+            disc(46, 18, 10, INK),
+        ],
+        &[(
+            0,
+            Shape::Disc {
+                cx: 18,
+                cy: 18,
+                r: 6,
+            },
+        )],
+        &[],
+    )
+}
+
+/// A square frame with a disc in the middle of it: the frame contains the mark.
+pub fn framed_mark() -> Fixture {
+    composition(
+        "framed_mark",
+        &[frame(8, 8, 56, 56, 4, INK), disc(32, 32, 8, ACCENT)],
+        &[(
+            0,
+            Shape::Rect {
+                x0: 12,
+                y0: 12,
+                x1: 52,
+                y1: 52,
+            },
+        )],
+        &[],
+    )
+}
+
 /// The whole corpus, in a fixed order.
 pub fn all() -> Vec<Fixture> {
     vec![
