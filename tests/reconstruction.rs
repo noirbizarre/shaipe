@@ -986,6 +986,13 @@ fn fixtures_without_lettering() -> Vec<corpus::Fixture> {
         corpus::scattered_shapes(),
         corpus::row_of_dots(),
         corpus::single_large_letter(),
+        // Parts, not letters: the composition's own fixtures, bar the one that
+        // has a line of lettering in it.
+        corpus::satellite_dots(),
+        corpus::even_row(),
+        corpus::uneven_row(),
+        corpus::open_and_closed(),
+        corpus::framed_mark(),
     ]);
     fixtures
 }
@@ -1262,4 +1269,257 @@ fn text_a_variant_declares_is_reported_with_the_confidence_it_was_given() {
             .contains("low-confidence text"),
         "{declared:#}"
     );
+}
+
+// --- composition (ADR 029) ----------------------------------------------------
+
+fn composition_fixtures() -> Vec<corpus::Fixture> {
+    vec![
+        corpus::icon_with_wordmark(),
+        corpus::satellite_dots(),
+        corpus::even_row(),
+        corpus::uneven_row(),
+        corpus::open_and_closed(),
+        corpus::framed_mark(),
+    ]
+}
+
+fn composition_of(fixture: &corpus::Fixture) -> Value {
+    Session::open(fixture, &fixture.construction).analysis()["composition"].clone()
+}
+
+/// The components with a given role.
+fn with_role<'a>(composition: &'a Value, role: &str) -> Vec<&'a Value> {
+    composition["components"]
+        .as_array()
+        .expect("components")
+        .iter()
+        .filter(|component| component["role"] == role)
+        .collect()
+}
+
+#[test]
+fn the_composition_fixtures_are_deterministic_and_small_enough_to_redistribute() {
+    for (a, b) in composition_fixtures().iter().zip(&composition_fixtures()) {
+        assert_eq!(a.png, b.png, "`{}` differs between two generations", a.name);
+        assert!(
+            a.png.len() < 8 * 1024,
+            "`{}` is {} bytes",
+            a.name,
+            a.png.len()
+        );
+    }
+}
+
+#[test]
+fn a_symbol_over_a_wordmark_is_a_primary_part_and_a_lettering_part_on_one_centre_line() {
+    let composition = composition_of(&corpus::icon_with_wordmark());
+
+    assert_eq!(composition["component_count"], 3, "{composition:#}");
+    let primary = with_role(&composition, "primary");
+    let lettering = with_role(&composition, "lettering");
+    assert_eq!((primary.len(), lettering.len()), (1, 1), "{composition:#}");
+    assert_eq!(primary[0]["geometry"]["contour"]["kind"], "closed");
+    assert_eq!(primary[0]["geometry"]["contour"]["hole_count"], 1);
+    assert_eq!(lettering[0]["geometry"]["line_id"], 0);
+    assert!(lettering[0]["geometry"].get("contour").is_none());
+
+    // Both are centred on x=32, so they share a vertical centre line.
+    let (ring, line) = (&primary[0]["id"], &lettering[0]["id"]);
+    let centred = composition["alignments"]
+        .as_array()
+        .expect("alignments")
+        .iter()
+        .find(|group| group["line"] == "vertical" && group["edge"] == "centre")
+        .unwrap_or_else(|| panic!("no shared centre line: {composition:#}"));
+    assert_eq!(centred["position"], 32.0);
+    let members = centred["component_ids"].as_array().unwrap();
+    assert!(
+        members.contains(ring) && members.contains(line),
+        "{centred}"
+    );
+
+    // The wordmark is below the symbol, and the symbol holds the dot.
+    let relations = composition["relationships"].as_array().unwrap();
+    assert!(
+        relations
+            .iter()
+            .any(|r| r["relation"] == "below" && r["from"] == *ring && r["to"] == *line),
+        "{composition:#}"
+    );
+    assert!(
+        relations
+            .iter()
+            .any(|r| r["relation"] == "contains" && r["from"] == *ring)
+    );
+    insta::assert_snapshot!(
+        "composition_icon_with_wordmark",
+        snapshot_text(composition, 1)
+    );
+}
+
+#[test]
+fn small_dots_round_a_disc_are_decorative_and_repeat() {
+    let composition = composition_of(&corpus::satellite_dots());
+
+    assert_eq!(
+        with_role(&composition, "primary").len(),
+        1,
+        "{composition:#}"
+    );
+    let dots = with_role(&composition, "decorative");
+    assert_eq!(dots.len(), 4, "{composition:#}");
+    let repeats = composition["repeats"].as_array().expect("repeats");
+    assert_eq!(repeats.len(), 1, "{composition:#}");
+    assert_eq!(repeats[0]["component_ids"].as_array().unwrap().len(), 4);
+    insta::assert_snapshot!("composition_satellite_dots", snapshot_text(composition, 1));
+}
+
+#[test]
+fn four_squares_at_an_even_pitch_are_a_row_with_one_gap_and_one_size() {
+    let composition = composition_of(&corpus::even_row());
+    let spacing = &composition["spacings"][0];
+
+    assert_eq!(spacing["along"], "horizontal", "{composition:#}");
+    assert_eq!(spacing["gap"]["mean"], 8.0, "squares 8 wide, 16 apart");
+    assert_eq!(spacing["even"], true);
+    assert_eq!(composition["repeats"][0]["width"], 8.0);
+    // They stand on one line: top, centre and bottom.
+    let horizontal: Vec<_> = composition["alignments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|group| group["line"] == "horizontal")
+        .collect();
+    assert_eq!(horizontal.len(), 3, "{composition:#}");
+    insta::assert_snapshot!("composition_even_row", snapshot_text(composition, 1));
+}
+
+#[test]
+fn the_same_squares_spaced_unevenly_are_not_an_even_row() {
+    let composition = composition_of(&corpus::uneven_row());
+
+    assert_eq!(composition["spacings"][0]["even"], false, "{composition:#}");
+    // Same squares, so same size and same line: only the spacing differs.
+    assert_eq!(composition["repeats"][0]["width"], 8.0);
+    insta::assert_snapshot!("composition_uneven_row", snapshot_text(composition, 1));
+}
+
+#[test]
+fn a_ring_a_bar_and_a_disc_are_a_closed_an_open_and_a_filled_contour() {
+    let composition = composition_of(&corpus::open_and_closed());
+    let kinds: Vec<(u64, String)> = composition["components"]
+        .as_array()
+        .expect("components")
+        .iter()
+        .map(|c| {
+            (
+                c["geometry"]["bounding_box"]["y"].as_u64().unwrap(),
+                c["geometry"]["contour"]["kind"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            )
+        })
+        .collect();
+
+    // The ring and the disc are at y=8; the bar is at y=44.
+    assert_eq!(
+        kinds.iter().filter(|(_, k)| k == "closed").count(),
+        1,
+        "{composition:#}"
+    );
+    assert_eq!(
+        kinds.iter().filter(|(_, k)| k == "filled").count(),
+        1,
+        "{composition:#}"
+    );
+    let open: Vec<_> = kinds.iter().filter(|(_, k)| k == "open").collect();
+    assert_eq!(open.len(), 1, "{composition:#}");
+    assert_eq!(open[0].0, 44, "the bar");
+    insta::assert_snapshot!("composition_open_and_closed", snapshot_text(composition, 1));
+}
+
+#[test]
+fn a_frame_contains_the_mark_inside_it_and_keeps_its_hole() {
+    let composition = composition_of(&corpus::framed_mark());
+    let frame = &composition["components"][0];
+
+    assert_eq!(
+        frame["geometry"]["contour"]["kind"], "closed",
+        "{composition:#}"
+    );
+    assert_eq!(frame["geometry"]["contour"]["hole_count"], 1);
+    assert!(
+        composition["relationships"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["relation"] == "contains" && r["from"] == 0 && r["to"] == 1),
+        "{composition:#}"
+    );
+    // The mark and the frame share their centre in both directions.
+    let centres = composition["alignments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|g| g["edge"] == "centre")
+        .count();
+    assert_eq!(centres, 2, "{composition:#}");
+    insta::assert_snapshot!("composition_framed_mark", snapshot_text(composition, 1));
+}
+
+#[test]
+fn a_single_shape_a_pattern_and_a_texture_have_no_composition() {
+    for fixture in [
+        corpus::named("silhouette"),
+        corpus::named("light_on_dark"),
+        corpus::named("symmetric"),
+        corpus::named("noisy"),
+        corpus::stroked_ring(),
+        corpus::stroked_bar(),
+        corpus::single_large_letter(),
+        corpus::text_line(),
+    ] {
+        let analysis = Session::open(&fixture, &fixture.construction).analysis();
+        assert!(
+            analysis.get("composition").is_none(),
+            "`{}` was reported as a composition: {:#}",
+            fixture.name,
+            analysis["composition"]
+        );
+    }
+}
+
+#[test]
+fn composition_is_measured_identically_every_time() {
+    for fixture in composition_fixtures() {
+        assert_eq!(
+            composition_of(&fixture),
+            composition_of(&fixture),
+            "`{}`",
+            fixture.name
+        );
+    }
+}
+
+#[test]
+fn composition_and_appearance_are_separate_evidence_for_the_same_parts() {
+    // The ring is ink and the dot in it is red, and the two are described in
+    // the part's `appearance`: the placement lists say nothing of colour.
+    let composition = composition_of(&corpus::icon_with_wordmark());
+    let colours: Vec<&str> = composition["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["appearance"]["colour"].as_str())
+        .collect();
+    assert!(colours.contains(&"#c81e1e"), "{composition:#}");
+    for key in ["relationships", "alignments", "spacings", "repeats"] {
+        assert!(
+            !composition[key].to_string().contains('#'),
+            "`{key}` carries a colour: {}",
+            composition[key]
+        );
+    }
 }

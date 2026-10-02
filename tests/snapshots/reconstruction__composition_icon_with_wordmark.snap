@@ -1,0 +1,166 @@
+---
+source: tests/reconstruction.rs
+expression: "snapshot_text(composition, 1)"
+---
+{
+  "component_count": 3,
+  "components": [
+    {
+      "id": 0,
+      "role": "primary",
+      "region_ids": [
+        0
+      ],
+      "geometry": {
+        "bounding_box": {
+          "x": 18,
+          "y": 6,
+          "width": 28,
+          "height": 28
+        },
+        "area": 460,
+        "area_share": 0.5,
+        "centroid": {
+          "x": 31.5,
+          "y": 19.5
+        },
+        "region_count": 1,
+        "contour": {
+          "kind": "closed",
+          "hole_count": 1,
+          "stroke_width": 6.3
+        }
+      },
+      "appearance": {
+        "uniform": true,
+        "fill_kinds": [
+          "flat"
+        ],
+        "colour": "#18181b"
+      }
+    },
+    {
+      "id": 1,
+      "role": "lettering",
+      "region_ids": [
+        1,
+        2,
+        3,
+        4,
+        6
+      ],
+      "geometry": {
+        "bounding_box": {
+          "x": 10,
+          "y": 44,
+          "width": 44,
+          "height": 12
+        },
+        "area": 384,
+        "area_share": 0.4,
+        "centroid": {
+          "x": 31.4,
+          "y": 49.5
+        },
+        "region_count": 5,
+        "line_id": 0
+      },
+      "appearance": {
+        "uniform": true,
+        "fill_kinds": [
+          "flat"
+        ],
+        "colour": "#18181b"
+      }
+    },
+    {
+      "id": 2,
+      "role": "secondary",
+      "region_ids": [
+        5
+      ],
+      "geometry": {
+        "bounding_box": {
+          "x": 28,
+          "y": 16,
+          "width": 8,
+          "height": 8
+        },
+        "area": 60,
+        "area_share": 0.1,
+        "centroid": {
+          "x": 31.5,
+          "y": 19.5
+        },
+        "region_count": 1,
+        "contour": {
+          "kind": "filled",
+          "hole_count": 0
+        }
+      },
+      "appearance": {
+        "uniform": true,
+        "fill_kinds": [
+          "flat"
+        ],
+        "colour": "#c81e1e"
+      }
+    }
+  ],
+  "relationships": [
+    {
+      "from": 0,
+      "to": 1,
+      "relation": "below",
+      "gap": 10,
+      "centre_offset": {
+        "x": 0.0,
+        "y": 30.0
+      },
+      "size_ratio": 0.8
+    },
+    {
+      "from": 0,
+      "to": 2,
+      "relation": "contains",
+      "gap": 0,
+      "centre_offset": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "size_ratio": 0.1
+    },
+    {
+      "from": 2,
+      "to": 1,
+      "relation": "below",
+      "gap": 20,
+      "centre_offset": {
+        "x": 0.0,
+        "y": 30.0
+      },
+      "size_ratio": 6.4
+    }
+  ],
+  "alignments": [
+    {
+      "line": "vertical",
+      "edge": "centre",
+      "position": 32.0,
+      "component_ids": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "line": "horizontal",
+      "edge": "centre",
+      "position": 20.0,
+      "component_ids": [
+        0,
+        2
+      ]
+    }
+  ]
+}

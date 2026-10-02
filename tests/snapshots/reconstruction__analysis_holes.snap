@@ -152,5 +152,110 @@ expression: "snapshot_text(analysis, 4)"
         "stroke": null
       }
     ]
+  },
+  "composition": {
+    "component_count": 2,
+    "components": [
+      {
+        "id": 0,
+        "role": "primary",
+        "region_ids": [
+          0
+        ],
+        "geometry": {
+          "bounding_box": {
+            "x": 8,
+            "y": 8,
+            "width": 48,
+            "height": 48
+          },
+          "area": 1260,
+          "area_share": 0.91,
+          "centroid": {
+            "x": 31.5,
+            "y": 31.5
+          },
+          "region_count": 1,
+          "contour": {
+            "kind": "closed",
+            "hole_count": 1,
+            "stroke_width": 9.7
+          }
+        },
+        "appearance": {
+          "uniform": true,
+          "fill_kinds": [
+            "flat"
+          ],
+          "colour": "#18181b"
+        }
+      },
+      {
+        "id": 1,
+        "role": "secondary",
+        "region_ids": [
+          1
+        ],
+        "geometry": {
+          "bounding_box": {
+            "x": 26,
+            "y": 26,
+            "width": 12,
+            "height": 12
+          },
+          "area": 120,
+          "area_share": 0.09,
+          "centroid": {
+            "x": 31.5,
+            "y": 31.5
+          },
+          "region_count": 1,
+          "contour": {
+            "kind": "filled",
+            "hole_count": 0
+          }
+        },
+        "appearance": {
+          "uniform": true,
+          "fill_kinds": [
+            "flat"
+          ],
+          "colour": "#18181b"
+        }
+      }
+    ],
+    "relationships": [
+      {
+        "from": 0,
+        "to": 1,
+        "relation": "contains",
+        "gap": 0,
+        "centre_offset": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "size_ratio": 0.1
+      }
+    ],
+    "alignments": [
+      {
+        "line": "vertical",
+        "edge": "centre",
+        "position": 32.0,
+        "component_ids": [
+          0,
+          1
+        ]
+      },
+      {
+        "line": "horizontal",
+        "edge": "centre",
+        "position": 32.0,
+        "component_ids": [
+          0,
+          1
+        ]
+      }
+    ]
   }
 }
