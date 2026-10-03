@@ -153,6 +153,8 @@ The interactive TUI.
       leaving the workspace, through a modal editor the same shape as the
       variants and render specifications ones
 
+- [ ] Project description is a first-class editable artifact, separate from the transient agent transcript
+
 ## Agent integration
 
 Shaipe provides tools. It does not provide a model, a key or a conversation —
@@ -319,6 +321,8 @@ see `docs/adr/004-tools-not-a-model.md`.
       round a disc, even and uneven rows, closed against open contours, and
       controls that must not be called a composition
 
+- [ ] Agents can read and update the durable project description without persisting conversation history
+
 ## Artwork
 
 - [x] `logo.svg` is a Shaipe project at the repository root
@@ -380,3 +384,4 @@ Toolchain, docs, release.
 - [ ] Define permissions and mutation boundaries for external agents — #41.
 - [ ] Validate external harness integration end to end — #42.
 - [ ] Epic 1.75 — structured logo reconstruction and typography: lettering, components, silhouettes, planning and complex fixtures — #48.
+- [ ] Persist a project description separately from agent conversations — #59
