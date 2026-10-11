@@ -490,7 +490,37 @@ fn fit(hints: &[Hint], mut room: usize) -> Vec<Hint> {
 ///
 /// Takes the width because it decides what fits. See [`Hint`].
 pub fn status(app: &App, width: u16) -> Paragraph<'static> {
-    let mut spans = Vec::new();
+    // Unlike hints, this marker survives notices and quit confirmations: the
+    // phase is the workspace's location, not a transient keyboard shortcut.
+    let location = match (app.workflow.kind(), app.workflow.phase()) {
+        (Some(kind), Some(phase)) if width < 60 => {
+            // Abbreviations keep the essential send/quit hints reachable on a
+            // small terminal. Render and refine need distinct abbreviations.
+            let kind = match kind {
+                crate::workflow::WorkflowKind::FromScratch => 'S',
+                crate::workflow::WorkflowKind::Reference => 'R',
+                crate::workflow::WorkflowKind::Hybrid => 'H',
+            };
+            let phase = match phase {
+                crate::workflow::Phase::Inspect => "in",
+                crate::workflow::Phase::Analyse => "an",
+                crate::workflow::Phase::ChooseStrategy => "st",
+                crate::workflow::Phase::Construct => "co",
+                crate::workflow::Phase::Render => "re",
+                crate::workflow::Phase::Compare => "cp",
+                crate::workflow::Phase::Refine => "rf",
+                crate::workflow::Phase::Validate => "va",
+            };
+            format!("{kind}:{phase} ")
+        }
+        (Some(kind), Some(phase)) => format!("{kind}/{phase}  "),
+        _ if width < 60 => "W? ".to_owned(),
+        _ => "workflow: unset (W)  ".to_owned(),
+    };
+    let mut spans = vec![Span::styled(
+        location.clone(),
+        Style::default().fg(Color::LightMagenta),
+    )];
 
     // The question comes before everything else and in a colour that stops the
     // eye: the next `q` throws work away, and nothing else on this line
@@ -523,7 +553,8 @@ pub fn status(app: &App, width: u16) -> Paragraph<'static> {
     } else {
         // The markers are measured first: they are not hints and are never
         // dropped, so whatever they take is not room the hints have.
-        let markers = usize::from(app.is_stale()) * "● on disk  ".len()
+        let markers = location.len()
+            + usize::from(app.is_stale()) * "● on disk  ".len()
             + usize::from(app.is_dirty()) * "● unsaved  ".len()
             // Neither the model nor the agent's activity is a hint, and
             // neither is ever dropped, so whatever they take is not room
@@ -666,6 +697,10 @@ fn hints(app: &App) -> Vec<Hint> {
     // button on the toolbar go before the ones that do not.
     hints.push(Hint::optional("←→", "tab", 9));
     hints.push(Hint::optional("m", app.mode().other().title(), 5));
+    hints.push(Hint::optional("W", "workflow", 5));
+    if app.workflow.phase().is_some() {
+        hints.push(Hint::optional(",/.", "phase", 5));
+    }
     hints.push(Hint::optional(
         "s",
         match app.view() {
@@ -1013,15 +1048,46 @@ mod tests {
     }
 
     #[test]
-    fn every_hint_fits_eighty_columns_now_that_the_backend_has_moved() {
-        // Nothing has to be given up at the width everybody has. Freeing the
-        // fifteen columns the backend was taking paid for `a` outright.
+    fn the_workflow_location_does_not_displace_essential_hints_at_eighty_columns() {
+        // A persistent phase marker now takes space even when status hints
+        // change; optional controls still return when there is more room.
         let mut app = App::new(fixtures::project(), "blocks");
         app.focus = Focus::Message;
 
         let line = footer(&app, 80);
-        for expected in ["tab", "edit", "send", "$EDITOR", "source", "save", "quit"] {
+        for expected in ["workflow: unset", "edit", "send", "save", "quit"] {
             assert!(line.contains(expected), "{expected} missing from\n{line}");
+        }
+        assert!(footer(&app, 160).contains("$EDITOR"));
+    }
+
+    #[test]
+    fn the_phase_remains_visible_during_a_notice_and_on_a_narrow_terminal() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.next_workflow_kind();
+        app.next_workflow_kind();
+        app.previous_phase();
+        app.previous_phase();
+        assert!(footer(&app, 100).contains("reference/analyse"));
+
+        app.notice = Some(Notice::info("saved"));
+        assert!(footer(&app, 100).contains("reference/analyse"));
+        assert!(footer(&app, 40).contains("R:an"));
+    }
+
+    #[test]
+    fn every_selected_phase_leaves_the_essential_controls_readable() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.focus = Focus::Message;
+        for _ in 0..3 {
+            app.next_workflow_kind();
+            let count = app.workflow.kind().unwrap().phases().len();
+            for _ in 0..count {
+                let line = footer(&app, 80);
+                assert!(line.contains("send"), "{line}");
+                assert!(line.contains("quit"), "{line}");
+                app.next_phase();
+            }
         }
     }
 

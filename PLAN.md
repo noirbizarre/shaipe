@@ -375,7 +375,7 @@ Toolchain, docs, release.
 - [x] Add deterministic appearance fixtures and evaluation coverage — #31.
 - [x] Improve typography recognition and reconstruction — #49.
 - [x] Add structured component and composition understanding — #50.
-- [ ] Define workflow-first workspace information architecture — #33.
+- [x] Define workflow-first workspace information architecture — #33.
 - [ ] Build the workflow and comparison workspace — #34.
 - [ ] Rework agent interaction around workflow actions — #35.
 - [ ] Add iteration history and visual review — #36.
@@ -393,7 +393,7 @@ Toolchain, docs, release.
 - [x] Expose `set_font` so an agent can declare a selected local or checksum-pinned remote font — #54.
 - [ ] Add read-only font catalogue discovery and candidate selection — #55.
 - [ ] Match reference typography against rendered font candidates with measurable evidence — #56.
-- [ ] TUI usability priority: define the workflow-first information architecture before adding more panes or controls — #33.
+- [x] TUI usability priority: define the workflow-first information architecture before adding more panes or controls — #33.
 - [x] Persist the project description independently from agent conversation history, so a new session can resume from durable intent — #59.
 - [ ] Rework the agent interaction around an accessible chat workspace, transient instructions and visible tool activity — #35.
 - [ ] Build the workflow and comparison workspace only after the interaction model is clear — #34.
