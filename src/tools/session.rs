@@ -402,4 +402,31 @@ mod tests {
         let on_disk = std::fs::read_to_string(&path).unwrap();
         assert!(on_disk.contains("#00ff00"), "the edit was not saved");
     }
+
+    #[tokio::test]
+    async fn declaring_a_font_in_a_write_session_persists_canonical_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        std::fs::write(
+            directory.path().join("font.ttf"),
+            include_bytes!("../../fonts/FiraSans-Regular.ttf"),
+        )
+        .unwrap();
+
+        let session = SessionHandle::detached(Project::open(&path).unwrap(), Registry::new(), true);
+        session
+            .call(
+                "set_font",
+                json!({ "family": "Fira Sans", "src": "font.ttf" }),
+            )
+            .await
+            .unwrap();
+        // A read queued after the call makes the detached save finish before
+        // the assertion, just as it does for any other mutating tool.
+        session.call("get_project", Value::Null).await.unwrap();
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("<shaipe:font family=\"Fira Sans\" src=\"font.ttf\"/>"));
+    }
 }

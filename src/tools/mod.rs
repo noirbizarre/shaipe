@@ -371,6 +371,7 @@ mod tests {
                 "get_workflow",
                 "render_grid",
                 "render_svg",
+                "set_font",
                 "set_generation",
                 "set_palette_colour",
                 "set_reference",
@@ -470,6 +471,7 @@ mod tests {
             "compare_reference",
             "get_workflow",
             "render_svg",
+            "set_font",
             "write_svg",
             "write_variant",
         ] {
@@ -664,8 +666,9 @@ mod tests {
                 let Some(property) = schema["properties"].get(argument) else {
                     continue;
                 };
-                // `set_reference` takes a `src` that is new by design.
-                if tool.name() == "set_reference" {
+                // These tools take new file paths, not an attached reference
+                // selected from the list `get_references` returns.
+                if argument == "src" && matches!(tool.name(), "set_reference" | "set_font") {
                     continue;
                 }
                 assert!(

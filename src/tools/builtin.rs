@@ -5,17 +5,19 @@
 //! logic of its own would be logic the CLI and the TUI could not reach.
 //!
 //! Most are read-only. The mutating ones — `write_svg`, `write_variant`,
-//! `set_palette_colour`, `set_generation` — validate before anything is
+//! `set_font`, `set_palette_colour`, `set_generation` — validate before anything is
 //! replaced and change the project only in memory; see [`Tool::mutates`] for
 //! what that means to a caller.
 
 use serde_json::{Value, json};
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::error::Result;
 use crate::inspect::Report;
 use crate::project::document;
+use crate::project::font::Font;
 use crate::project::palette::{Colour, Role};
 use crate::project::{Background, Format, Project, Reference, ReferenceKind, RenderSpec, Rgba};
 use crate::render::{RenderOptions, Renderer};
@@ -41,6 +43,7 @@ pub fn all() -> Vec<Box<dyn Tool>> {
         Box::new(RenderGrid),
         Box::new(WriteSvg),
         Box::new(WriteVariant),
+        Box::new(SetFont),
         Box::new(SetPaletteColour),
         Box::new(SetReference),
         Box::new(SetGeneration),
@@ -1759,6 +1762,239 @@ impl Tool for SetPaletteColour {
     }
 }
 
+/// Declare a selected font, with its actual bytes checked before the project
+/// starts depending on it.
+struct SetFont;
+
+impl Tool for SetFont {
+    fn name(&self) -> &'static str {
+        "set_font"
+    }
+
+    fn description(&self) -> &'static str {
+        "Declare a selected font for SVG text. SVG `@font-face` does not load fonts in Shaipe: \
+         `<text font-family=\"...\">` needs a matching `<shaipe:font>` declaration. Call \
+         `get_project` first to inspect existing fonts; font discovery/identification is a \
+         separate task. Give `family` exactly as it appears in the font and in SVG text, and \
+         exactly one source: `src` for a committed local file relative to the project, or \
+         `href` for an HTTP(S) font URL. For a URL, Shaipe fetches and pins its SHA-256; \
+         optionally give `sha256` to check expected bytes. Conflicting declarations for the \
+         same family are refused. The response tells you what was declared; then call \
+         `render_svg` to check the text."
+    }
+
+    fn input_schema(&self) -> Value {
+        let mut schema = object(
+            &[
+                (
+                    "family",
+                    string("The font's actual family name, exactly as used by SVG `font-family`."),
+                ),
+                (
+                    "src",
+                    string(
+                        "Path to a committed font file, relative to the project or absolute; mutually exclusive with `href`.",
+                    ),
+                ),
+                (
+                    "href",
+                    string(
+                        "HTTP(S) URL of a font file; mutually exclusive with `src`. Its bytes will be checksum-pinned.",
+                    ),
+                ),
+                (
+                    "sha256",
+                    string(
+                        "Optional expected SHA-256 for `href`: 64 lowercase hexadecimal characters. If omitted, Shaipe computes it from the download.",
+                    ),
+                ),
+            ],
+            &["family"],
+        );
+        // Put the source alternatives in the schema itself, so a client can
+        // discover the rule before the first rejected call.
+        schema["oneOf"] = json!([
+            { "required": ["src"], "not": { "anyOf": [{ "required": ["href"] }, { "required": ["sha256"] }] } },
+            { "required": ["href"], "not": { "required": ["src"] } },
+        ]);
+        schema["properties"]["sha256"]["pattern"] = json!("^[0-9a-f]{64}$");
+        schema["properties"]["href"]["pattern"] = json!("^https?://");
+        schema
+    }
+
+    fn mutates(&self) -> bool {
+        true
+    }
+
+    fn call(&self, project: &mut Project, input: &Value) -> Result<ToolOutput> {
+        let refuse = |reason: String| crate::Error::InvalidToolInput {
+            tool: self.name().to_owned(),
+            reason,
+        };
+        let family = required_str(self.name(), input, "family")?.trim();
+        if family.is_empty() || family.contains(',') {
+            return Err(refuse(
+                "`family` must be a nonempty, single font family name".to_owned(),
+            ));
+        }
+        let argument = |name: &str| -> Result<Option<&str>> {
+            match input.get(name) {
+                None => Ok(None),
+                Some(value) => value
+                    .as_str()
+                    .map(Some)
+                    .ok_or_else(|| refuse(format!("`{name}` must be a string when supplied"))),
+            }
+        };
+        let src = argument("src")?;
+        let href = argument("href")?;
+        let expected = argument("sha256")?;
+        if expected.is_some_and(|hash| {
+            hash.len() != 64
+                || !hash
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        }) {
+            return Err(refuse(
+                "`sha256` must be exactly 64 lowercase hexadecimal characters".to_owned(),
+            ));
+        }
+        if expected.is_some() && href.is_none() {
+            return Err(refuse(
+                "`sha256` only applies to `href`; use `src` without a checksum for a local file"
+                    .to_owned(),
+            ));
+        }
+        if src.is_some() == href.is_some() {
+            return Err(refuse(
+                "give exactly one of `src` (committed file) or `href` (URL)".to_owned(),
+            ));
+        }
+
+        // Check conflicts before a possibly slow fetch; an unrelated URL must
+        // never be contacted when its family is already spoken for.
+        let existing = project
+            .metadata()
+            .fonts
+            .iter()
+            .find(|font| font.family.eq_ignore_ascii_case(family));
+        if let Some(existing) = existing {
+            let same_source = match (&existing.source, src, href, expected) {
+                (crate::project::font::FontSource::Local(path), Some(src), _, _) => {
+                    path == Path::new(src)
+                }
+                (
+                    crate::project::font::FontSource::Remote { href: old, sha256 },
+                    _,
+                    Some(href),
+                    Some(expected),
+                ) => old == href && sha256 == expected,
+                (
+                    crate::project::font::FontSource::Remote { href: old, .. },
+                    _,
+                    Some(href),
+                    None,
+                ) => old == href,
+                _ => false,
+            };
+            if !same_source {
+                return Err(refuse(format!(
+                    "`{}` already has a different font declaration; call `get_project` to inspect it before changing the source",
+                    existing.family
+                )));
+            }
+        }
+
+        let font = if let Some(src) = src {
+            if src.trim().is_empty() {
+                return Err(refuse(
+                    "`src` must name a font file relative to the project or an absolute path"
+                        .to_owned(),
+                ));
+            }
+            let font = Font::new(family, src);
+            let bytes = crate::fonts::resolve(project, &font)?;
+            validate_font(self.name(), family, bytes)?;
+            font
+        } else {
+            let href = href.expect("exactly one source was checked");
+            let uri: ureq::http::Uri = href.parse().map_err(|_| {
+                refuse("`href` must be a valid HTTP(S) URL of a font file".to_owned())
+            })?;
+            if !matches!(uri.scheme_str(), Some("http" | "https")) || uri.host().is_none() {
+                return Err(refuse(
+                    "`href` must be an HTTP(S) URL with a host".to_owned(),
+                ));
+            }
+            // An already pinned URL is resolved by its recorded checksum;
+            // re-downloading it would make a repeated call depend on whatever
+            // happens to be at that URL today.
+            let (sha256, bytes) = match (existing, expected) {
+                (Some(old), None) => {
+                    let bytes = crate::fonts::resolve(project, old)?;
+                    let crate::project::font::FontSource::Remote { sha256, .. } = &old.source
+                    else {
+                        unreachable!("an existing local source was rejected above")
+                    };
+                    (sha256.clone(), bytes)
+                }
+                _ => crate::fonts::pin_remote(family, href, expected)?,
+            };
+            validate_font(self.name(), family, bytes)?;
+            Font::remote(family, href, sha256)
+        };
+
+        let created = existing.is_none();
+        if created {
+            project.metadata_mut().fonts.push(font.clone());
+        }
+        let source = match &font.source {
+            crate::project::font::FontSource::Local(src) => {
+                json!({ "src": src.display().to_string() })
+            }
+            crate::project::font::FontSource::Remote { href, sha256 } => {
+                json!({ "href": href, "sha256": sha256 })
+            }
+        };
+        Ok(ToolOutput::json(json!({
+            "family": family,
+            "source": source,
+            "created": created,
+            "next": "Use this family in SVG `<text font-family=\"...\">`, then call `render_svg` to inspect it.",
+            "note": IN_MEMORY,
+        })))
+    }
+}
+
+/// Loading bytes is not enough: fontdb silently skips invalid files, and a
+/// family typo would only show up later as a machine-dependent fallback.
+fn validate_font(tool: &str, family: &str, bytes: Vec<u8>) -> Result<()> {
+    let mut database = usvg::fontdb::Database::new();
+    database.load_font_source(usvg::fontdb::Source::Binary(Arc::new(bytes)));
+    let mut available = Vec::new();
+    for face in database.faces() {
+        for (name, _) in &face.families {
+            if name.eq_ignore_ascii_case(family) {
+                return Ok(());
+            }
+            if !available.contains(name) {
+                available.push(name.clone());
+            }
+        }
+    }
+    Err(crate::Error::InvalidToolInput {
+        tool: tool.to_owned(),
+        reason: if available.is_empty() {
+            "font bytes could not be loaded; provide a valid TTF/OTF/WOFF font file".to_owned()
+        } else {
+            format!(
+                "`family` is `{family}`, but the font supplies {}; use one of those names in both the declaration and SVG text",
+                available.join(", ")
+            )
+        },
+    })
+}
+
 /// Attach a file for context, or update one already attached.
 struct SetReference;
 
@@ -1947,9 +2183,12 @@ impl Tool for SetGeneration {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::path::Path;
 
     use pretty_assertions::assert_eq;
+    use sha2::{Digest, Sha256};
 
     use super::*;
     use crate::Error;
@@ -1963,6 +2202,257 @@ mod tests {
     /// The structured half of an answer, for the tools that have no images.
     fn value(name: &str, input: Value) -> Value {
         call(name, input).unwrap().value
+    }
+
+    const FONT_BYTES: &[u8] = include_bytes!("../../fonts/FiraSans-Regular.ttf");
+
+    fn font_checksum() -> String {
+        Sha256::digest(FONT_BYTES)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    fn text_project(path: &Path) -> Project {
+        Project::from_source(
+            path,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:shaipe="https://shaipe.dev/ns/2026" viewBox="0 0 100 40">
+  <metadata><shaipe:project version="1" primary="wordmark"><shaipe:variants><shaipe:variant name="wordmark"/></shaipe:variants></shaipe:project></metadata>
+  <symbol id="wordmark" viewBox="0 0 100 40"><text x="0" y="30" font-size="24" font-family="Fira Sans">Hello</text></symbol>
+  <use href="#wordmark"/>
+</svg>"##.to_owned(),
+        )
+        .unwrap()
+    }
+
+    fn font_url(bytes: &'static [u8]) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request);
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                bytes.len()
+            );
+            stream.write_all(header.as_bytes()).unwrap();
+            stream.write_all(bytes).unwrap();
+        });
+        format!("http://{addr}/font.ttf")
+    }
+
+    #[test]
+    fn a_committed_font_is_declared_and_strict_rendering_uses_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(directory.path().join("font.ttf"), FONT_BYTES).unwrap();
+        let mut project = text_project(&path);
+        let registry = Registry::new();
+        let input = json!({ "family": "Fira Sans", "src": "font.ttf" });
+
+        let result = registry
+            .call("set_font", &mut project, &input)
+            .unwrap()
+            .value;
+        assert_eq!(result["created"], true);
+        assert_eq!(result["source"]["src"], "font.ttf");
+        assert_eq!(
+            registry
+                .call("set_font", &mut project, &input)
+                .unwrap()
+                .value["created"],
+            false
+        );
+        assert_eq!(project.metadata().fonts.len(), 1);
+        let source = registry
+            .call("get_svg", &mut project, &json!({}))
+            .unwrap()
+            .value;
+        assert!(
+            source["source"]
+                .as_str()
+                .unwrap()
+                .contains("<shaipe:fonts>\n")
+        );
+        assert!(
+            source["source"]
+                .as_str()
+                .unwrap()
+                .contains("<shaipe:font family=\"Fira Sans\" src=\"font.ttf\"/>")
+        );
+        assert_eq!(
+            registry
+                .call("get_project", &mut project, &json!({}))
+                .unwrap()
+                .value["fonts"][0]["source"]["kind"],
+            "local"
+        );
+
+        let renderer = Renderer::new(
+            &project,
+            RenderOptions {
+                fonts: crate::render::FontPolicy::Strict,
+            },
+        )
+        .unwrap();
+        let spec = RenderSpec {
+            height: 40,
+            ..RenderSpec::square("wordmark", "wordmark", 100)
+        };
+        assert!(!renderer.render(&spec).unwrap().bytes.is_empty());
+    }
+
+    #[test]
+    fn a_remote_font_is_pinned_from_its_bytes_and_strict_rendering_uses_the_cache() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut project = text_project(&directory.path().join("logo.svg"));
+        let href = font_url(FONT_BYTES);
+        let checksum = font_checksum();
+        let registry = Registry::new();
+
+        let result = registry
+            .call(
+                "set_font",
+                &mut project,
+                &json!({ "family": "Fira Sans", "href": href }),
+            )
+            .unwrap()
+            .value;
+        assert_eq!(result["source"]["sha256"], checksum);
+        assert_eq!(result["created"], true);
+        let source = project.to_svg().unwrap();
+        assert!(source.contains(&format!(
+            "<shaipe:font family=\"Fira Sans\" href=\"{href}\" sha256=\"{checksum}\"/>"
+        )));
+        assert_eq!(
+            registry
+                .call("get_project", &mut project, &json!({}))
+                .unwrap()
+                .value["fonts"][0]["source"]["kind"],
+            "remote"
+        );
+
+        // The loopback server answered exactly once; renderer construction
+        // must read the pinned cache rather than contact it a second time.
+        let renderer = Renderer::new(
+            &project,
+            RenderOptions {
+                fonts: crate::render::FontPolicy::Strict,
+            },
+        )
+        .unwrap();
+        let spec = RenderSpec {
+            height: 40,
+            ..RenderSpec::square("wordmark", "wordmark", 100)
+        };
+        assert!(!renderer.render(&spec).unwrap().bytes.is_empty());
+        assert_eq!(
+            registry
+                .call(
+                    "set_font",
+                    &mut project,
+                    &json!({ "family": "Fira Sans", "href": href })
+                )
+                .unwrap()
+                .value["created"],
+            false
+        );
+    }
+
+    #[test]
+    fn an_expected_remote_checksum_is_verified_and_a_mismatch_does_not_change_the_project() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut project = text_project(&directory.path().join("logo.svg"));
+        let checksum = font_checksum();
+        let href = font_url(FONT_BYTES);
+        let result = Registry::new()
+            .call(
+                "set_font",
+                &mut project,
+                &json!({ "family": "Fira Sans", "href": href, "sha256": checksum }),
+            )
+            .unwrap();
+        assert_eq!(result.value["source"]["sha256"], checksum);
+
+        let mut project = text_project(&directory.path().join("other.svg"));
+        let before = project.to_svg().unwrap();
+        let error = Registry::new().call("set_font", &mut project, &json!({ "family": "Fira Sans", "href": font_url(FONT_BYTES), "sha256": "0".repeat(64) })).unwrap_err();
+        assert!(
+            matches!(error, Error::FontChecksumMismatch { .. }),
+            "{error:?}"
+        );
+        assert_eq!(project.to_svg().unwrap(), before);
+    }
+
+    #[test]
+    fn a_remote_url_must_resolve_to_a_font_and_unreachable_urls_do_not_change_the_project() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut project = text_project(&directory.path().join("logo.svg"));
+        let before = project.to_svg().unwrap();
+        let error = Registry::new()
+            .call(
+                "set_font",
+                &mut project,
+                &json!({ "family": "Fira Sans", "href": font_url(b"not a font") }),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("font bytes"), "{error}");
+        assert_eq!(project.to_svg().unwrap(), before);
+
+        let error = Registry::new()
+            .call(
+                "set_font",
+                &mut project,
+                &json!({ "family": "Fira Sans", "href": "http://127.0.0.1:1/font.ttf" }),
+            )
+            .unwrap_err();
+        assert!(matches!(error, Error::FontFetch { .. }), "{error:?}");
+        assert_eq!(project.to_svg().unwrap(), before);
+    }
+
+    #[test]
+    fn invalid_sources_fonts_and_conflicts_leave_the_declaration_unchanged() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        std::fs::write(directory.path().join("broken.ttf"), b"not a font").unwrap();
+        std::fs::write(directory.path().join("font.ttf"), FONT_BYTES).unwrap();
+        let mut project = text_project(&path);
+        let registry = Registry::new();
+        let invalid = [
+            json!({ "family": " ", "src": "font.ttf" }),
+            json!({ "family": "Fira Sans" }),
+            json!({ "family": "Fira Sans", "src": "font.ttf", "href": "https://example.test/font.ttf" }),
+            json!({ "family": "Fira Sans", "src": "font.ttf", "sha256": "0".repeat(64) }),
+            json!({ "family": "Fira Sans", "href": "https://example.test/font.ttf", "sha256": "" }),
+            json!({ "family": "Fira Sans", "href": "file:///tmp/font.ttf" }),
+            json!({ "family": "Fira Sans", "src": "missing.ttf" }),
+            json!({ "family": "Fira Sans", "src": "broken.ttf" }),
+            json!({ "family": "Wrong Family", "src": "font.ttf" }),
+            json!({ "family": "Fira Sans", "src": 3 }),
+        ];
+        let before = project.to_svg().unwrap();
+        for input in invalid {
+            let error = registry.call("set_font", &mut project, &input).unwrap_err();
+            assert_eq!(project.to_svg().unwrap(), before, "{input}: {error}");
+        }
+        registry
+            .call(
+                "set_font",
+                &mut project,
+                &json!({ "family": "Fira Sans", "src": "font.ttf" }),
+            )
+            .unwrap();
+        let before = project.to_svg().unwrap();
+        let error = registry
+            .call(
+                "set_font",
+                &mut project,
+                &json!({ "family": "Fira Sans", "src": "broken.ttf" }),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("get_project"), "{error}");
+        assert_eq!(project.to_svg().unwrap(), before);
     }
 
     #[test]
@@ -2967,6 +3457,7 @@ mod tests {
         assert_eq!(
             mutating,
             [
+                "set_font",
                 "set_generation",
                 "set_palette_colour",
                 "set_reference",

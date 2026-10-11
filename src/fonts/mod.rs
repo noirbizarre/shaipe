@@ -69,6 +69,25 @@ fn hex(bytes: impl AsRef<[u8]>) -> String {
     out
 }
 
+/// Fetch a selected URL once and pin the bytes it returned. A supplied hash
+/// lets the ordinary content-addressed cache satisfy the request offline.
+///
+/// # Errors
+///
+/// Returns [`Error::FontFetch`] when the URL cannot be fetched, or
+/// [`Error::FontChecksumMismatch`] when an expected hash does not match.
+pub fn pin_remote(family: &str, href: &str, expected: Option<&str>) -> Result<(String, Vec<u8>)> {
+    if let Some(expected) = expected {
+        let bytes = resolve_remote(&cache_path(expected), family, href, expected)?;
+        return Ok((expected.to_owned(), bytes));
+    }
+
+    let bytes = fetch(family, href)?;
+    let sha256 = hex(&bytes);
+    cache(&cache_path(&sha256), &bytes);
+    Ok((sha256, bytes))
+}
+
 /// Turn a declared font into bytes.
 ///
 /// # Errors
@@ -117,27 +136,7 @@ fn resolve_remote(
         // exactly what happens next.
     }
 
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(FETCH_TIMEOUT))
-        .build()
-        .into();
-
-    let mut response = agent.get(href).call().map_err(|source| Error::FontFetch {
-        family: family.to_owned(),
-        href: href.to_owned(),
-        source: Box::new(source),
-    })?;
-
-    let bytes = response
-        .body_mut()
-        .with_config()
-        .limit(MAX_FONT_BYTES)
-        .read_to_vec()
-        .map_err(|source| Error::FontFetch {
-            family: family.to_owned(),
-            href: href.to_owned(),
-            source: Box::new(source),
-        })?;
+    let bytes = fetch(family, href)?;
 
     let found = hex(&bytes);
     if found != sha256 {
@@ -151,12 +150,42 @@ fn resolve_remote(
 
     // Cached only after the checksum is confirmed — a mismatched download is
     // never written down for a later call to trust.
+    cache(path, &bytes);
+
+    Ok(bytes)
+}
+
+/// Both the pinning tool and a cold render use the same timeout and size
+/// ceiling, so adding a URL cannot bypass the limits applied to rendering it.
+fn fetch(family: &str, href: &str) -> Result<Vec<u8>> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(FETCH_TIMEOUT))
+        .build()
+        .into();
+
+    let mut response = agent.get(href).call().map_err(|source| Error::FontFetch {
+        family: family.to_owned(),
+        href: href.to_owned(),
+        source: Box::new(source),
+    })?;
+
+    response
+        .body_mut()
+        .with_config()
+        .limit(MAX_FONT_BYTES)
+        .read_to_vec()
+        .map_err(|source| Error::FontFetch {
+            family: family.to_owned(),
+            href: href.to_owned(),
+            source: Box::new(source),
+        })
+}
+
+fn cache(path: &std::path::Path, bytes: &[u8]) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(path, &bytes);
-
-    Ok(bytes)
+    let _ = std::fs::write(path, bytes);
 }
 
 /// Where a remote font's bytes would be cached, for reporting (`shaipe

@@ -322,6 +322,7 @@ see `docs/adr/004-tools-not-a-model.md`.
       controls that must not be called a composition
 
 - [ ] Agents can read and update the durable project description without persisting conversation history
+- [x] `set_font` declares a validated committed font or fetches and pins a selected URL for SVG text, with actionable agent instructions and tool tests
 
 ## Artwork
 

@@ -140,6 +140,7 @@ fn the_standalone_server_advertises_every_tool() {
             "get_workflow",
             "render_grid",
             "render_svg",
+            "set_font",
             "set_generation",
             "set_palette_colour",
             "set_reference",
