@@ -3,7 +3,7 @@
 //! The workspace's modes used to be reachable only by keys nobody could
 //! discover from the screen: which of the artwork and the source is shown,
 //! which of the variants and the render specifications the tabs list, and
-//! whether the transcript is up. Each of those is a state, and a state with no
+//! whether chat is open. Each of those is a state, and a state with no
 //! visible affordance is a state people find by accident.
 //!
 //! Every button is built once, into a list carrying the rectangle it was drawn
@@ -26,14 +26,18 @@ use super::app::App;
 /// means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Button {
+    /// Select the visual evidence on a narrow terminal.
+    Evidence,
+    /// Select the description on a narrow terminal.
+    Description,
     /// Swap the artwork for the document that produced it.
     View,
     /// Swap the variants for the render specifications.
     Mode,
     /// Open the editor for whichever the tabs currently list.
     Editor,
-    /// Swap the prompt for the transcript.
-    Transcript,
+    /// Open or close the independent chat workspace.
+    Chat,
 }
 
 /// How the workspace is named on its own toolbar, and how wide that is.
@@ -63,12 +67,30 @@ struct Segment {
 /// selected one", which is the opposite of what a button that switches away
 /// means.
 fn segments(app: &App) -> Vec<Segment> {
-    vec![
-        // The left column is read first, so the button for it comes first.
+    let mut buttons = vec![
+        // Chat is the primary interaction control, so it comes first.
         Segment {
-            button: Button::Transcript,
-            label: label(app.left_view().other().title()),
+            button: Button::Chat,
+            label: label(
+                if app.chat_open() || app.destination() == super::app::Destination::Chat {
+                    "close chat"
+                } else {
+                    "chat"
+                },
+            ),
         },
+    ];
+    if app.total_width() < super::app::NARROW_WIDTH {
+        buttons.push(Segment {
+            button: Button::Description,
+            label: label("description"),
+        });
+        buttons.push(Segment {
+            button: Button::Evidence,
+            label: label("evidence"),
+        });
+    }
+    buttons.extend([
         Segment {
             button: Button::View,
             label: label(app.view().other().title()),
@@ -84,7 +106,8 @@ fn segments(app: &App) -> Vec<Segment> {
             // labelling it with what it does *to* would say the wrong thing.
             label: label(&format!("edit {}", app.mode().title())),
         },
-    ]
+    ]);
+    buttons
 }
 
 /// A button's text: capitalised, and padded off its neighbours.
@@ -180,14 +203,14 @@ mod tests {
         // "Renders" (what it switches *to*) and the editor button reads
         // "Edit variants" (what it edits *now*) — the two read differently on
         // purpose; see `segments`.
-        for expected in ["Transcript", "Source", "Renders", "Edit variants"] {
+        for expected in ["Chat", "Source", "Renders", "Edit variants"] {
             assert!(line.contains(expected), "{expected} missing from\n{line}");
         }
     }
 
     #[test]
     fn the_editor_button_is_named_after_the_current_mode_not_the_other_one() {
-        // Unlike `Mode`, `View` and `LeftView`'s buttons, this one does not
+        // Unlike the mode and view buttons, this one does not
         // switch anything, so it cannot be labelled with what pressing it
         // will change to.
         let mut app = app();
@@ -217,19 +240,17 @@ mod tests {
     }
 
     #[test]
-    fn the_transcript_button_comes_first_and_says_which_way_it_goes() {
-        // The left column is read first, so the button for it is read first.
+    fn the_chat_button_comes_first_and_says_which_way_it_goes() {
         let mut app = app();
         let line = drawn(&mut app, 80);
         assert!(
-            line.find("Transcript") < line.find("Source"),
-            "the transcript button is not first:\n{line}"
+            line.find("Chat") < line.find("Source"),
+            "the chat button is not first:\n{line}"
         );
 
-        app.toggle_left_view();
+        app.toggle_chat();
         let line = drawn(&mut app, 80);
-        assert!(line.contains("Description"), "{line}");
-        assert!(!line.contains("Transcript"), "{line}");
+        assert!(line.contains("Close chat"), "{line}");
     }
 
     #[test]
@@ -260,12 +281,7 @@ mod tests {
         let mut app = app();
         drawn(&mut app, 80);
 
-        for expected in [
-            Button::View,
-            Button::Mode,
-            Button::Editor,
-            Button::Transcript,
-        ] {
+        for expected in [Button::View, Button::Mode, Button::Editor, Button::Chat] {
             let area = app
                 .button_area(expected)
                 .unwrap_or_else(|| panic!("{expected:?} was not drawn"));
