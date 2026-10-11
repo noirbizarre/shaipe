@@ -386,3 +386,15 @@ Toolchain, docs, release.
 - [ ] Validate external harness integration end to end — #42.
 - [ ] Epic 1.75 — structured logo reconstruction and typography: lettering, components, silhouettes, planning and complex fixtures — #48.
 - [ ] Persist a project description separately from agent conversations — #59
+
+- [ ] Improve reconstruction of complex stylised silhouettes — #51.
+- [ ] Make reconstruction planning typography- and composition-aware — #52.
+- [ ] Add complex-logo reconstruction fixtures and evaluation — #53.
+- [x] Expose `set_font` so an agent can declare a selected local or checksum-pinned remote font — #54.
+- [ ] Add read-only font catalogue discovery and candidate selection — #55.
+- [ ] Match reference typography against rendered font candidates with measurable evidence — #56.
+- [ ] TUI usability priority: define the workflow-first information architecture before adding more panes or controls — #33.
+- [ ] Persist the project description independently from agent conversation history, so a new session can resume from durable intent — #59.
+- [ ] Rework the agent interaction around an accessible chat workspace, transient instructions and visible tool activity — #35.
+- [ ] Build the workflow and comparison workspace only after the interaction model is clear — #34.
+- [ ] Add iteration history and visual review so the user can compare, revisit and refine outputs — #36.
