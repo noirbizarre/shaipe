@@ -1,9 +1,9 @@
 //! The interactive workspace.
 //!
 //! ```text
-//! ┌ Shaipe [Chat] [Source] [Renders] [Edit variants] ───────────────────────┐
-//! │ description/palette/references │ preview/source │ chat log (optional)   │
-//! │                                │                │ message composer      │
+//! ┌ Shaipe [Chat] [Source] [Renders] [Edit variants] [Evidence] ───────────┐
+//! │ description/palette/references │ image + metrics │ chat log (optional)   │
+//! │                                │ SVG source      │ message composer      │
 //! └────────────────────────────────┴────────────────┴───────────────────────┘
 //! ```
 //!
@@ -21,6 +21,7 @@
 //! rather than panes, and `m` swaps which of the two the tabs list.
 
 pub mod app;
+mod evidence_worker;
 mod markdown;
 pub mod modal;
 pub mod panes;
@@ -320,8 +321,9 @@ async fn event_loop(
     let mut ticking = IDLE_TICK;
 
     while !app.should_quit {
-        let arrived = app.collect_preview();
+        let arrived = app.collect_preview() | app.collect_evidence();
         app.update_preview();
+        app.update_evidence();
 
         // A new image is written *inside* `draw`, and under tmux that write is
         // over a megabyte of passthrough sequences and takes seconds. Nothing
@@ -780,6 +782,7 @@ fn handle(app: &mut App, key: KeyEvent) {
         // The toggles never turn a conversation into project metadata.
         KeyCode::Char('s') => app.toggle_view(),
         KeyCode::Char('m') => app.toggle_mode(),
+        KeyCode::Char('c') => app.cycle_evidence(),
         KeyCode::Char('W') => app.next_workflow_kind(),
         KeyCode::Char(',') => app.previous_phase(),
         KeyCode::Char('.') => app.next_phase(),
@@ -924,6 +927,7 @@ fn press(app: &mut App, button: Button) {
         Button::Description => app.show_destination(app::Destination::Description),
         Button::View => app.toggle_view(),
         Button::Mode => app.toggle_mode(),
+        Button::Comparison => app.cycle_evidence(),
         Button::Editor => app.open_editor(),
         Button::Chat => app.toggle_chat(),
     }
@@ -938,6 +942,27 @@ mod tests {
 
     fn app() -> App {
         App::new(fixtures::project(), "blocks")
+    }
+
+    #[test]
+    fn evidence_key_and_button_cycle_the_same_available_views() {
+        let mut app = app();
+        app.project
+            .metadata_mut()
+            .references
+            .push(crate::project::Reference::new(
+                "source.png",
+                crate::project::ReferenceKind::Source,
+            ));
+        press(&mut app, KeyCode::Char('W'));
+        press(&mut app, KeyCode::Char('W'));
+        press(&mut app, KeyCode::Char('c'));
+        assert_eq!(app.evidence_view(), app::EvidenceView::Reference);
+        super::press(&mut app, Button::Comparison);
+        assert_eq!(app.evidence_view(), app::EvidenceView::Overlay);
+        press(&mut app, KeyCode::Char('c'));
+        press(&mut app, KeyCode::Char('c'));
+        assert_eq!(app.evidence_view(), app::EvidenceView::Current);
     }
 
     /// A keypress with no modifiers.

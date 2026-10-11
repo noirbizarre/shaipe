@@ -212,17 +212,11 @@ shaipe tui logo.svg
 ```
 
 ```text
-┌ Shaipe  [Transcript] [Source] [Renders] [Edit variants] ──────────────────┐
-├───────────────────────────────┬───────────────────────────────────────────┤
-│ description, or transcript    │ ‹ icon │ wordmark ›                       │
-│                               │                                           │
-├───────────────────────────────┤        preview, or the source             │
-│ message (transient)           │                                           │
-├───────────────────────────────┤                                           │
-│ palette                       │                                           │
-├───────────────────────────────┤                                           │
-│ references                    │                                           │
-└───────────────────────────────┴───────────────────────────────────────────┘
+┌ Shaipe [Chat] [Source] [Renders] [Edit variants] [Current → Reference] ──┐
+│ description   │ ‹ icon │ wordmark ›  │ chat log (when opened)            │
+│ palette       │ visual evidence     │                                    │
+│ references    │ comparison metrics  │ transient message composer         │
+└───────────────┴─────────────────────┴────────────────────────────────────┘
 ```
 
 The preview uses whichever graphics protocol the terminal actually reports —
@@ -232,11 +226,17 @@ rather than an impression of it.
 
 The variants and the render specifications are the preview's **tabs**: `←` and
 `→` move between them, wrapping at both ends, and `m` swaps which of the two the
-tabs list. `s` swaps the picture for the SVG that produced it. `t` swaps the
-description for the transcript. Each of those has a button on the toolbar as well,
-because a mode with no visible affordance is one people find by accident.
+tabs list. `s` swaps the picture for the SVG that produced it. `W` selects a
+workflow kind and `,`/`.` browse its phases without marking them complete.
+With a `source` reference in a reference or hybrid workflow, `c` cycles the
+current render, reference, overlay and difference heatmap; the comparison is
+computed asynchronously at the source image's native dimensions, with named
+measurements below it when there is room. Selecting a source in the references pane changes the
+comparison target. `t` opens or closes the independent chat pane. The view,
+evidence, mode and chat controls have toolbar buttons; the current workflow
+kind and phase remain visible in the footer.
 
-`tab` and `↑` `↓` move between the description, message, palette and references panes,
+`tab` and `↑` `↓` move between the description, palette, references and open chat panes,
 `enter` hands the keyboard to whichever has it and `esc` gives it back. The
 description, message and palette are edited in place: the description is prose, the message is session-only, and a palette
 colour is its name and its value, committed as you type. The references pane
