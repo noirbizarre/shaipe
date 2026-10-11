@@ -86,3 +86,11 @@ piece of prose and would change what an agent is told when a file is attached.
 - The instructions are guidance, as ADR-021's phases are. Nothing enforces them.
 - Tool descriptions were unchanged by this ADR. Reviewing them for consistency
   with the instructions, and for sequencing hints, is [ADR-023](023-tool-contract-conventions.md).
+
+## Update — ADR-030
+
+The turn described above was formerly copied from the project's prompt.
+[ADR-030](030-durable-description-and-transient-messages.md) separates the
+durable description from the session-only message and transcript. The decision
+to carry Shaipe's workflow through MCP `instructions`, not through either user
+text, remains in force.

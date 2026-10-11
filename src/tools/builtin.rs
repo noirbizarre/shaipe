@@ -5,7 +5,7 @@
 //! logic of its own would be logic the CLI and the TUI could not reach.
 //!
 //! Most are read-only. The mutating ones — `write_svg`, `write_variant`,
-//! `set_font`, `set_palette_colour`, `set_generation` — validate before anything is
+//! `set_description`, `set_font`, `set_palette_colour`, `set_generation` — validate before anything is
 //! replaced and change the project only in memory; see [`Tool::mutates`] for
 //! what that means to a caller.
 
@@ -30,6 +30,7 @@ use crate::tools::{
 pub fn all() -> Vec<Box<dyn Tool>> {
     vec![
         Box::new(GetProject),
+        Box::new(SetDescription),
         Box::new(GetVariants),
         Box::new(GetPalette),
         Box::new(GetReferences),
@@ -142,7 +143,7 @@ impl Tool for GetProject {
     }
 
     fn description(&self) -> &'static str {
-        "Describe the whole project in one call: its prompt, palette, fonts, \
+        "Describe the whole project in one call: its durable description, palette, fonts, \
          variants, references and the assets it declares. A good first call, \
          to learn what the project contains and what its variants and colours \
          are named; `get_variants`, `get_palette` and `get_references` return \
@@ -156,6 +157,45 @@ impl Tool for GetProject {
     fn call(&self, project: &mut Project, _input: &Value) -> Result<ToolOutput> {
         Ok(ToolOutput::json(
             serde_json::to_value(Report::of(project)).expect("a report is always serialisable"),
+        ))
+    }
+}
+
+/// Change the durable design intent without touching the artwork or a conversation.
+struct SetDescription;
+
+impl Tool for SetDescription {
+    fn name(&self) -> &'static str {
+        "set_description"
+    }
+
+    fn description(&self) -> &'static str {
+        "Replace the project's durable description of the artwork's meaning, composition, \
+         appearance and constraints. Call `get_project` to read it first, then carry forward \
+         details that still matter. This is design intent for future sessions, not a transcript \
+         or a message for this turn. An empty string clears it. Changes are in memory until saved."
+    }
+
+    fn input_schema(&self) -> Value {
+        object(
+            &[(
+                "description",
+                string("The complete updated design intent; empty clears it."),
+            )],
+            &["description"],
+        )
+    }
+
+    fn mutates(&self) -> bool {
+        true
+    }
+
+    fn call(&self, project: &mut Project, input: &Value) -> Result<ToolOutput> {
+        let description = required_str(self.name(), input, "description")?;
+        let description = Some(description.trim().to_owned()).filter(|text| !text.is_empty());
+        project.metadata_mut().description = description.clone();
+        Ok(ToolOutput::json(
+            json!({"description": description, "saved": false}),
         ))
     }
 }
@@ -1302,7 +1342,7 @@ impl Tool for GetSvg {
         // The document as it now stands, not as it was read. `Project` keeps
         // the bytes and the parsed metadata side by side, and only saving
         // reconciles them — so `source()` still carries the old
-        // `<shaipe:prompt>` while someone is editing it in the workspace.
+        // `<shaipe:description>` while someone is editing it in the workspace.
         //
         // Serving that was a data-loss bug, not merely a stale read: the model
         // edits the document it was given and sends it back, `write_svg`
@@ -2204,6 +2244,39 @@ mod tests {
         call(name, input).unwrap().value
     }
 
+    #[test]
+    fn an_agent_can_replace_and_clear_the_durable_description_without_storing_its_turn() {
+        let mut project = fixtures::project();
+        let registry = Registry::new();
+        for text in ["First line\nSecond line", "Updated intent", ""] {
+            registry
+                .call(
+                    "set_description",
+                    &mut project,
+                    &json!({"description": text}),
+                )
+                .unwrap();
+            let report = registry
+                .call("get_project", &mut project, &json!({}))
+                .unwrap()
+                .value;
+            assert_eq!(
+                report["description"],
+                if text.is_empty() {
+                    Value::Null
+                } else {
+                    json!(text)
+                }
+            );
+        }
+        assert!(!project.to_svg().unwrap().contains("transcript"));
+        assert!(
+            registry
+                .call("set_description", &mut project, &json!({}))
+                .is_err()
+        );
+    }
+
     const FONT_BYTES: &[u8] = include_bytes!("../../fonts/FiraSans-Regular.ttf");
 
     fn font_checksum() -> String {
@@ -2459,7 +2532,7 @@ mod tests {
     fn get_project_returns_the_same_report_the_cli_prints() {
         // One description of a project, not two that can disagree.
         let value = value("get_project", Value::Null);
-        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["schema_version"], 2);
         assert_eq!(value["variants"][1]["element"], "mark-wide");
     }
 
@@ -3457,6 +3530,7 @@ mod tests {
         assert_eq!(
             mutating,
             [
+                "set_description",
                 "set_font",
                 "set_generation",
                 "set_palette_colour",
@@ -3473,7 +3547,7 @@ mod tests {
         // only saving reconciles them. Serving the bytes showed the agent a
         // document that disagreed with `get_project` in the same turn.
         let mut project = fixtures::project();
-        project.metadata_mut().prompt = Some("a wordless circular mark".to_owned());
+        project.metadata_mut().description = Some("a wordless circular mark".to_owned());
 
         let value = Registry::new()
             .call("get_svg", &mut project, &Value::Null)
@@ -3488,7 +3562,7 @@ mod tests {
     #[test]
     fn get_svg_and_get_project_agree_about_the_prompt() {
         let mut project = fixtures::project();
-        project.metadata_mut().prompt = Some("a wordless circular mark".to_owned());
+        project.metadata_mut().description = Some("a wordless circular mark".to_owned());
 
         let registry = Registry::new();
         let described = registry
@@ -3500,7 +3574,7 @@ mod tests {
             .unwrap()
             .value;
 
-        let prompt = described["prompt"].as_str().unwrap();
+        let prompt = described["description"].as_str().unwrap();
         assert!(document["source"].as_str().unwrap().contains(prompt));
     }
 
@@ -3511,7 +3585,7 @@ mod tests {
         // the write reverted the prompt without a word, and the workspace then
         // pulled the reverted text back into the pane.
         let mut project = fixtures::project();
-        project.metadata_mut().prompt = Some("a wordless circular mark".to_owned());
+        project.metadata_mut().description = Some("a wordless circular mark".to_owned());
 
         let registry = Registry::new();
         let document = registry
@@ -3530,7 +3604,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            project.metadata().prompt.as_deref(),
+            project.metadata().description.as_deref(),
             Some("a wordless circular mark"),
             "the agent's write reverted the prompt"
         );
@@ -3710,7 +3784,7 @@ mod tests {
         // into it and adopting the result reverted every unsaved metadata
         // edit: the same data loss `get_svg` documents for `write_svg`.
         let mut project = fixtures::project();
-        project.metadata_mut().prompt = Some("a wordless circular mark".to_owned());
+        project.metadata_mut().description = Some("a wordless circular mark".to_owned());
 
         let registry = Registry::new();
         registry
@@ -3733,7 +3807,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            project.metadata().prompt.as_deref(),
+            project.metadata().description.as_deref(),
             Some("a wordless circular mark"),
             "writing a variant reverted the prompt"
         );

@@ -371,6 +371,7 @@ mod tests {
                 "get_workflow",
                 "render_grid",
                 "render_svg",
+                "set_description",
                 "set_font",
                 "set_generation",
                 "set_palette_colour",

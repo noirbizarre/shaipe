@@ -62,17 +62,15 @@ const DEBOUNCE: Duration = Duration::from_millis(120);
 
 /// Which pane the keyboard is talking to.
 ///
-/// Three, not four: the variants and the render specifications are the
-/// preview's tabs, chosen by [`Mode`], and neither is a list to walk on the
-/// left — a render specification or a variant drives what the preview shows,
-/// and there is exactly one of those on screen at a time. References are a
-/// third, different shape: a management list with no "current" one to
-/// render, the same reason the palette stays a pane edited in place rather
-/// than folding into a modal.
+/// The description and message have distinct ownership even though both are
+/// prose; variants and render specifications remain preview tabs rather than
+/// focusable panes. References remain a management list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
-    /// The prompt, or the transcript in its place.
+    /// The durable description, or the transcript in its place.
     Prompt,
+    /// A transient message for the next turn.
+    Message,
     /// The palette.
     Palette,
     /// The attached references.
@@ -81,7 +79,7 @@ pub enum Focus {
 
 impl Focus {
     /// Every pane, in the order `Tab` visits them.
-    pub const ALL: [Self; 3] = [Self::Prompt, Self::Palette, Self::References];
+    pub const ALL: [Self; 4] = [Self::Prompt, Self::Message, Self::Palette, Self::References];
 
     /// How many panes there are.
     pub const COUNT: usize = Self::ALL.len();
@@ -90,7 +88,8 @@ impl Focus {
     #[must_use]
     pub const fn title(self) -> &'static str {
         match self {
-            Self::Prompt => "prompt",
+            Self::Prompt => "description",
+            Self::Message => "message",
             Self::Palette => "palette",
             Self::References => "references",
         }
@@ -99,9 +98,8 @@ impl Focus {
 
 /// What the top-left box is showing.
 ///
-/// One box with two contents rather than two panes: the prompt and the
-/// transcript are never wanted at the same moment, and a pane each would have
-/// left both of them too short to read.
+/// One box alternates the description and transcript; the separate message
+/// composer stays visible during either view so a turn never becomes metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LeftView {
     /// The project's own description of itself.
@@ -125,7 +123,7 @@ impl LeftView {
     #[must_use]
     pub const fn title(self) -> &'static str {
         match self {
-            Self::Prompt => "prompt",
+            Self::Prompt => "description",
             Self::Transcript => "transcript",
         }
     }
@@ -345,12 +343,7 @@ impl Notice {
     }
 }
 
-/// What Shaipe asks the agent when the prompt is sent.
-///
-/// The prompt is a description of the artwork, not an instruction — sent bare,
-/// it gives a model nothing to do, and the likeliest reply is agreement. This
-/// says what to do with it, and names the tools, because the preamble is read
-/// once and this is read every turn.
+/// Wrap a transient message with the latest durable design intent and tool pointers.
 ///
 /// It carries no workflow. How to reconstruct from a reference — what to
 /// measure, when to trace, how to compare, when to stop — is Shaipe's own
@@ -362,8 +355,8 @@ impl Notice {
 /// `references` names attached files, regardless of kind — `get_references`
 /// already reports each one's kind and the agent decides which is a `source`
 /// to reproduce. Omitted entirely when nothing is attached, so an untouched
-/// project sends the same turn it always did.
-fn instruct(prompt: &str, references: &[Reference]) -> String {
+/// project has no reference-specific hints to send.
+fn instruct(message: &str, description: Option<&str>, references: &[Reference]) -> String {
     let attachments = if references.is_empty() {
         String::new()
     } else {
@@ -377,11 +370,12 @@ fn instruct(prompt: &str, references: &[Reference]) -> String {
         )
     };
     format!(
-        "Update this project's SVG so that it matches the prompt below.\n\n\
-         Read the current document with `get_svg`, write the new one with \
-         `write_svg`, and look at the result with `render_svg` before you \
-         finish. Change the artwork only — leave the `<metadata>` block as you \
-         found it.{attachments}\n\n---\n\n{prompt}"
+        "Read `get_project` for the project's durable design intent before editing. \
+         Current description: {description}.\n\nFollow the user's message below. Read the current \
+         document with `get_svg`, write artwork with `write_svg`, and inspect the result \
+         with `render_svg`. Preserve unrelated metadata; use `set_description` if the \
+         design intent changes.{attachments}\n\n---\n\n{message}",
+        description = description.unwrap_or("(none recorded)")
     )
 }
 
@@ -460,6 +454,8 @@ pub struct App {
     /// project is always what the pane shows. It survives disengaging, so
     /// leaving the editor and coming back keeps the cursor where it was.
     editor: TextArea<'static>,
+    /// Session-only message composer; never copied into project metadata.
+    message_editor: TextArea<'static>,
     /// Which pane the keyboard is editing, if any.
     ///
     /// One edit mode shared by the prompt and the palette, rather than a flag
@@ -530,6 +526,8 @@ pub struct App {
     vision_nudge_shown: bool,
     /// What the last keypress asked the agent for, if anything.
     pub pending_agent_request: Option<AgentRequest>,
+    /// The message waiting for the nonblocking agent queue to accept it.
+    pending_message: Option<String>,
     /// When the agent last changed what it was doing.
     ///
     /// Only the spinner reads it, which derives its frame from elapsed time
@@ -616,7 +614,13 @@ impl App {
     #[must_use]
     pub fn new(project: Project, backend: &'static str) -> Self {
         let project_for_worker = project.clone();
-        let editor = Self::editor_for(project.metadata().prompt.as_deref().unwrap_or_default());
+        let editor = Self::editor_for(
+            project
+                .metadata()
+                .description
+                .as_deref()
+                .unwrap_or_default(),
+        );
         Self {
             project,
             focus: Focus::Prompt,
@@ -626,6 +630,7 @@ impl App {
             column_width: 0,
             notice: None,
             editor,
+            message_editor: Self::editor_for(""),
             editing: None,
             palette_field: PaletteField::default(),
             palette_buffer: String::new(),
@@ -645,6 +650,7 @@ impl App {
             vision: Catalogue::default(),
             vision_nudge_shown: false,
             pending_agent_request: None,
+            pending_message: None,
             agent_since: Instant::now(),
             view: View::default(),
             left: LeftView::default(),
@@ -769,6 +775,7 @@ impl App {
         match self.editing.take() {
             Some(Focus::Prompt) => self.commit_prompt(),
             Some(Focus::Palette) => self.commit_palette_field(),
+            Some(Focus::Message) => {}
             // `engage_editor` never sets `editing` to this — references are
             // edited only through their modal — so this arm exists solely to
             // keep the match exhaustive as `Focus` grows.
@@ -795,6 +802,29 @@ impl App {
     #[must_use]
     pub fn is_editing_prompt(&self) -> bool {
         self.editing == Some(Focus::Prompt)
+    }
+
+    /// Whether the transient message composer has the keyboard.
+    #[must_use]
+    pub fn is_editing_message(&self) -> bool {
+        self.editing == Some(Focus::Message)
+    }
+
+    /// The session-only message editor, for drawing the focused pane.
+    #[must_use]
+    pub const fn message_editor(&self) -> &TextArea<'static> {
+        &self.message_editor
+    }
+
+    /// Text currently composed for the next turn, never project metadata.
+    #[must_use]
+    pub fn message_draft(&self) -> String {
+        self.message_editor.lines().join("\n")
+    }
+
+    /// Replace the transient draft, as a returning external editor does.
+    pub fn set_message_draft(&mut self, text: &str) {
+        self.message_editor = Self::editor_for(text);
     }
 
     /// Whether the project holds changes that are not on disk.
@@ -834,11 +864,16 @@ impl App {
     /// Re-read the prompt from the project into the editor.
     ///
     /// After something other than the editor changed it — an agent calling
-    /// `write_svg` with a new `<shaipe:prompt>`. The buffer is a copy, so
+    /// `write_svg` with a new `<shaipe:description>`. The buffer is a copy, so
     /// without this the next keystroke would write the stale one back.
     ///
     pub fn reload_prompt(&mut self) {
-        let prompt = self.project.metadata().prompt.clone().unwrap_or_default();
+        let prompt = self
+            .project
+            .metadata()
+            .description
+            .clone()
+            .unwrap_or_default();
         if prompt != self.draft() {
             self.editor = Self::editor_for(&prompt);
         }
@@ -887,7 +922,10 @@ impl App {
         //
         // The same thing `a` does from the pane, without having to leave the
         // editor to do it.
-        if key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::ALT) {
+        if self.focus == Focus::Message
+            && key.code == KeyCode::Char('a')
+            && key.modifiers.contains(KeyModifiers::ALT)
+        {
             self.send_prompt();
             return;
         }
@@ -910,6 +948,9 @@ impl App {
 
         match self.editing {
             Some(Focus::Palette) => self.palette_key(key),
+            Some(Focus::Message) => {
+                self.message_editor.input(key);
+            }
             _ => {
                 self.editor.input(key);
                 self.commit_prompt();
@@ -1046,27 +1087,20 @@ impl App {
         })
     }
 
-    /// Ask the agent to make the artwork match the project's prompt.
+    /// Queue the session-only message, with the current project description.
     ///
-    /// The prompt *is* the instruction — there is no second buffer and no
-    /// conversation. What is on screen is what is sent, and it stays on screen
-    /// afterwards, because it is the project's own description of itself and
-    /// not a message that has been posted.
-    ///
-    /// Records the request rather than sending it: sending needs an `await`,
+    /// Records the request rather than sending it: dispatch needs the agent,
     /// and making key handling asynchronous would mean every test asserting
     /// that `esc` moves the focus needed a runtime to do it.
     pub fn send_prompt(&mut self) {
-        // Committed first, so what is sent is what is on screen rather than
-        // what was on screen when the editor was last left.
-        self.commit_prompt();
-
-        let Some(prompt) = self.project.metadata().prompt.clone() else {
+        let message = self.message_draft();
+        let message = message.trim();
+        if message.is_empty() {
             self.notice = Some(Notice::warning(
-                "there is no prompt to send — press enter and describe the artwork",
+                "there is no message to send — focus the message pane and press enter",
             ));
             return;
-        };
+        }
 
         if let AgentStatus::Absent { reason } = &self.agent {
             let reason = reason.clone();
@@ -1075,11 +1109,25 @@ impl App {
             return;
         }
 
-        self.transcript.push_user(prompt.clone());
+        self.pending_message = Some(message.to_owned());
         self.pending_agent_request = Some(AgentRequest::Prompt(instruct(
-            &prompt,
+            message,
+            self.project.metadata().description.as_deref(),
             &self.project.metadata().references,
         )));
+    }
+
+    /// Move a queued message to the transcript only after agent acceptance.
+    pub fn accept_message(&mut self) {
+        if let Some(message) = self.pending_message.take() {
+            self.transcript.push_user(message);
+            self.message_editor = Self::editor_for("");
+        }
+    }
+
+    /// A rejected turn leaves the composer available for retry.
+    pub fn reject_message(&mut self) {
+        self.pending_message = None;
     }
 
     /// What the right-hand column is showing.
@@ -1285,8 +1333,12 @@ impl App {
     /// Only the wheel does anything: the crate has no way to place the cursor
     /// at a screen cell, so a click inside the pane would have nothing to do.
     pub fn edit_mouse(&mut self, mouse: MouseEvent) {
-        self.editor.input(mouse);
-        self.commit_prompt();
+        if self.focus == Focus::Message {
+            self.message_editor.input(mouse);
+        } else {
+            self.editor.input(mouse);
+            self.commit_prompt();
+        }
     }
 
     /// Ask for the prompt to be opened in `$EDITOR`.
@@ -1325,8 +1377,8 @@ impl App {
         let text = text.trim();
         let prompt = (!text.is_empty()).then(|| text.to_owned());
 
-        if self.project.metadata().prompt != prompt {
-            self.project.metadata_mut().prompt = prompt;
+        if self.project.metadata().description != prompt {
+            self.project.metadata_mut().description = prompt;
             self.dirty = true;
         }
     }
@@ -1419,7 +1471,7 @@ impl App {
                 self.editor = Self::editor_for(
                     self.project
                         .metadata()
-                        .prompt
+                        .description
                         .clone()
                         .unwrap_or_default()
                         .as_str(),
@@ -1494,7 +1546,7 @@ impl App {
         match focus {
             // Prose, not rows. The arrows scroll it rather than selecting in
             // it, so it has nothing for the selection machinery to move.
-            Focus::Prompt => 0,
+            Focus::Prompt | Focus::Message => 0,
             Focus::Palette => self.project.metadata().palette.len(),
             Focus::References => self.project.metadata().references.len(),
         }
@@ -2205,7 +2257,7 @@ impl App {
     /// where it is offered is worse than one that is not offered.
     #[must_use]
     pub fn can_send(&self) -> bool {
-        self.focus == Focus::Prompt && self.left == LeftView::Prompt
+        self.focus == Focus::Message
     }
 
     /// Begin dragging the column divider.
@@ -2320,7 +2372,10 @@ mod tests {
             crate::project::ReferenceKind::Source,
         )];
 
-        for text in [instruct("a mark", &[]), instruct("a mark", &attached)] {
+        for text in [
+            instruct("a mark", None, &[]),
+            instruct("a mark", None, &attached),
+        ] {
             let mentioned = crate::tools::tool_names_in(&text);
             assert!(!mentioned.is_empty(), "the turn names no tool at all");
             for name in mentioned {
@@ -2370,7 +2425,11 @@ mod tests {
         let app = app();
         assert_eq!(
             app.draft(),
-            app.project.metadata().prompt.clone().unwrap_or_default()
+            app.project
+                .metadata()
+                .description
+                .clone()
+                .unwrap_or_default()
         );
     }
 
@@ -2382,7 +2441,7 @@ mod tests {
         set_buffer(&mut app, "");
         app.commit_prompt();
 
-        assert_eq!(app.project.metadata().prompt, None);
+        assert_eq!(app.project.metadata().description, None);
         assert!(
             !app.project
                 .to_svg()
@@ -2399,7 +2458,10 @@ mod tests {
         set_buffer(&mut app, "  spaced out  ");
         app.commit_prompt();
 
-        assert_eq!(app.project.metadata().prompt.as_deref(), Some("spaced out"));
+        assert_eq!(
+            app.project.metadata().description.as_deref(),
+            Some("spaced out")
+        );
     }
 
     #[test]
@@ -3034,7 +3096,7 @@ mod tests {
 
         assert!(app.is_stale());
         assert_eq!(
-            app.project.metadata().prompt.as_deref(),
+            app.project.metadata().description.as_deref(),
             Some("a wordless circular mark"),
             "the unsaved prompt was thrown away"
         );
@@ -3109,7 +3171,10 @@ mod tests {
         app.reload_from_disk();
 
         assert_eq!(app.draft(), "theirs");
-        assert_eq!(app.project.metadata().prompt.as_deref(), Some("theirs"));
+        assert_eq!(
+            app.project.metadata().description.as_deref(),
+            Some("theirs")
+        );
         assert!(!app.is_dirty());
         drop(directory);
     }

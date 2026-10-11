@@ -25,9 +25,7 @@ pub fn frame(title: Focus, focused: bool) -> Block<'static> {
 
 /// The border for a pane, with a title of its own and a note after it.
 ///
-/// The prompt pane's title is not fixed: it says whether the editor is writing
-/// the project's prompt or a message to an agent, because the two look
-/// identical and do very different things.
+/// A titled border shared by the description/transcript and message panes.
 pub fn frame_titled(title: Focus, focused: bool, name: &str, note: &str) -> Block<'static> {
     let style = if focused {
         Style::default().fg(Color::LightMagenta)
@@ -70,7 +68,7 @@ fn selected(focused: bool) -> Style {
 pub fn prompt(app: &App) -> Paragraph<'static> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    match &app.project.metadata().prompt {
+    match &app.project.metadata().description {
         // One `Line` per paragraph. Pushed whole, its newlines were not line
         // breaks in the `Vec<Line>` model at all — which is how a fifteen-row
         // prompt came to be counted as a single line.
@@ -80,7 +78,7 @@ pub fn prompt(app: &App) -> Paragraph<'static> {
                 .map(|line| Line::styled(line.to_owned(), Style::default().fg(Color::Gray))),
         ),
         None => lines.push(Line::styled(
-            "No prompt recorded.",
+            "No description recorded.",
             Style::default().fg(Color::DarkGray),
         )),
     }
@@ -103,6 +101,16 @@ pub fn prompt(app: &App) -> Paragraph<'static> {
     Paragraph::new(lines).wrap(Wrap { trim: false })
 }
 
+/// The transient draft; drawing it never commits it to the project.
+pub fn message(app: &App) -> Paragraph<'static> {
+    let draft = app.message_draft();
+    if draft.is_empty() {
+        Paragraph::new("Enter a message for the agent.").style(Style::default().fg(Color::DarkGray))
+    } else {
+        Paragraph::new(draft).wrap(Wrap { trim: false })
+    }
+}
+
 /// A one-line summary of the agent, for the pane's title.
 #[must_use]
 pub fn agent_title(app: &App) -> String {
@@ -119,7 +127,10 @@ pub fn agent_title(app: &App) -> String {
         // exactly like one waiting for work, and that is the state in which a
         // prompt sits queued rather than running.
         AgentStatus::Connecting => "  starting the agent…".to_owned(),
-        AgentStatus::Ready => format!("  {chord} to send it to the agent"),
+        AgentStatus::Ready if app.focus == Focus::Message => {
+            format!("  {chord} to send it to the agent")
+        }
+        AgentStatus::Ready => String::new(),
         AgentStatus::Busy => "  working…".to_owned(),
     }
 }
@@ -175,8 +186,7 @@ fn agent_activity(app: &App) -> Option<String> {
 pub fn transcript_lines(app: &App) -> Vec<Line<'static>> {
     if app.transcript.is_empty() {
         return vec![Line::styled(
-            "Nothing yet. Press `a` on the prompt to ask the agent to \
-             make the artwork match it.",
+            "Nothing yet. Write a message and press `a` to ask the agent.",
             Style::default().fg(Color::DarkGray),
         )];
     }
@@ -615,8 +625,11 @@ fn hints(app: &App) -> Vec<Hint> {
             Hint::essential("esc", "leave"),
             Hint::optional("tab", "pane", 2),
             // The same thing `a` does from the pane, without leaving.
-            Hint::essential("alt+a", "send"),
         ];
+
+        if app.focus == Focus::Message {
+            hints.push(Hint::essential("alt+a", "send"));
+        }
 
         if waiting {
             hints.push(Hint::essential("ctrl-c", "stop"));
@@ -635,11 +648,11 @@ fn hints(app: &App) -> Vec<Hint> {
         hints.push(Hint::essential("enter", "edit"));
     }
 
-    if app.focus == Focus::Prompt && app.left_view() == LeftView::Prompt {
-        // Essential, and this is the whole point of the type. `a` is the only
-        // way to reach the agent, and it was invisible for as long as it was
-        // the first thing dropped to make the numbers work.
+    if app.focus == Focus::Message {
+        // Sending is only possible from the transient message composer.
         hints.push(Hint::essential("a", "send"));
+        hints.push(Hint::optional("e", "$EDITOR", 3));
+    } else if app.focus == Focus::Prompt && app.left_view() == LeftView::Prompt {
         hints.push(Hint::optional("e", "$EDITOR", 3));
     }
 
@@ -665,7 +678,7 @@ fn hints(app: &App) -> Vec<Hint> {
         "t",
         match app.left_view() {
             LeftView::Prompt => "transcript",
-            LeftView::Transcript => "prompt",
+            LeftView::Transcript => "description",
         },
         6,
     ));
@@ -836,10 +849,10 @@ mod tests {
     #[test]
     fn a_project_with_no_prompt_says_so_rather_than_showing_an_empty_pane() {
         let mut project = fixtures::project();
-        project.metadata_mut().prompt = None;
+        project.metadata_mut().description = None;
         let app = App::new(project, "blocks");
 
-        assert!(drawn(prompt(&app), 60, 4).contains("No prompt"));
+        assert!(drawn(prompt(&app), 60, 4).contains("No description"));
     }
 
     #[test]
@@ -961,7 +974,7 @@ mod tests {
                 line.contains("unsaved"),
                 "{focus:?}: unsaved work went unreported\n{line}"
             );
-            if focus == Focus::Prompt {
+            if focus == Focus::Message {
                 assert!(
                     line.contains(" send"),
                     "{focus:?}: the agent is unreachable\n{line}"
@@ -991,7 +1004,7 @@ mod tests {
             },
         ] {
             let mut app = App::new(fixtures::project(), "blocks");
-            app.focus = Focus::Prompt;
+            app.focus = Focus::Message;
             app.agent = agent.clone();
 
             let line = footer(&app, 80);
@@ -1004,7 +1017,7 @@ mod tests {
         // Nothing has to be given up at the width everybody has. Freeing the
         // fifteen columns the backend was taking paid for `a` outright.
         let mut app = App::new(fixtures::project(), "blocks");
-        app.focus = Focus::Prompt;
+        app.focus = Focus::Message;
 
         let line = footer(&app, 80);
         for expected in ["tab", "edit", "send", "$EDITOR", "source", "save", "quit"] {
@@ -1018,7 +1031,7 @@ mod tests {
         // and `quit` stay. Nothing is lost permanently — it comes back with
         // the room.
         let mut app = App::new(fixtures::project(), "blocks");
-        app.focus = Focus::Prompt;
+        app.focus = Focus::Message;
 
         let narrow = footer(&app, 46);
 
@@ -1053,7 +1066,7 @@ mod tests {
         // hints — so a single save removed every key for the rest of the
         // session, including the one that reaches the agent.
         let mut app = App::new(fixtures::project(), "blocks");
-        app.focus = Focus::Prompt;
+        app.focus = Focus::Message;
 
         app.notice = Some(Notice::info("wrote logo.svg"));
         let fresh = drawn(status(&app, 100), 100, 1);
@@ -1119,6 +1132,10 @@ mod tests {
         let mut app = App::new(fixtures::project(), "blocks");
         app.agent = AgentStatus::Ready;
         app.engage_editor();
+        assert!(agent_title(&app).is_empty());
+        app.disengage_editor();
+        app.focus = Focus::Message;
+        app.engage_editor();
 
         let title = agent_title(&app);
         assert!(
@@ -1131,6 +1148,7 @@ mod tests {
     #[test]
     fn the_status_line_names_the_chord_while_the_editor_has_the_keyboard() {
         let mut app = App::new(fixtures::project(), "blocks");
+        app.focus = Focus::Message;
         app.engage_editor();
         assert!(drawn(status(&app, 80), 80, 1).contains("alt+a"));
 
@@ -1147,6 +1165,7 @@ mod tests {
         assert_eq!(agent_title(&app), "");
 
         app.agent = AgentStatus::Ready;
+        app.focus = Focus::Message;
         assert!(agent_title(&app).contains('a'), "{}", agent_title(&app));
     }
 

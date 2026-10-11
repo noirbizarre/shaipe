@@ -22,12 +22,12 @@ use crate::project::metadata::SCHEMA_VERSION;
 pub struct Report {
     /// The project file.
     pub path: PathBuf,
-    /// The metadata schema revision this report was produced by.
+    /// The metadata schema revision this build writes (including for legacy reads).
     pub schema_version: u32,
     /// The variant the document's root draws.
     pub primary: Option<String>,
     /// What the project is meant to be.
-    pub prompt: Option<String>,
+    pub description: Option<String>,
     /// How the current state was produced, if anything recorded it.
     pub generation: Option<GenerationReport>,
     /// The project's colours.
@@ -154,7 +154,7 @@ impl Report {
             path: project.path().to_path_buf(),
             schema_version: SCHEMA_VERSION,
             primary: metadata.primary.clone(),
-            prompt: metadata.prompt.clone(),
+            description: metadata.description.clone(),
             generation: (!metadata.generation.is_empty()).then(|| GenerationReport {
                 agent: metadata.generation.agent.clone(),
                 model: metadata.generation.model.clone(),

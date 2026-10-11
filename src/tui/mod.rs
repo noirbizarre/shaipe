@@ -526,7 +526,15 @@ fn dispatch(app: &mut App, agent: Option<&Agent>, request: AgentRequest) {
     };
 
     match request {
-        AgentRequest::Prompt(text) => report_turn(app, agent.prompt(text)),
+        AgentRequest::Prompt(text) => {
+            let outcome = agent.prompt(text);
+            if outcome.is_ok() {
+                app.accept_message();
+            } else {
+                app.reject_message();
+            }
+            report_turn(app, outcome);
+        }
         AgentRequest::Cancel => report_turn(app, agent.cancel()),
         // Queued only. Whether the switch actually happened arrives later as
         // `AgentUpdate::Other`, the same way a rejected mode switch does at
@@ -621,7 +629,13 @@ fn open_editor(
         return Ok(());
     }
 
-    match edit_externally(&app.draft()) {
+    let draft = if app.focus == Focus::Message {
+        app.message_draft()
+    } else {
+        app.draft()
+    };
+    match edit_externally(&draft) {
+        Ok(Some(edited)) if app.focus == Focus::Message => app.set_message_draft(&edited),
         Ok(Some(edited)) => app.set_draft(&edited),
         // The editor exited non-zero, which is how every editor worth the name
         // says the edit was abandoned. The buffer is left exactly as it was.
@@ -659,7 +673,7 @@ fn edit_externally(text: &str) -> Result<Option<String>> {
     // `.md` so the editor reaches for prose mode and spell checking rather
     // than treating a paragraph as source.
     let file = tempfile::Builder::new()
-        .prefix("shaipe-prompt-")
+        .prefix("shaipe-text-")
         .suffix(".md")
         .tempfile()
         .map_err(|source| Error::io("a temporary file", source))?;
@@ -758,7 +772,12 @@ fn handle(app: &mut App, key: KeyEvent) {
         // it is, `e` is a letter someone is writing. The editor's own key map
         // has `ctrl-e` for the end of the line, so there is no chord left
         // inside it that would not be taking something else away.
-        KeyCode::Char('e') if app.can_send() => app.request_system_editor(),
+        KeyCode::Char('e')
+            if app.can_send()
+                || (app.focus == Focus::Prompt && app.left_view() == app::LeftView::Prompt) =>
+        {
+            app.request_system_editor()
+        }
         KeyCode::Tab | KeyCode::Down => app.focus_next(),
         KeyCode::BackTab | KeyCode::Up => app.focus_previous(),
         // The tabs, wrapping at both ends. Left and right because the tabs are
@@ -839,8 +858,8 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
     // a click on a pane. A click anywhere else is a statement that the prompt
     // is no longer what the user is working on, so the editor is let go of
     // before that click is handled as it normally would be.
-    if app.is_editing_prompt() {
-        if app.pane_at(column, row) == Some(Focus::Prompt) {
+    if app.is_editing_prompt() || app.is_editing_message() {
+        if app.pane_at(column, row) == Some(app.focus) {
             app.edit_mouse(mouse);
             return;
         }
@@ -942,7 +961,7 @@ mod tests {
     /// it, and so that the workspace starts out clean.
     fn engaged() -> App {
         let mut project = fixtures::project();
-        project.metadata_mut().prompt = None;
+        project.metadata_mut().description = None;
 
         let mut app = App::new(project, "blocks");
         app.focus = Focus::Prompt;
@@ -958,7 +977,8 @@ mod tests {
         // what the pane already says.
         let mut app = app();
         app.agent = AgentStatus::Ready;
-        app.focus = Focus::Prompt;
+        app.focus = Focus::Message;
+        app.set_message_draft("make a square and a bar");
 
         press(&mut app, KeyCode::Char('a'));
 
@@ -976,13 +996,77 @@ mod tests {
         // time somebody asked for a render.
         let mut app = app();
         app.agent = AgentStatus::Ready;
-        app.focus = Focus::Prompt;
-        let before = app.project.metadata().prompt.clone();
+        app.focus = Focus::Message;
+        app.set_message_draft("make the mark");
+        let before = app.project.metadata().description.clone();
 
         press(&mut app, KeyCode::Char('a'));
 
-        assert_eq!(app.project.metadata().prompt, before);
+        assert_eq!(app.project.metadata().description, before);
         assert_eq!(app.draft(), before.unwrap_or_default());
+    }
+
+    #[test]
+    fn composing_a_turn_does_not_change_durable_intent_or_dirty_the_project() {
+        let mut app = app();
+        let before = app.project.metadata().description.clone();
+        app.focus = Focus::Message;
+        press(&mut app, KeyCode::Enter);
+        type_text(&mut app, "make the mark brighter");
+        assert_eq!(app.message_draft(), "make the mark brighter");
+        assert_eq!(app.project.metadata().description, before);
+        assert!(!app.is_dirty());
+        assert!(
+            !app.project
+                .to_svg()
+                .unwrap()
+                .contains("make the mark brighter")
+        );
+    }
+
+    #[test]
+    fn an_agent_description_update_refreshes_intent_without_erasing_the_message() {
+        let mut app = app();
+        app.set_message_draft("a follow-up request");
+        app.project.metadata_mut().description = Some("agent's new intent".to_owned());
+        app.reload_prompt();
+        assert_eq!(app.draft(), "agent's new intent");
+        assert_eq!(app.message_draft(), "a follow-up request");
+    }
+
+    #[test]
+    fn a_queued_turn_uses_the_current_description_and_only_acceptance_clears_the_message() {
+        let mut app = app();
+        app.agent = AgentStatus::Ready;
+        app.focus = Focus::Message;
+        app.set_message_draft("make it blue");
+        press(&mut app, KeyCode::Char('a'));
+        let Some(AgentRequest::Prompt(sent)) = &app.pending_agent_request else {
+            panic!("not queued")
+        };
+        assert!(sent.contains("get_project"));
+        assert!(sent.contains("A square and a bar."));
+        assert!(sent.contains("make it blue"));
+        assert_eq!(app.message_draft(), "make it blue");
+        app.reject_message();
+        assert_eq!(app.message_draft(), "make it blue");
+        app.accept_message();
+        assert_eq!(app.message_draft(), "make it blue");
+
+        press(&mut app, KeyCode::Char('a'));
+        app.accept_message();
+        assert!(app.message_draft().is_empty());
+        assert_eq!(
+            app.project.metadata().description.as_deref(),
+            Some("A square and a bar.")
+        );
+        app.project.metadata_mut().description = Some("new durable intent".to_owned());
+        app.set_message_draft("one more change");
+        press(&mut app, KeyCode::Char('a'));
+        let Some(AgentRequest::Prompt(sent)) = &app.pending_agent_request else {
+            panic!("not queued")
+        };
+        assert!(sent.contains("new durable intent"));
     }
 
     #[test]
@@ -991,7 +1075,8 @@ mod tests {
         // reply is agreement rather than an edit.
         let mut app = app();
         app.agent = AgentStatus::Ready;
-        app.focus = Focus::Prompt;
+        app.focus = Focus::Message;
+        app.set_message_draft("draw this mark");
 
         press(&mut app, KeyCode::Char('a'));
 
@@ -1001,7 +1086,7 @@ mod tests {
         assert!(sent.contains("write_svg"), "{sent}");
         assert!(sent.contains("render_svg"), "{sent}");
         assert!(
-            sent.contains(&app.project.metadata().prompt.clone().unwrap()),
+            sent.contains(&app.project.metadata().description.clone().unwrap()),
             "the prompt itself was not included: {sent}"
         );
     }
@@ -1013,7 +1098,8 @@ mod tests {
         // there is to opt into, and where the workflow for it is.
         let mut app = app();
         app.agent = AgentStatus::Ready;
-        app.focus = Focus::Prompt;
+        app.focus = Focus::Message;
+        app.set_message_draft("use this reference");
         app.project
             .metadata_mut()
             .references
@@ -1039,7 +1125,8 @@ mod tests {
         // tested against `get_workflow`.
         let mut app = app();
         app.agent = AgentStatus::Ready;
-        app.focus = Focus::Prompt;
+        app.focus = Focus::Message;
+        app.set_message_draft("reconstruct it");
         app.project
             .metadata_mut()
             .references
@@ -1071,7 +1158,8 @@ mod tests {
         // turn should read exactly as it always has.
         let mut app = app();
         app.agent = AgentStatus::Ready;
-        app.focus = Focus::Prompt;
+        app.focus = Focus::Message;
+        app.set_message_draft("update it");
         assert!(app.project.metadata().references.is_empty());
 
         press(&mut app, KeyCode::Char('a'));
@@ -1088,7 +1176,8 @@ mod tests {
         // The footer offers "ctrl-c stop" while a pane is being edited, and
         // the editor used to be asked first, so the offer was a lie.
         let mut app = app();
-        app.focus = Focus::Prompt;
+        app.focus = Focus::Message;
+        app.set_message_draft("update it");
         press(&mut app, KeyCode::Enter);
         app.transcript.push_user("a minimalist logo".to_owned());
         assert!(app.transcript.is_busy());
@@ -1108,7 +1197,8 @@ mod tests {
         // the way to send something you have just finished typing.
         let mut app = app();
         app.agent = AgentStatus::Ready;
-        app.focus = Focus::Prompt;
+        app.focus = Focus::Message;
+        app.set_message_draft("change the artwork");
         press(&mut app, KeyCode::Enter);
 
         handle(
@@ -1169,10 +1259,8 @@ mod tests {
         // Silently doing nothing is how the last confusion started.
         let mut app = app();
         app.agent = AgentStatus::Ready;
-        app.focus = Focus::Prompt;
-        // Through the editor, because sending commits the buffer first — and
-        // a buffer that still held the old prompt would put it straight back.
-        app.set_draft("");
+        app.focus = Focus::Message;
+        app.set_message_draft("");
 
         press(&mut app, KeyCode::Char('a'));
 
@@ -1182,13 +1270,14 @@ mod tests {
             .as_ref()
             .and_then(app::Notice::text)
             .unwrap_or("");
-        assert!(said.contains("no prompt"), "{said}");
+        assert!(said.contains("no message"), "{said}");
     }
 
     #[test]
     fn sending_without_an_agent_says_so_rather_than_looking_ignored() {
         let mut app = app();
-        app.focus = Focus::Prompt;
+        app.focus = Focus::Message;
+        app.set_message_draft("change it");
 
         press(&mut app, KeyCode::Char('a'));
 
@@ -1423,6 +1512,8 @@ mod tests {
         let mut app = app();
         app.agent = AgentStatus::Ready;
         assert_eq!(app.left_view(), app::LeftView::Prompt);
+        app.focus = Focus::Message;
+        app.set_message_draft("change it");
 
         press(&mut app, KeyCode::Char('a'));
         app.follow_the_turn();
@@ -1446,6 +1537,8 @@ mod tests {
         // reached the screen.
         let mut app = app();
         app.agent = AgentStatus::Ready;
+        app.focus = Focus::Message;
+        app.set_message_draft("change it");
 
         press(&mut app, KeyCode::Char('a'));
         app.follow_the_turn();
@@ -1467,7 +1560,7 @@ mod tests {
         // `get_svg` hands the agent, so it has to be in the one on screen.
         // Otherwise the view cannot answer the question it exists for.
         let mut app = app();
-        app.project.metadata_mut().prompt = Some("a wordless circular mark".to_owned());
+        app.project.metadata_mut().description = Some("a wordless circular mark".to_owned());
 
         assert!(app.source_text().contains("a wordless circular mark"));
     }
@@ -1524,11 +1617,13 @@ mod tests {
         assert_eq!(app.focus, Focus::Prompt);
 
         press(&mut app, KeyCode::Down);
+        assert_eq!(app.focus, Focus::Message);
+        press(&mut app, KeyCode::Down);
         assert_eq!(app.focus, Focus::Palette);
         assert_eq!(app.selection(Focus::Palette), 0, "and selected nothing");
 
         press(&mut app, KeyCode::Up);
-        assert_eq!(app.focus, Focus::Prompt);
+        assert_eq!(app.focus, Focus::Message);
 
         // Once the palette is engaged they belong to it.
         press(&mut app, KeyCode::Down);
@@ -1555,11 +1650,11 @@ mod tests {
         assert!(
             app.project
                 .metadata()
-                .prompt
+                .description
                 .as_deref()
                 .is_some_and(|prompt| prompt.starts_with("a bold mark")),
             "{:?}",
-            app.project.metadata().prompt
+            app.project.metadata().description
         );
         assert!(app.is_dirty());
     }
@@ -1604,8 +1699,8 @@ mod tests {
 
         press(&mut app, KeyCode::Tab);
 
-        assert_eq!(app.focus, Focus::Palette);
-        assert_eq!(app.editing(), Some(Focus::Palette));
+        assert_eq!(app.focus, Focus::Message);
+        assert_eq!(app.editing(), Some(Focus::Message));
         assert_eq!(app.draft(), "prose", "no tab reached the buffer");
 
         // And back, without the palette's buffer following it across.
@@ -1617,20 +1712,20 @@ mod tests {
     #[test]
     fn opening_and_closing_the_prompt_editor_without_typing_changes_nothing() {
         let mut app = app();
-        let before = app.project.metadata().prompt.clone();
+        let before = app.project.metadata().description.clone();
 
         app.focus = Focus::Prompt;
         press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::Esc);
 
-        assert_eq!(app.project.metadata().prompt, before);
+        assert_eq!(app.project.metadata().description, before);
         assert!(!app.is_dirty(), "nothing was typed, so nothing is unsaved");
     }
 
     #[test]
     fn e_on_the_focused_prompt_pane_requests_the_system_editor() {
         let mut app = app();
-        app.focus = Focus::Prompt;
+        app.focus = Focus::Message;
 
         press(&mut app, KeyCode::Char('e'));
         assert!(app.wants_system_editor());

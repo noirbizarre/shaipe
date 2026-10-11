@@ -77,8 +77,9 @@ pub fn run(args: &InitArgs, out: &mut dyn Write) -> Result<()> {
 
     let mut project = Project::init(&args.path)?;
     let base = project.base_directory();
-    if let Some(prompt) = &args.prompt {
-        project.metadata_mut().prompt = Some(prompt.clone());
+    if let Some(description) = &args.description {
+        project.metadata_mut().description =
+            Some(description.trim().to_owned()).filter(|text| !text.is_empty());
     }
     if let Some(source) = &args.source {
         // `ReferenceKind::Source`: "the thing being reproduced, traced or
@@ -117,7 +118,7 @@ mod tests {
         InitArgs {
             path: path.into(),
             force: false,
-            prompt: None,
+            description: None,
             source: None,
             inspiration: Vec::new(),
         }
@@ -220,12 +221,12 @@ mod tests {
         let path = directory.path().join("logo.svg");
 
         let mut prompted = args(&path);
-        prompted.prompt = Some("A square and a bar.".to_owned());
+        prompted.description = Some("A square and a bar.".to_owned());
         run(&prompted, &mut Vec::new()).unwrap();
 
         let project = Project::open(&path).unwrap();
         assert_eq!(
-            project.metadata().prompt.as_deref(),
+            project.metadata().description.as_deref(),
             Some("A square and a bar.")
         );
     }
@@ -300,13 +301,13 @@ mod tests {
         std::fs::write(&mockup, b"not a real png").unwrap();
 
         let mut both = args(&path);
-        both.prompt = Some("keep the mark, drop the wordmark".to_owned());
+        both.description = Some("keep the mark, drop the wordmark".to_owned());
         both.source = Some(mockup.clone());
         run(&both, &mut Vec::new()).unwrap();
 
         let project = Project::open(&path).unwrap();
         assert_eq!(
-            project.metadata().prompt.as_deref(),
+            project.metadata().description.as_deref(),
             Some("keep the mark, drop the wordmark")
         );
         assert_eq!(

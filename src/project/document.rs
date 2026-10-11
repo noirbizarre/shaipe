@@ -280,11 +280,11 @@ fn serialise(metadata: &Metadata, indent: &str, declare_namespace: bool) -> Stri
     }
     out.push('>');
 
-    if let Some(prompt) = &metadata.prompt {
+    if let Some(description) = &metadata.description {
         let _ = write!(
             out,
-            "\n{l1}<shaipe:prompt>{}</shaipe:prompt>",
-            escape(prompt)
+            "\n{l1}<shaipe:description>{}</shaipe:description>",
+            escape(description)
         );
     }
 
@@ -525,7 +525,7 @@ mod tests {
     #[test]
     fn metadata_survives_a_write_then_read_round_trip() {
         let mut original = parse_metadata(MINIMAL);
-        original.prompt = Some("A mark with <angle> & \"quote\"".to_owned());
+        original.description = Some("A mark with <angle> & \"quote\"".to_owned());
         original
             .variants
             .push(Variant::with_element("mark", "icon"));

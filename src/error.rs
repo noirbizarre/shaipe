@@ -82,7 +82,7 @@ pub enum Error {
     #[diagnostic(
         code(shaipe::project::no_metadata),
         help(
-            "Add a `<shaipe:project version=\"1\">` element inside `<metadata>`, \
+            "Add a `<shaipe:project version=\"2\">` element inside `<metadata>`, \
              declaring the `{}` namespace.",
             crate::project::metadata::NAMESPACE
         )
@@ -107,7 +107,9 @@ pub enum Error {
     #[error("`{}` uses Shaipe metadata schema version {found}", path.display())]
     #[diagnostic(
         code(shaipe::project::unsupported_schema),
-        help("This build understands version {supported}. Upgrade Shaipe.")
+        help(
+            "This build reads versions 1 through {supported}. Upgrade Shaipe for a newer schema, or correct the version attribute if it is invalid."
+        )
     )]
     UnsupportedSchema {
         /// The offending file.
