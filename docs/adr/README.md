@@ -69,3 +69,5 @@ verbs). Anything else is an *Update*.
 - [ADR-029](029-component-and-composition-analysis.md) — Group regions into components and report how they sit, as
   geometry apart from appearance
 - [ADR-030](030-durable-description-and-transient-messages.md) — Keep design intent in the SVG and turns in the session
+- [ADR-031](031-workflow-first-workspace.md) — Navigate the workspace by phase while keeping artifacts and session state
+  distinct

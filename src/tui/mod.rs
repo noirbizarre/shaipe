@@ -34,6 +34,7 @@ pub mod toolbar;
 pub mod transcript;
 mod ui;
 pub mod watch;
+pub mod workspace;
 
 use std::io::{self, Stdout};
 use std::time::Duration;
@@ -795,6 +796,9 @@ fn handle(app: &mut App, key: KeyEvent) {
         // tabs list, and what the top-left box holds.
         KeyCode::Char('s') => app.toggle_view(),
         KeyCode::Char('m') => app.toggle_mode(),
+        KeyCode::Char('W') => app.next_workflow_kind(),
+        KeyCode::Char(',') => app.previous_phase(),
+        KeyCode::Char('.') => app.next_phase(),
         KeyCode::Char('t') => app.toggle_left_view(),
         KeyCode::Char('x') => app.open_editor(),
         // Only from the palette: elsewhere there is no selected colour for it
@@ -968,6 +972,45 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(!app.is_dirty(), "engaging the editor is not an edit");
         app
+    }
+
+    #[test]
+    fn navigating_phases_without_an_agent_does_not_change_the_project() {
+        let mut app = app();
+        let before = app.project.to_svg().unwrap();
+        press(&mut app, KeyCode::Char('W'));
+        press(&mut app, KeyCode::Char('.'));
+        assert_eq!(app.workflow.phase(), Some(crate::workflow::Phase::Render));
+        assert!(matches!(app.agent, AgentStatus::Absent { .. }));
+        assert_eq!(app.project.to_svg().unwrap(), before);
+        assert!(!app.is_dirty());
+
+        // A newly opened session has no navigation or transcript history.
+        let reopened = App::new(app.project.clone(), "blocks");
+        assert_eq!(reopened.workflow.phase(), None);
+    }
+
+    #[test]
+    fn editing_and_modals_own_the_workflow_keys() {
+        let mut app = engaged();
+        press(&mut app, KeyCode::Char('W'));
+        press(&mut app, KeyCode::Char('.'));
+        assert_eq!(app.workflow.kind(), None);
+        assert_eq!(app.draft(), "W.");
+
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('W'));
+        assert_eq!(
+            app.workflow.phase(),
+            Some(crate::workflow::Phase::Construct)
+        );
+        press(&mut app, KeyCode::Char('x'));
+        assert!(app.modal().is_some());
+        press(&mut app, KeyCode::Char('.'));
+        assert_eq!(
+            app.workflow.phase(),
+            Some(crate::workflow::Phase::Construct)
+        );
     }
 
     #[test]

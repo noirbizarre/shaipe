@@ -433,6 +433,8 @@ pub enum AgentRequest {
 pub struct App {
     /// The project being worked on.
     pub project: Project,
+    /// Explicit, session-only workflow navigation; not a completion tracker.
+    pub workflow: super::workspace::Workspace,
     /// Which pane has the keyboard.
     pub focus: Focus,
     /// Whether the event loop should stop.
@@ -623,6 +625,7 @@ impl App {
         );
         Self {
             project,
+            workflow: super::workspace::Workspace::default(),
             focus: Focus::Prompt,
             should_quit: false,
             backend,
@@ -1182,6 +1185,21 @@ impl App {
     /// Swap the variants for the render specifications, or back.
     pub const fn toggle_mode(&mut self) {
         self.mode = self.mode.other();
+    }
+
+    /// Choose the next workflow kind without changing project metadata.
+    pub fn next_workflow_kind(&mut self) {
+        self.workflow.next_kind();
+    }
+
+    /// Browse the next phase without claiming that any phase is finished.
+    pub fn next_phase(&mut self) {
+        self.workflow.step(1);
+    }
+
+    /// Return to an earlier phase, including another refinement cycle.
+    pub fn previous_phase(&mut self) {
+        self.workflow.step(-1);
     }
 
     /// The names on the tab bar, in order.
