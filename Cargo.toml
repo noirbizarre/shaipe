@@ -297,7 +297,7 @@ insta = { version = "1", features = ["filters"] }
 base64 = "0.23.1"
 tiny-skia = "0.12.0"
 serde_json = "1"
-rstest = "0.26"
+rstest = "0.27"
 pretty_assertions = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 # The MCP tests drive a real client against a real server over an in-process
