@@ -21,7 +21,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 use crate::preview::Preview as Backend;
 
-use super::app::{App, Destination, Focus, NARROW_WIDTH, Preview, View};
+use super::app::{App, Destination, EvidenceView, Focus, NARROW_WIDTH, Preview, View};
 use super::modal::Modal;
 use super::{modal, panes, toolbar};
 
@@ -224,9 +224,20 @@ fn draw_right(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend, area:
 
     // Told about the area either way, so the preview stays correctly sized
     // and switching back to it is instant rather than a re-render.
-    app.set_preview_area(body, backend.cell_size(), backend.scale());
+    let [image_area, metrics_area] =
+        if app.view() == View::Preview && app.has_comparison_source() && body.height >= 19 {
+            Layout::vertical([Constraint::Min(8), Constraint::Length(9)]).areas(body)
+        } else {
+            [body, Rect::ZERO]
+        };
+    app.set_preview_area(image_area, backend.cell_size(), backend.scale());
     match app.view() {
-        View::Preview => draw_preview(frame, app, backend, body),
+        View::Preview => {
+            draw_preview(frame, app, backend, image_area);
+            if metrics_area.height > 0 {
+                draw_metrics(frame, app, metrics_area);
+            }
+        }
         View::Source => draw_source(frame, app, body),
     }
 }
@@ -315,6 +326,7 @@ fn draw_preview(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend, are
         }
         _ => format!(" preview ({}) ", app.backend),
     };
+    let caption = format!(" {} —{caption}", app.evidence_view().title());
     // In the title rather than over the image: a render can take a noticeable
     // moment, and replacing the previous preview with a spinner would be a
     // downgrade. The old image is more useful than an empty pane.
@@ -336,6 +348,34 @@ fn draw_preview(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend, are
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    if app.evidence_view() != EvidenceView::Current {
+        if (app.evidence_view() != EvidenceView::Reference || app.evidence_image().is_none())
+            && let Some(error) = app.evidence_error()
+        {
+            frame.render_widget(
+                Paragraph::new(format!("comparison unavailable: {error}"))
+                    .wrap(Wrap { trim: false })
+                    .style(Style::default().fg(Color::LightRed)),
+                inner,
+            );
+        } else if let Some(image) = app.evidence_image() {
+            if app.is_holding_image() {
+                frame.render_widget(Paragraph::new("sending to the terminal…"), inner);
+            } else {
+                backend.draw(image, app.preview_generation(), inner, frame);
+            }
+        } else {
+            frame.render_widget(
+                Paragraph::new(if app.evidence_pending() {
+                    "preparing reference evidence…"
+                } else {
+                    "select a variant to compare with this reference"
+                }),
+                inner,
+            );
+        }
+        return;
+    }
     match app.preview() {
         Preview::Pending => frame.render_widget(Paragraph::new("rendering…"), inner),
         Preview::Failed(reason) => frame.render_widget(
@@ -360,6 +400,53 @@ fn draw_preview(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend, are
     }
 }
 
+/// Named measurements from the same comparison that produced the images.
+fn draw_metrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let block = Block::default().borders(Borders::ALL).title(" comparison ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let Some(report) = app.comparison() else {
+        let message = app.evidence_error().unwrap_or(if app.evidence_pending() {
+            "computing comparison…"
+        } else {
+            "select a variant to compare"
+        });
+        frame.render_widget(Paragraph::new(message).wrap(Wrap { trim: false }), inner);
+        return;
+    };
+    let (source, variant) = app
+        .comparison_context()
+        .unwrap_or((std::path::Path::new(""), None));
+    let text = format!(
+        "{} ↔ {}  {}×{}\nforeground overlap {:.1}% · edges {:.1}%\nchanged pixels {:.1}% · MAE {:.3}\nperceptual similarity {:.3} ({})\ncentroid offset {}\nappearance: {} · lettering: {}",
+        source.display(),
+        variant.unwrap_or("(none)"),
+        report.canvas.width,
+        report.canvas.height,
+        report.foreground.intersection_over_union * 100.0,
+        report.edges.intersection_over_union * 100.0,
+        report.pixel_error.changed_pixel_fraction * 100.0,
+        report.pixel_error.mean_absolute_error,
+        report.perceptual_similarity.score,
+        report.perceptual_similarity.algorithm,
+        report.centroid.offset.map_or_else(
+            || "n/a".to_owned(),
+            |offset| format!("{:+.1}, {:+.1} px", offset.dx, offset.dy)
+        ),
+        report
+            .appearance
+            .findings
+            .first()
+            .map_or("no findings", String::as_str),
+        report
+            .typography
+            .findings
+            .first()
+            .map_or("no findings", String::as_str),
+    );
+    frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
+}
+
 #[cfg(test)]
 mod tests {
     use ratatui::Terminal;
@@ -369,6 +456,102 @@ mod tests {
     use crate::fixtures;
     use crate::preview::Backend as PreviewBackend;
     use crate::tui::app::Mode;
+
+    #[test]
+    fn reference_and_difference_views_show_their_pixels_with_named_measurements() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("logo.svg");
+        let mut project = crate::Project::from_source(path, fixtures::PROJECT.to_owned()).unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(crate::project::Reference::new(
+                "source.png",
+                crate::project::ReferenceKind::Source,
+            ));
+        let image = crate::preview::Image::from_rgba(32, 32, vec![255; 32 * 32 * 4]);
+        std::fs::write(dir.path().join("source.png"), image.to_png().unwrap()).unwrap();
+
+        let mut app = App::new(project, "blocks");
+        app.next_workflow_kind();
+        app.next_workflow_kind();
+        app.refresh_evidence();
+        app.cycle_evidence();
+        let reference = render(&mut app, 120, 36);
+        assert!(reference.contains("foreground overlap"), "{reference}");
+        assert!(reference.contains("source.png"), "{reference}");
+        assert!(reference.contains("reference"), "{reference}");
+        app.cycle_evidence();
+        app.cycle_evidence();
+        let difference = render(&mut app, 120, 36);
+        assert!(difference.contains("difference"), "{difference}");
+        assert!(difference.contains("perceptual similarity"), "{difference}");
+        assert!(!app.is_dirty());
+    }
+
+    #[test]
+    fn from_scratch_shows_no_comparison_placeholder() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.next_workflow_kind();
+        let text = render(&mut app, 50, 25);
+        assert!(!text.contains("comparison unavailable"), "{text}");
+        assert!(!text.contains("heatmap"), "{text}");
+    }
+
+    #[test]
+    fn a_reference_remains_visible_when_its_variant_cannot_render() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project =
+            crate::Project::from_source(dir.path().join("logo.svg"), fixtures::PROJECT.to_owned())
+                .unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(crate::project::Reference::new(
+                "source.png",
+                crate::project::ReferenceKind::Source,
+            ));
+        std::fs::write(
+            dir.path().join("source.png"),
+            crate::preview::Image::from_rgba(32, 32, vec![255; 32 * 32 * 4])
+                .to_png()
+                .unwrap(),
+        )
+        .unwrap();
+        project.metadata_mut().variants.clear();
+        let mut app = App::new(project, "blocks");
+        app.next_workflow_kind();
+        app.next_workflow_kind();
+        app.refresh_evidence();
+        app.cycle_evidence();
+        let buffer = frame(&mut app, 120, 36);
+        assert!(painted(&buffer, app.preview_area()) > 0);
+        let text = render(&mut app, 120, 36);
+        assert!(text.contains("select a variant to compare"), "{text}");
+    }
+
+    #[test]
+    fn a_missing_reference_reports_its_path_in_the_evidence_pane() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project =
+            crate::Project::from_source(dir.path().join("logo.svg"), fixtures::PROJECT.to_owned())
+                .unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(crate::project::Reference::new(
+                "missing.png",
+                crate::project::ReferenceKind::Source,
+            ));
+        let mut app = App::new(project, "blocks");
+        app.next_workflow_kind();
+        app.next_workflow_kind();
+        app.refresh_evidence();
+        app.cycle_evidence();
+        let text = render(&mut app, 120, 36);
+        assert!(text.contains("comparison unavailable"), "{text}");
+        assert!(text.contains("missing.png"), "{text}");
+    }
 
     /// Draw one frame into an in-memory terminal.
     ///

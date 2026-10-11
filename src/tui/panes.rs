@@ -491,7 +491,7 @@ fn fit(hints: &[Hint], mut room: usize) -> Vec<Hint> {
 pub fn status(app: &App, width: u16) -> Paragraph<'static> {
     // Unlike hints, this marker survives notices and quit confirmations: the
     // phase is the workspace's location, not a transient keyboard shortcut.
-    let location = match (app.workflow.kind(), app.workflow.phase()) {
+    let mut location = match (app.workflow.kind(), app.workflow.phase()) {
         (Some(kind), Some(phase)) if width < 60 => {
             // Abbreviations keep the essential send/quit hints reachable on a
             // small terminal. Render and refine need distinct abbreviations.
@@ -516,6 +516,18 @@ pub fn status(app: &App, width: u16) -> Paragraph<'static> {
         _ if width < 60 => "W? ".to_owned(),
         _ => "workflow: unset (W)  ".to_owned(),
     };
+    // Unlike the tabs, this stays visible under a modal or a notice. Truncate
+    // the name on small screens so context cannot evict the essential keys.
+    if width >= 40
+        && let Some(tab) = app.tabs().get(app.tab())
+    {
+        let mode = match app.mode() {
+            super::app::Mode::Variants => 'v',
+            super::app::Mode::Renders => 'r',
+        };
+        let name: String = tab.chars().take(if width < 60 { 7 } else { 24 }).collect();
+        location.push_str(&format!("{mode}:{name}  "));
+    }
     let mut spans = vec![Span::styled(
         location.clone(),
         Style::default().fg(Color::LightMagenta),
@@ -696,6 +708,9 @@ fn hints(app: &App) -> Vec<Hint> {
     // button on the toolbar go before the ones that do not.
     hints.push(Hint::optional("←→", "tab", 9));
     hints.push(Hint::optional("m", app.mode().other().title(), 5));
+    if app.has_comparison_source() {
+        hints.push(Hint::optional("c", "evidence", 5));
+    }
     hints.push(Hint::optional("W", "workflow", 5));
     if app.workflow.phase().is_some() {
         hints.push(Hint::optional(",/.", "phase", 5));
@@ -948,6 +963,19 @@ mod tests {
     /// Every hint on the line, as one string.
     fn footer(app: &App, width: u16) -> String {
         drawn(status(app, width), width, 1)
+    }
+
+    #[test]
+    fn the_context_remains_visible_under_a_notice_and_modal() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.next_workflow_kind();
+        app.notice = Some(Notice::info("saved"));
+        let notice = footer(&app, 80);
+        assert!(notice.contains("from_scratch/construct"), "{notice}");
+        assert!(notice.contains("v:icon"), "{notice}");
+        app.open_variants_editor();
+        let modal = footer(&app, 80);
+        assert!(modal.contains("v:icon"), "{modal}");
     }
 
     #[test]

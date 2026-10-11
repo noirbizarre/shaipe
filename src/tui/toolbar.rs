@@ -34,6 +34,8 @@ pub enum Button {
     View,
     /// Swap the variants for the render specifications.
     Mode,
+    /// Step through the available visual evidence.
+    Comparison,
     /// Open the editor for whichever the tabs currently list.
     Editor,
     /// Open or close the independent chat workspace.
@@ -80,6 +82,18 @@ fn segments(app: &App) -> Vec<Segment> {
             ),
         },
     ];
+    // On a narrow terminal the later buttons can be clipped; put the evidence
+    // control beside chat so changing the main surface is still clickable.
+    if app.has_comparison_source() {
+        buttons.push(Segment {
+            button: Button::Comparison,
+            label: label(&format!(
+                "{} → {}",
+                app.evidence_view().title(),
+                app.evidence_view().next_title()
+            )),
+        });
+    }
     if app.total_width() < super::app::NARROW_WIDTH {
         buttons.push(Segment {
             button: Button::Description,

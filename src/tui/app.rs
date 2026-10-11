@@ -18,9 +18,10 @@ use ratatui_textarea::{TextArea, WrapMode};
 
 use crate::acp::ModelChoice;
 use crate::preview::{Image, Scale};
-use crate::project::{Background, Format, Project, Reference, RenderSpec, Rgba};
+use crate::project::{Background, Format, Project, Reference, ReferenceKind, RenderSpec, Rgba};
 use crate::render::{RenderOptions, Renderer};
 use crate::settings::Settings;
+use crate::tui::evidence_worker::{Evidence, Worker as EvidenceWorker};
 use crate::tui::modal::{
     ColourPicker, Modal, ModelPicker, ReferencesEditor, RendersEditor, VariantsEditor,
 };
@@ -393,6 +394,46 @@ pub enum View {
     Source,
 }
 
+/// The visual evidence selected within the artwork view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EvidenceView {
+    /// The active variant at the selected render specification or pane size.
+    #[default]
+    Current,
+    /// The attached source image.
+    Reference,
+    /// Where the silhouettes agree and disagree.
+    Overlay,
+    /// Per-pixel difference heatmap.
+    Difference,
+}
+
+impl EvidenceView {
+    /// The name shown in the evidence pane.
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::Reference => "reference",
+            Self::Overlay => "overlay",
+            Self::Difference => "difference",
+        }
+    }
+
+    const fn next(self) -> Self {
+        match self {
+            Self::Current => Self::Reference,
+            Self::Reference => Self::Overlay,
+            Self::Overlay => Self::Difference,
+            Self::Difference => Self::Current,
+        }
+    }
+
+    /// The action offered by the evidence button.
+    pub const fn next_title(self) -> &'static str {
+        self.next().title()
+    }
+}
+
 impl View {
     /// What to call it, in a pane title.
     #[must_use]
@@ -543,6 +584,16 @@ pub struct App {
     agent_since: Instant,
     /// Which view the visual evidence surface is showing.
     view: View,
+    evidence_view: EvidenceView,
+    evidence_worker: EvidenceWorker,
+    evidence: Option<Evidence>,
+    evidence_error: Option<String>,
+    evidence_desired: Option<(std::path::PathBuf, Option<String>, u64)>,
+    evidence_from: Option<(std::path::PathBuf, Option<String>, u64)>,
+    evidence_in_flight: Option<u64>,
+    evidence_since: Instant,
+    evidence_sequence: u64,
+    evidence_revision: u64,
     /// What the preview's tabs are listing.
     mode: Mode,
     /// The selected tab, per mode.
@@ -657,6 +708,16 @@ impl App {
             pending_message: None,
             agent_since: Instant::now(),
             view: View::default(),
+            evidence_view: EvidenceView::default(),
+            evidence_worker: EvidenceWorker::new(),
+            evidence: None,
+            evidence_error: None,
+            evidence_desired: None,
+            evidence_from: None,
+            evidence_in_flight: None,
+            evidence_since: Instant::now(),
+            evidence_sequence: 0,
+            evidence_revision: 0,
             mode: Mode::default(),
             tab: [0; 2],
             view_scroll: 0,
@@ -1099,6 +1160,7 @@ impl App {
                 );
             }
             self.dirty = true;
+            self.invalidate_preview();
         }
     }
 
@@ -1165,10 +1227,205 @@ impl App {
         self.view
     }
 
+    /// The evidence surface selected independently of the SVG source view.
+    #[must_use]
+    pub const fn evidence_view(&self) -> EvidenceView {
+        self.evidence_view
+    }
+
+    /// The selected source when it is one, or the first attached source.
+    /// An inspiration or baseline never silently becomes a comparison target.
+    #[must_use]
+    pub fn evidence_source(&self) -> Option<std::path::PathBuf> {
+        let references = &self.project.metadata().references;
+        references
+            .get(self.selection(Focus::References))
+            .filter(|reference| reference.kind == ReferenceKind::Source)
+            .or_else(|| {
+                references
+                    .iter()
+                    .find(|reference| reference.kind == ReferenceKind::Source)
+            })
+            .map(|reference| reference.src.clone())
+    }
+
+    /// Whether this session has chosen a reference workflow and has a source.
+    #[must_use]
+    pub fn has_comparison_source(&self) -> bool {
+        self.workflow
+            .kind()
+            .is_some_and(|kind| kind != crate::workflow::WorkflowKind::FromScratch)
+            && self.evidence_source().is_some()
+    }
+
+    /// Browse only the evidence modes available to this workflow.
+    pub fn cycle_evidence(&mut self) {
+        if !self.has_comparison_source() {
+            self.evidence_view = EvidenceView::Current;
+            self.notice = Some(Notice::info(
+                "choose a reference or hybrid workflow and attach a source to compare",
+            ));
+            return;
+        }
+        self.evidence_view = self.evidence_view.next();
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// The comparison from the last completed evidence request.
+    #[must_use]
+    pub fn comparison(&self) -> Option<&crate::compare::Comparison> {
+        self.evidence
+            .as_ref()
+            .and_then(|evidence| evidence.comparison.as_ref())
+    }
+
+    /// The source and variant that produced the currently displayed evidence.
+    #[must_use]
+    pub fn comparison_context(&self) -> Option<(&std::path::Path, Option<&str>)> {
+        self.evidence
+            .as_ref()
+            .map(|evidence| (evidence.source.as_path(), evidence.variant.as_deref()))
+    }
+
+    /// A failed reference load or comparison, shown in the evidence pane.
+    #[must_use]
+    pub fn evidence_error(&self) -> Option<&str> {
+        self.evidence_error.as_deref().or_else(|| {
+            self.evidence
+                .as_ref()
+                .and_then(|evidence| evidence.error.as_deref())
+        })
+    }
+
+    /// Pixels for the currently selected comparison view, if prepared.
+    #[must_use]
+    pub fn evidence_image(&self) -> Option<&Image> {
+        let evidence = self.evidence.as_ref()?;
+        match self.evidence_view {
+            EvidenceView::Current => evidence.current.as_ref(),
+            EvidenceView::Reference => Some(&evidence.reference),
+            EvidenceView::Overlay => evidence.overlay.as_ref(),
+            EvidenceView::Difference => evidence.difference.as_ref(),
+        }
+    }
+
+    /// Request native-size comparison once per selected source/variant/revision.
+    /// Selection churn is debounced by the same interval as the preview.
+    pub fn update_evidence(&mut self) {
+        if !self.has_comparison_source() {
+            self.evidence_desired = None;
+            self.evidence_from = None;
+            self.evidence = None;
+            self.evidence_error = None;
+            self.evidence_view = EvidenceView::Current;
+            return;
+        }
+        let Some(source) = self.evidence_source() else {
+            return;
+        };
+        let variant = self.current_variant();
+        let desired = (source.clone(), variant.clone(), self.evidence_revision);
+        if self.evidence_desired.as_ref() != Some(&desired) {
+            self.evidence_desired = Some(desired);
+            self.evidence_error = None;
+            self.evidence_in_flight = None;
+            self.changed_at = Instant::now();
+        }
+        if self.evidence_from == self.evidence_desired
+            || self.evidence_error.is_some()
+            || self.evidence_in_flight.is_some()
+            || self.changed_at.elapsed() < DEBOUNCE
+        {
+            return;
+        }
+        self.evidence_sequence = self.evidence_sequence.wrapping_add(1);
+        if self
+            .evidence_worker
+            .request(self.evidence_sequence, &self.project, source, variant)
+        {
+            self.evidence_in_flight = Some(self.evidence_sequence);
+            self.evidence_since = Instant::now();
+        } else {
+            self.evidence_error = Some("the comparison worker stopped".to_owned());
+        }
+    }
+
+    /// Collect completed evidence without blocking terminal input.
+    pub fn collect_evidence(&mut self) -> bool {
+        let mut changed = false;
+        while let Some(answer) = self.evidence_worker.collect() {
+            // The event loop uses this boolean to draw a frame before sending
+            // a new image. Metrics can update without retransmitting the
+            // ordinary current preview when comparison finishes in background.
+            changed |= self.apply_evidence(answer)
+                && self.evidence_view != EvidenceView::Current
+                && self.view == View::Preview;
+        }
+        changed
+    }
+
+    fn apply_evidence(&mut self, answer: super::evidence_worker::Answer) -> bool {
+        // A worker already computing an old variant may answer after the
+        // project changed. Never let it replace the new selection's evidence.
+        if self.evidence_in_flight != Some(answer.sequence) {
+            return false;
+        }
+        self.evidence_in_flight = None;
+        match answer.result {
+            Ok(evidence) => {
+                self.evidence = Some(evidence);
+                self.evidence_from = self.evidence_desired.clone();
+            }
+            Err(error) => {
+                self.evidence = None;
+                self.evidence_error = Some(error);
+            }
+        }
+        // A background comparison must not make the ordinary preview resend
+        // its pixels to Kitty. Switching to evidence increments this later.
+        if self.evidence_view != EvidenceView::Current && self.view == View::Preview {
+            self.generation = self.generation.wrapping_add(1);
+        }
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn refresh_evidence(&mut self) {
+        self.update_evidence();
+        self.changed_at = Instant::now() - DEBOUNCE;
+        self.update_evidence();
+        if self.evidence_in_flight.is_some()
+            && let Some(answer) = self.evidence_worker.wait(Duration::from_secs(10))
+        {
+            self.apply_evidence(answer);
+        }
+    }
+
+    /// Whether a newly selected source is being prepared.
+    #[must_use]
+    pub fn evidence_pending(&self) -> bool {
+        self.evidence_in_flight.is_some()
+            || (self.has_comparison_source()
+                && self.evidence_from != self.evidence_desired
+                && self.evidence_error.is_none())
+    }
+
+    fn invalidate_evidence(&mut self) {
+        self.evidence_revision = self.evidence_revision.wrapping_add(1);
+        self.evidence_desired = None;
+        self.evidence_from = None;
+        self.evidence_in_flight = None;
+        self.evidence_error = None;
+    }
+
     /// Swap the artwork for the document that produced it, or back.
-    pub const fn toggle_view(&mut self) {
+    pub fn toggle_view(&mut self) {
         self.view = self.view.other();
         self.view_scroll = 0;
+        if self.view == View::Preview && self.evidence_view != EvidenceView::Current {
+            // Evidence may have completed while the SVG source was visible.
+            self.generation = self.generation.wrapping_add(1);
+        }
     }
 
     /// Whether the independent chat pane is open.
@@ -1222,6 +1479,9 @@ impl App {
     /// Choose the next workflow kind without changing project metadata.
     pub fn next_workflow_kind(&mut self) {
         self.workflow.next_kind();
+        if !self.has_comparison_source() {
+            self.evidence_view = EvidenceView::Current;
+        }
     }
 
     /// Browse the next phase without claiming that any phase is finished.
@@ -1700,6 +1960,7 @@ impl App {
     /// up a change to the file rather than merely redrawing what was already
     /// rendered.
     pub fn invalidate_preview(&mut self) {
+        self.invalidate_evidence();
         self.worker.reload(&self.project);
         self.rendered_from = None;
         self.desired = None;
@@ -1737,6 +1998,7 @@ impl App {
     /// while the icon is on screen must not cost a rasterise and, under Kitty,
     /// a megabyte of terminal traffic.
     pub fn absorb_change(&mut self, before: Option<String>) {
+        self.invalidate_evidence();
         self.worker.reload(&self.project);
         if before != self.variant_fingerprint() {
             self.rendered_from = None;
@@ -1750,7 +2012,7 @@ impl App {
     /// Drives the spinner, and the shorter poll interval that lets it animate.
     #[must_use]
     pub const fn is_rendering(&self) -> bool {
-        self.in_flight.is_some()
+        self.in_flight.is_some() || self.evidence_in_flight.is_some()
     }
 
     /// How long the last completed render took.
@@ -1790,7 +2052,7 @@ impl App {
             // Nothing is rendering, but an image is about to be written and
             // that write is the slow part under tmux.
             (None, true) => Some(Instant::now()),
-            (None, false) => None,
+            (None, false) => self.evidence_in_flight.map(|_| self.evidence_since),
         }
     }
 
@@ -2288,6 +2550,7 @@ impl App {
             Some(Modal::Variants(mut editor)) => {
                 if editor.key(key, &mut self.project) {
                     self.dirty = true;
+                    self.invalidate_preview();
                 }
                 if !editor.closed() {
                     self.modal = Some(Modal::Variants(editor));
@@ -2296,6 +2559,7 @@ impl App {
             Some(Modal::Renders(mut editor)) => {
                 if editor.key(key, &mut self.project) {
                     self.dirty = true;
+                    self.invalidate_preview();
                 }
                 if !editor.closed() {
                     self.modal = Some(Modal::Renders(editor));
@@ -2304,6 +2568,7 @@ impl App {
             Some(Modal::References(mut editor)) => {
                 if editor.key(key, &mut self.project) {
                     self.dirty = true;
+                    self.invalidate_evidence();
                 }
                 if !editor.closed() {
                     self.modal = Some(Modal::References(editor));
@@ -2312,6 +2577,7 @@ impl App {
             Some(Modal::ColourPicker(mut picker)) => {
                 if picker.key(key, &mut self.project) {
                     self.dirty = true;
+                    self.invalidate_preview();
                 }
                 if !picker.closed() {
                     self.modal = Some(Modal::ColourPicker(picker));
@@ -2504,6 +2770,42 @@ mod tests {
 
     fn app() -> App {
         App::new(fixtures::project(), "blocks")
+    }
+
+    #[test]
+    fn evidence_selection_only_uses_sources_and_does_not_dirty_the_project() {
+        let mut app = app();
+        app.project.metadata_mut().references.extend([
+            Reference::new("mood.png", ReferenceKind::Inspiration),
+            Reference::new("first.png", ReferenceKind::Source),
+            Reference::new("second.png", ReferenceKind::Source),
+        ]);
+        let original = app.project.to_svg().unwrap();
+        app.next_workflow_kind();
+        app.cycle_evidence();
+        assert_eq!(app.evidence_view(), EvidenceView::Current);
+        app.next_workflow_kind();
+        app.cycle_evidence();
+        assert_eq!(app.evidence_view(), EvidenceView::Reference);
+        assert_eq!(app.evidence_source(), Some("first.png".into()));
+        app.select_next_in(Focus::References);
+        app.select_next_in(Focus::References);
+        assert_eq!(app.evidence_source(), Some("second.png".into()));
+        app.next_phase();
+        assert!(!app.is_dirty());
+        assert_eq!(app.project.to_svg().unwrap(), original);
+    }
+
+    #[test]
+    fn evidence_from_a_superseded_project_is_ignored() {
+        let mut app = app();
+        app.evidence_in_flight = Some(7);
+        app.invalidate_preview();
+        assert!(!app.apply_evidence(crate::tui::evidence_worker::Answer {
+            sequence: 7,
+            result: Err("old result".into()),
+        }));
+        assert!(app.evidence_error().is_none());
     }
 
     /// Replace the editor's buffer, as `$EDITOR` returning would.

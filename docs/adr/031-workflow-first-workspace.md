@@ -95,12 +95,14 @@ phase completion or comparison threshold crossing. #36 retains snapshots,
 evidence, relevant activity and phase outside the source SVG. Save and disk
 conflict resolution remain separate explicit actions.
 
-The session-owned phase model and the independent chat workspace are
-implemented. Chat opens as a separately resizable side pane without replacing
-the description or taking focus. On narrow terminals, evidence, description
-and chat are distinct destinations (the latter two are reachable by `d` and
-`t`, with `v` returning to evidence). Comparison surfaces, review actions and
-iteration snapshots remain the implementation work of #34 and #36. This
+The session-owned phase model, independent chat workspace and comparison
+surfaces are implemented. Chat opens as a separately resizable side pane
+without replacing the description or taking focus. On narrow terminals,
+evidence, description and chat are distinct destinations (the latter two are
+reachable by `d` and `t`, with `v` returning to evidence). The `c` key cycles
+reference/current/overlay/difference evidence when a source is attached to a
+reference or hybrid workflow; named metrics come from the existing comparison
+service. Candidate review and iteration snapshots remain #36's work. This
 decision fixes their interaction and ownership boundaries.
 
 ## Consequences
