@@ -1,7 +1,7 @@
 //! A Shaipe project: an SVG file that is its own source of truth.
 //!
 //! The document holds the artwork; a `<shaipe:project>` element inside its
-//! `<metadata>` holds everything else — the prompt, the palette, the fonts,
+//! `<metadata>` holds everything else — the description, the palette, the fonts,
 //! the variants, the references and the assets to produce. Nothing lives
 //! beside the file. Copying `logo.svg` copies the project.
 //!
@@ -51,7 +51,7 @@ pub const DEFAULT_RENDER_OUTPUT: &str = "dist";
 /// exactly as large as its own 64-unit coordinate system, i.e. tiny.
 const TEMPLATE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:shaipe="https://shaipe.dev/ns/2026" viewBox="0 0 64 64" width="512" height="512">
   <metadata>
-    <shaipe:project version="1"/>
+    <shaipe:project version="2"/>
   </metadata>
   <symbol id="icon" viewBox="0 0 64 64">
     <rect width="64" height="64" fill="currentColor"/>
@@ -247,6 +247,13 @@ impl Project {
     /// Returns [`Error::NoMetadata`] if the source no longer parses, which
     /// should not be reachable for a project that opened successfully.
     pub fn to_svg(&self) -> Result<String> {
+        // Legacy documents stay byte-for-byte intact until their metadata
+        // actually changes. Rewriting on every read would silently migrate a
+        // project merely because an agent called `get_svg`.
+        let parsed = document::parse(&self.source, &self.path)?;
+        if Metadata::from_document(&parsed, &self.path)? == self.metadata {
+            return Ok(self.source.clone());
+        }
         document::replace_metadata(&self.source, &self.metadata, &self.path)
     }
 
@@ -277,7 +284,7 @@ mod tests {
         let metadata = project.metadata();
 
         assert_eq!(metadata.primary.as_deref(), Some("icon"));
-        assert_eq!(metadata.prompt.as_deref(), Some("A square and a bar."));
+        assert_eq!(metadata.description.as_deref(), Some("A square and a bar."));
         assert_eq!(metadata.palette.len(), 2);
         assert_eq!(metadata.variant_names(), ["icon", "wordmark"]);
         assert_eq!(metadata.spec_names(), ["favicon-32", "banner"]);
@@ -377,6 +384,57 @@ mod tests {
     }
 
     #[test]
+    fn editing_legacy_description_upgrades_only_the_metadata() {
+        let mut project = fixture();
+        project.metadata_mut().description = Some("First line\nSecond <line> & more".to_owned());
+        let updated = project.to_svg().unwrap();
+        assert!(updated.contains("version=\"2\""));
+        assert!(updated.contains(
+            "<shaipe:description>First line\nSecond &lt;line&gt; &amp; more</shaipe:description>"
+        ));
+        assert!(!updated.contains("<shaipe:prompt>"));
+        assert_eq!(
+            Project::from_source("logo.svg", updated)
+                .unwrap()
+                .metadata()
+                .description
+                .as_deref(),
+            Some("First line\nSecond <line> & more")
+        );
+    }
+
+    #[test]
+    fn an_unchanged_or_reverted_legacy_description_keeps_the_original_bytes() {
+        let mut project = fixture();
+        let original = project.metadata().description.clone();
+        project.metadata_mut().description = Some("temporary".to_owned());
+        project.metadata_mut().description = original;
+        assert_eq!(project.to_svg().unwrap(), FIXTURE);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("legacy.svg");
+        let mut reopened = Project::from_source(&path, FIXTURE.to_owned()).unwrap();
+        reopened.save().unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), FIXTURE);
+    }
+
+    #[test]
+    fn empty_descriptions_are_absent_but_internal_line_breaks_survive() {
+        let legacy = FIXTURE.replace("A square and a bar.", "  \n  ");
+        let mut project = Project::from_source("logo.svg", legacy).unwrap();
+        assert_eq!(project.metadata().description, None);
+        project.metadata_mut().description = Some("one\ntwo".to_owned());
+        let updated = project.to_svg().unwrap();
+        assert_eq!(
+            Project::from_source("logo.svg", updated)
+                .unwrap()
+                .metadata()
+                .description
+                .as_deref(),
+            Some("one\ntwo")
+        );
+    }
+
+    #[test]
     fn a_document_without_shaipe_metadata_is_refused_with_an_explanation() {
         let plain = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>"#;
         let error = Project::from_source("plain.svg", plain.to_owned()).unwrap_err();
@@ -385,7 +443,7 @@ mod tests {
 
     #[test]
     fn a_project_from_a_future_schema_is_refused_rather_than_misread() {
-        let future = FIXTURE.replace(r#"version="1""#, r#"version="2""#);
+        let future = FIXTURE.replace(r#"version="1""#, r#"version="3""#);
         let error = Project::from_source("logo.svg", future).unwrap_err();
         assert!(matches!(error, Error::UnsupportedSchema { .. }));
     }

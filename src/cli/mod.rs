@@ -85,13 +85,13 @@ pub struct InitArgs {
     #[arg(long)]
     pub force: bool,
 
-    /// Seed the project's prompt — what it is meant to be, in your own words.
+    /// Seed the project's durable description — what it is meant to be.
     #[arg(long)]
-    pub prompt: Option<String>,
+    pub description: Option<String>,
 
     /// Attach an existing image as the thing to reproduce, traced or
     /// vectorised — what an agent works from instead of, or alongside,
-    /// `--prompt`. Recorded as a `source` reference; use `set_reference` to
+    /// `--description`. Recorded as a `source` reference; use `set_reference` to
     /// attach further references, or to change this one, once the project is
     /// open. The file must exist and is resolved like any other path on the
     /// command line — from the current directory — but stored relative to
@@ -100,7 +100,7 @@ pub struct InitArgs {
     pub source: Option<PathBuf>,
 
     /// Attach an existing image as a mood board — cues to take, not to copy —
-    /// alongside or instead of `--prompt`. Repeatable. Recorded as
+    /// alongside or instead of `--description`. Repeatable. Recorded as
     /// `inspiration` references; use `set_reference` to attach further ones,
     /// or to change these, once the project is open. Every file must exist
     /// and, like `--source`, is resolved from the current directory but
@@ -362,7 +362,7 @@ mod tests {
         };
         assert_eq!(args.path, PathBuf::from("logo.svg"));
         assert!(!args.force);
-        assert!(args.prompt.is_none());
+        assert!(args.description.is_none());
         assert!(args.source.is_none());
     }
 
@@ -373,7 +373,7 @@ mod tests {
             "init",
             "mark.svg",
             "--force",
-            "--prompt",
+            "--description",
             "A square and a bar.",
         ])
         .command
@@ -382,7 +382,7 @@ mod tests {
         };
         assert_eq!(args.path, PathBuf::from("mark.svg"));
         assert!(args.force);
-        assert_eq!(args.prompt.as_deref(), Some("A square and a bar."));
+        assert_eq!(args.description.as_deref(), Some("A square and a bar."));
     }
 
     #[test]

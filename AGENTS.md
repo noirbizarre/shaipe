@@ -7,7 +7,7 @@ Notes for anyone — human or otherwise — changing this repository.
 Shaipe is a workspace for SVG assets — logos, marks, visual identities — built
 so that a vision-capable agent can work on them. **The project SVG is the
 source of truth**: a single file that carries the artwork *and*, in its
-`<metadata>`, the prompt, palette, fonts, variants and render specifications
+`<metadata>`, the description, palette, fonts, variants and render specifications
 that describe it. Rendering is local, deterministic and completely independent
 of any model, so the same project opens in the TUI or regenerates a
 repository's assets in CI with no network access needed beyond a warm font
@@ -214,14 +214,15 @@ record measured facts rather than image bytes: review a changed one with
 `src/analysis/`, `src/compare/` or `src/workflow/` is proven or refuted there.
 
 Three kinds of text reach an agent and they must not be confused. The project's
-`<shaipe:prompt>` is the user's brief: metadata, edited in the prompt pane with
-`enter` and committed to the document. The turn is what `a` sends, which is that
-prompt wrapped by `instruct()` in `src/tui/app.rs`; there is no separate chat
-message. Shaipe's own instructions for how to use its tools live in
+`<shaipe:description>` is durable design intent: metadata, edited in the
+description pane with `enter` or through `set_description`, committed to the
+document. The transient message pane holds the current turn; `a` sends that
+message wrapped with the current description by `instruct()` in `src/tui/app.rs`.
+The display transcript is session-only, never SVG metadata. Shaipe's own instructions for how to use its tools live in
 `src/workflow/instructions.rs` and travel as the MCP server's `instructions`
-(ADR 022). They never go into the prompt, and `instruct()` carries none of them
-— `the_sent_prompt_carries_no_workflow_instructions` and
-`sending_leaves_the_prompt_where_it_was` are what keep the three apart. The
+(ADR 022, updated by ADR 030). They never go into the description or message,
+and `instruct()` carries none of them — `the_sent_prompt_carries_no_workflow_instructions`
+and `composing_a_turn_does_not_change_durable_intent_or_dirty_the_project` keep the boundary. The
 instructions name tools, so renaming a tool means editing them; a test fails
 otherwise.
 

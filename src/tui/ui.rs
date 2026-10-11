@@ -75,30 +75,45 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend) {
 
 /// Draw the description column.
 ///
-/// Three panes at a fixed ratio, rather than a focused one that takes the
-/// column. The prompt is the reason for the split itself: it is prose, it is
-/// what the whole workspace is about, and giving it half unconditionally is
-/// worth more than making it grow when the keyboard happens to be in it. The
-/// palette and the references pane share what is left equally — neither is
-/// read as continuously as the prompt, and both are short lists more often
-/// than not.
+/// The description keeps the largest share for long-lived prose; the transient
+/// message, palette and references share the rest without hiding one another.
 fn draw_left(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
-    let [top, middle, bottom] = Layout::default()
+    let [top, message, middle, bottom] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(50),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
+            Constraint::Percentage(40),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
         ])
         .areas(area);
 
     app.set_area(Focus::Prompt, top);
+    app.set_area(Focus::Message, message);
     app.set_area(Focus::Palette, middle);
     app.set_area(Focus::References, bottom);
 
     draw_prompt(frame, app, top);
+    draw_message(frame, app, message);
     draw_palette(frame, app, middle);
     draw_references(frame, app, bottom);
+}
+
+/// The message always has its own session-only buffer, even while the
+/// description box is showing the transcript.
+fn draw_message(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let focused = app.focus == Focus::Message;
+    let block = panes::frame_titled(Focus::Message, focused, "message", &panes::agent_title(app));
+    let interior = block.inner(area);
+    frame.render_widget(block, area);
+    if interior.height == 0 {
+        return;
+    }
+    if app.is_editing_message() {
+        frame.render_widget(app.message_editor(), interior);
+    } else {
+        frame.render_widget(panes::message(app), interior);
+    }
 }
 
 /// Draw the prompt, or the transcript in its place.
@@ -111,7 +126,7 @@ fn draw_prompt(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     // the text area, and that mutable borrow cannot coexist with the immutable
     // one the contents take below.
     let note = match left {
-        LeftView::Prompt => panes::agent_title(app),
+        LeftView::Prompt => String::new(),
         // The transcript is not editable, so naming a key that reaches the
         // agent from it would be naming a key that does nothing.
         LeftView::Transcript => String::new(),
@@ -391,7 +406,8 @@ mod tests {
             "Source",
             "Renders",
             // The panes that are left.
-            "prompt",
+            "description",
+            "message",
             "palette",
             // A tab per variant, and a way out.
             "icon",
@@ -452,7 +468,7 @@ text, so it reads at 16 pixels.";
         // Not bottom-anchored: a prompt is a thing you wrote, not a
         // conversation with a newest end.
         let mut app = App::new(fixtures::project(), "blocks");
-        app.project.metadata_mut().prompt = Some(LONG_PROMPT.to_owned());
+        app.project.metadata_mut().description = Some(LONG_PROMPT.to_owned());
 
         let text = render(&mut app, 100, 30);
         assert!(

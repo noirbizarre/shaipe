@@ -24,7 +24,7 @@ These tools operate on the Shaipe project the user currently has open — a \
 single SVG file that carries the artwork and, in its metadata, the palette, \
 variants and render specifications that describe it.
 
-`get_project` tells you what the project's variants and colours are named. \
+`get_project` tells you the project's durable description, variants and colours. \
 You cannot see the artwork by reading the SVG: call `render_svg` to \
 look at it, and `render_grid` to check that it still reads when small.
 
@@ -37,7 +37,7 @@ person watching it.
 
 For a change contained to one variant, prefer `write_variant` over `write_svg`: \
 it replaces just that element and is validated the same way, without \
-resending the whole document. `set_font`, `set_palette_colour`, `set_reference` and \
+resending the whole document. `set_description`, `set_font`, `set_palette_colour`, `set_reference` and \
 `set_generation` edit the project's metadata directly and need no document \
 at all.";
 

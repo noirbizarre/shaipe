@@ -1,8 +1,7 @@
 //! What Shaipe tells an agent about reconstruction, before it is asked to do any.
 //!
-//! This is the third of three different things an agent reads, and they must
-//! not be confused: the project's *prompt* is the user's design brief and lives
-//! in the document's metadata; a *turn* is whatever the user sends this time;
+//! This is separate from the project's durable *description* in document
+//! metadata, the transient message for this turn, and the session transcript;
 //! and these are Shaipe's own instructions, which belong to neither. They are
 //! plain text so that any transport can carry them — the MCP server sends them
 //! as its `instructions`, which is the one channel every ACP agent shares —

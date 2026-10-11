@@ -28,7 +28,7 @@
 An agent can write SVG markup. What it cannot do is *look* at the result — tell
 whether the mark still reads at 16 pixels, whether the wordmark is legible, or
 what the project's variants and colours are even called. Shaipe closes that gap.
-It keeps a logo and everything that describes it — prompt, palette, fonts,
+It keeps a logo and everything that describes it — description, palette, fonts,
 variants, the assets to produce — in one ordinary SVG file, and renders that
 file locally, exactly and without ever calling a model. The same project opens
 in a terminal workspace with a live preview, or regenerates a repository's
@@ -46,8 +46,8 @@ edited, and an agent editing the artwork cannot see it.
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:shaipe="https://shaipe.dev/ns/2026"
      viewBox="0 0 256 256" width="256" height="256">
   <metadata>
-    <shaipe:project version="1" primary="icon">
-      <shaipe:prompt>A geometric mark, partly drawn and partly inferred.</shaipe:prompt>
+    <shaipe:project version="2" primary="icon">
+      <shaipe:description>A geometric mark, partly drawn and partly inferred.</shaipe:description>
       <shaipe:palette>
         <shaipe:color name="accent" value="#f05032" role="accent"/>
         <shaipe:color name="ink"    value="#18181b" role="foreground"/>
@@ -99,15 +99,15 @@ created logo.svg
 
 Creates a minimal project: one variant, `icon`, drawn as the primary so the
 file is a viewable SVG from the first byte. Refuses to overwrite an existing
-file unless `--force` is given, and `--prompt "…"` seeds the prompt a
-workspace or an agent would otherwise be asked to fill in.
+file unless `--force` is given, and `--description "…"` seeds the durable
+design intent. Transient messages are composed in the workspace.
 
 `--source <path>` attaches an existing image as a `source` reference — the
-thing an agent traces or vectorises, instead of working from a prompt alone.
+thing an agent traces or vectorises, instead of working from a description alone.
 Combine both to say what to reproduce *and* what to change:
 
 ```console
-$ shaipe init --source mockup.png --prompt "keep the mark, drop the wordmark"
+$ shaipe init --source mockup.png --description "keep the mark, drop the wordmark"
 created logo.svg
 ```
 
@@ -120,7 +120,7 @@ further references, or edits this one, after creation.
 copy — and can be given more than once:
 
 ```console
-$ shaipe init --inspiration mood-a.png --inspiration mood-b.png --prompt "warmer, rounder"
+$ shaipe init --inspiration mood-a.png --inspiration mood-b.png --description "warmer, rounder"
 created logo.svg
 ```
 
@@ -214,9 +214,11 @@ shaipe tui logo.svg
 ```text
 ┌ Shaipe  [Transcript] [Source] [Renders] [Edit variants] ──────────────────┐
 ├───────────────────────────────┬───────────────────────────────────────────┤
-│ prompt, or the transcript     │ ‹ icon │ wordmark ›                       │
+│ description, or transcript    │ ‹ icon │ wordmark ›                       │
 │                               │                                           │
 ├───────────────────────────────┤        preview, or the source             │
+│ message (transient)           │                                           │
+├───────────────────────────────┤                                           │
 │ palette                       │                                           │
 ├───────────────────────────────┤                                           │
 │ references                    │                                           │
@@ -231,12 +233,12 @@ rather than an impression of it.
 The variants and the render specifications are the preview's **tabs**: `←` and
 `→` move between them, wrapping at both ends, and `m` swaps which of the two the
 tabs list. `s` swaps the picture for the SVG that produced it. `t` swaps the
-prompt for the transcript. Each of those has a button on the toolbar as well,
+description for the transcript. Each of those has a button on the toolbar as well,
 because a mode with no visible affordance is one people find by accident.
 
-`tab` and `↑` `↓` move between the prompt, the palette and the references pane,
+`tab` and `↑` `↓` move between the description, message, palette and references panes,
 `enter` hands the keyboard to whichever has it and `esc` gives it back. The
-prompt and the palette are edited in place: the prompt is prose, and a palette
+description, message and palette are edited in place: the description is prose, the message is session-only, and a palette
 colour is its name and its value, committed as you type. The references pane
 has no in-place editor — `x` opens a modal table for attaching, retyping and
 removing one, the same way it does for variants and render specifications when
@@ -249,7 +251,7 @@ double-click a specification's tab to write it to the project's output
 directory — `dist/` beside the project unless `<shaipe:renders output="…">`
 says otherwise, the same place `shaipe render` writes.
 
-`e` opens the prompt in `$VISUAL` or `$EDITOR` instead. `ctrl-s` writes the
+`e` opens the focused description or message in `$VISUAL` or `$EDITOR` instead. `ctrl-s` writes the
 project back to its file. The status line marks unsaved work, and quitting with
 any asks first.
 
@@ -320,7 +322,7 @@ decided in your agent. Your agent is configured and authenticated in your agent.
 The server also tells the agent how to use them for reconstruction — inspect a
 reference before editing, measure rather than estimate, trace or construct, then
 render and compare until it matches. That text is Shaipe's own, sent as the MCP
-server's `instructions`; it is never added to your project's prompt
+server's `instructions`; it is never added to your project's description
 ([ADR-022](docs/adr/022-reconstruction-instructions.md)). Each tool's own
 description names what it needs first and which tool to call next, so the loop
 can be followed from the tool list alone
@@ -360,7 +362,7 @@ infers it from what is attached.
   and what to change next. Nothing enforces the phases; they are guidance.
 - **The SVG is still the source of truth.** No analysis, trace or workflow state
   is stored in the project, so opening and saving it still changes nothing.
-- **Three texts stay apart:** your project's prompt, the turn sent with `a`, and
+- **Three texts stay apart:** your project's description, the message sent with `a`, and
   Shaipe's own tool instructions, which travel as the MCP server's
   `instructions`.
 
@@ -409,8 +411,9 @@ This needs no ACP and no agent. It opens the file itself, and works headlessly.
 shaipe tui logo.svg
 ```
 
-Tab to the prompt pane, press `enter` and describe the artwork you want, then
-press `a`. Shaipe starts
+Edit the description pane for durable design intent. Tab to the message pane,
+press `enter`, type a direction for this turn, then press `alt+a` (or leave the
+editor and press `a`). Shaipe starts
 `opencode acp`, gives it a session-scoped MCP server pointing at *the project
 you are looking at*, and shows you what the agent does with it. When the agent
 edits the SVG, the preview follows on its own.
@@ -435,17 +438,17 @@ The keys:
 
 | Key | |
 |---|---|
-| `enter` | edit the focused pane — the prompt, or a palette colour — committed as you type |
+| `enter` | edit the focused pane — description and palette edits are committed as you type; messages remain transient |
 | `esc` | stop editing |
-| `tab` / `shift-tab`, `↑` / `↓` | move between the prompt, the palette and the references pane, still editing |
-| `a` | **send the prompt to the agent**, so it makes the artwork match |
+| `tab` / `shift-tab`, `↑` / `↓` | move between the description, message, palette and references panes, still editing |
+| `a` | **send the message to the agent** from the message pane |
 | `alt+a` | the same, without leaving the editor |
-| `e` | open the prompt in `$VISUAL`, or `$EDITOR` when that is unset |
+| `e` | open the focused description or message in `$VISUAL`, or `$EDITOR` when that is unset |
 | `←` / `→`, `[` / `]` | the previous or next tab, wrapping at both ends |
 | `p` | from the palette pane, open the colour picker on the selected colour |
 | `m` | swap the variants for the render specifications |
 | `s` | swap the preview for the SVG that produced it |
-| `t` | swap the prompt for the transcript |
+| `t` | swap the description for the transcript |
 | `x` | open the editor for whichever the tabs list, or for the references pane when that has the keyboard |
 | `M` | search and pick from whichever models the agent offers, shown once one is chosen |
 | `PageUp` / `PageDown` | scroll the source, or the transcript |
@@ -454,19 +457,20 @@ The keys:
 | `ctrl-s` | save the project |
 | `R` | re-read the project from disk, discarding what is in memory |
 
-The prompt *is* the instruction. There is no chat: you describe the artwork in
-the prompt box and press `a`, and the agent reads the document, rewrites it and
-looks at the result.
+The description persists in the SVG, and `get_project` lets an agent read it
+in a fresh session. Messages and the transcript are session-only: an accepted
+message clears the composer, while a failed send leaves it available for retry.
+The first turn includes the current description without replaying earlier chat.
 
 While it works the box shows the transcript — what it said and which tools it
-ran — and when the turn ends it gives the prompt back, by which time the
+ran — and when the turn ends it gives the description back, by which time the
 preview is the new artwork. `t` swaps the two at any moment, during a turn or
 not. The footer carries a spinner and the tool it is running.
 
 An edit only re-renders the preview when it changes the variant you are looking
 at, so the agent rewriting the wordmark leaves the icon on screen alone.
 
-`a` only works where the prompt actually is — once the editor has the keyboard
+`a` only works from the message pane — once the editor has the keyboard
 it owns every key — so `alt+a` is the one that works from inside it.
 
 Both editors are tables: `↑↓` picks a row, `←→` a field, `ctrl-n` adds a row,
@@ -508,7 +512,7 @@ project is watched, so an agent that writes it directly still updates the
 preview, and unsaved work is never silently overwritten.
 
 If OpenCode is not installed, the workspace still opens and says so in the
-prompt pane. Reading your own project has never depended on an agent, and it
+description pane. Reading your own project has never depended on an agent, and it
 does not start now.
 
 ### Prerequisites
@@ -588,11 +592,11 @@ Early, but real. Nothing described above is a mock.
   regenerates this repository's own artwork from `logo.svg` and fails if it
   drifted.
 - The terminal workspace, with Kitty, Sixel, iTerm2 and half-block previews.
-- Seventeen tools, over MCP: `shaipe mcp` serves any MCP client, and the workspace
+- Nineteen tools, over MCP: `shaipe mcp` serves any MCP client, and the workspace
   serves a session-scoped server to an agent it drives over ACP. Verified
   against OpenCode 1.18.18 — it calls `get_variants` and answers with the
   project's real names, and `render_svg` puts a genuine PNG on the wire.
-- Talking to an agent from the workspace: type a prompt, watch the tool calls,
+- Talking to an agent from the workspace: type a transient message, watch the tool calls,
   and see the preview follow the agent's edit.
 
 ### Not yet

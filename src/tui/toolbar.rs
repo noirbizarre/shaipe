@@ -228,7 +228,7 @@ mod tests {
 
         app.toggle_left_view();
         let line = drawn(&mut app, 80);
-        assert!(line.contains("Prompt"), "{line}");
+        assert!(line.contains("Description"), "{line}");
         assert!(!line.contains("Transcript"), "{line}");
     }
 

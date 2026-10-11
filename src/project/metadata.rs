@@ -42,8 +42,8 @@ use crate::project::variant::Variant;
 /// project, so it does not change.
 pub const NAMESPACE: &str = "https://shaipe.dev/ns/2026";
 
-/// The schema revision this build reads and writes.
-pub const SCHEMA_VERSION: u32 = 1;
+/// The latest schema revision this build writes; legacy version 1 is also read.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// How a project came to look the way it does.
 ///
@@ -74,7 +74,7 @@ pub struct Metadata {
     /// The variant the document's root draws, keeping the file viewable.
     pub primary: Option<String>,
     /// What the project is meant to be, in the author's words.
-    pub prompt: Option<String>,
+    pub description: Option<String>,
     /// How the current state was produced.
     pub generation: Generation,
     /// The project's colours.
@@ -163,7 +163,7 @@ impl Metadata {
             found: declared.to_owned(),
             supported: SCHEMA_VERSION,
         })?;
-        if version != SCHEMA_VERSION {
+        if !(1..=SCHEMA_VERSION).contains(&version) {
             return Err(Error::UnsupportedSchema {
                 path: path.to_path_buf(),
                 found: declared.to_owned(),
@@ -178,7 +178,20 @@ impl Metadata {
 
         for child in root.children().filter(Node::is_element) {
             match child.tag_name().name() {
-                "prompt" => metadata.prompt = child.text().map(|text| text.trim().to_owned()),
+                "prompt" if version == 1 => {
+                    metadata.description = child
+                        .text()
+                        .map(str::trim)
+                        .filter(|text| !text.is_empty())
+                        .map(str::to_owned);
+                }
+                "description" if version == 2 => {
+                    metadata.description = child
+                        .text()
+                        .map(str::trim)
+                        .filter(|text| !text.is_empty())
+                        .map(str::to_owned);
+                }
                 "generation" => metadata.generation = read_generation(&child),
                 "palette" => metadata.palette = read_palette(&child, path)?,
                 "fonts" => metadata.fonts = read_fonts(&child, path)?,

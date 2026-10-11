@@ -40,8 +40,8 @@ fn text(report: &Report) -> String {
     let mut out = String::new();
 
     let _ = writeln!(out, "{}", report.path.display());
-    if let Some(prompt) = &report.prompt {
-        let _ = writeln!(out, "\n  {prompt}");
+    if let Some(description) = &report.description {
+        let _ = writeln!(out, "\n  {description}");
     }
 
     if let Some(generation) = &report.generation {
@@ -179,7 +179,7 @@ mod tests {
         let rendered = serde_json::to_string(&report()).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
 
-        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["schema_version"], 2);
         assert_eq!(parsed["variants"][0]["name"], "icon");
     }
 }

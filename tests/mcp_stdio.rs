@@ -33,28 +33,20 @@ fn exchange(arguments: &[&str], requests: &[Value]) -> (Vec<Value>, String) {
         .expect("the binary runs");
 
     let mut stdin = child.stdin.take().expect("stdin is piped");
+    // Read each result before sending the next request. MCP handlers can run
+    // requests concurrently, so a read-after-write test cannot assume that
+    // sending several lines together imposes execution order.
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout is piped"));
+    let mut responses = Vec::new();
     for request in requests {
         writeln!(stdin, "{request}").expect("the server accepts a frame");
-    }
-    stdin.flush().expect("the frames are sent");
-
-    // Read exactly as many responses as we asked for, then close stdin so the
-    // server exits. Reading to EOF first would deadlock: the server has no
-    // reason to stop while its input is open.
-    let stdout = BufReader::new(child.stdout.take().expect("stdout is piped"));
-    let mut responses = Vec::new();
-    for line in stdout.lines() {
-        let line = line.expect("stdout is valid UTF-8");
-        if line.trim().is_empty() {
-            continue;
-        }
+        stdin.flush().expect("the frame is sent");
+        let mut line = String::new();
+        stdout.read_line(&mut line).expect("stdout is valid UTF-8");
         responses.push(
             serde_json::from_str(&line)
                 .unwrap_or_else(|error| panic!("`{line}` is not JSON-RPC: {error}")),
         );
-        if responses.len() == requests.len() {
-            break;
-        }
     }
 
     drop(stdin);
@@ -140,6 +132,7 @@ fn the_standalone_server_advertises_every_tool() {
             "get_workflow",
             "render_grid",
             "render_svg",
+            "set_description",
             "set_font",
             "set_generation",
             "set_palette_colour",
@@ -323,6 +316,40 @@ fn the_standalone_server_saves_when_it_is_asked_to() {
         std::fs::read_to_string(&path).unwrap().contains("#00ff00"),
         "`--write` did not save the edit"
     );
+}
+
+#[test]
+fn description_updates_are_visible_to_agents_and_saved_only_with_write() {
+    for write in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = project(directory.path());
+        let original = std::fs::read_to_string(&path).unwrap();
+        let mut args = vec!["mcp"];
+        if write {
+            args.push("--write");
+        }
+        args.push(path.to_str().unwrap());
+        let (responses, _) = exchange(
+            &args,
+            &[
+                initialize(),
+                json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"set_description", "arguments":{"description":"Durable\nintent"}}}),
+                json!({"jsonrpc":"2.0", "id":3, "method":"tools/call", "params":{"name":"get_project", "arguments":{}}}),
+            ],
+        );
+        assert_ne!(responses[1]["result"]["isError"], json!(true));
+        let content = responses[2]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+        let report: Value = serde_json::from_str(content).unwrap();
+        assert_eq!(report["description"], "Durable\nintent");
+        let saved = std::fs::read_to_string(path).unwrap();
+        if write {
+            assert!(saved.contains("<shaipe:description>Durable\nintent</shaipe:description>"));
+        } else {
+            assert_eq!(saved, original);
+        }
+    }
 }
 
 #[test]
