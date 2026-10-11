@@ -37,7 +37,7 @@ person watching it.
 
 For a change contained to one variant, prefer `write_variant` over `write_svg`: \
 it replaces just that element and is validated the same way, without \
-resending the whole document. `set_palette_colour`, `set_reference` and \
+resending the whole document. `set_font`, `set_palette_colour`, `set_reference` and \
 `set_generation` edit the project's metadata directly and need no document \
 at all.";
 
@@ -310,9 +310,15 @@ mod tests {
     /// and the content encoding, which is where protocol bugs actually live.
     /// The transports are covered separately, by the bridge's own tests.
     async fn client() -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+        client_for(fixtures::project()).await
+    }
+
+    async fn client_for(
+        project: crate::project::Project,
+    ) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
         let (server_side, client_side) = tokio::io::duplex(1 << 16);
 
-        let session = SessionHandle::detached(fixtures::project(), Registry::new(), false);
+        let session = SessionHandle::detached(project, Registry::new(), false);
         tokio::spawn(async move {
             drop(Server::new(session).serve_stream(server_side).await);
         });
@@ -333,6 +339,57 @@ mod tests {
         names.sort();
 
         assert_eq!(names, Registry::new().names());
+    }
+
+    #[tokio::test]
+    async fn font_declaration_and_a_recoverable_error_travel_over_mcp() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.svg");
+        let font = directory.path().join("font.ttf");
+        std::fs::write(&path, fixtures::PROJECT).unwrap();
+        std::fs::write(&font, include_bytes!("../../fonts/FiraSans-Regular.ttf")).unwrap();
+        let client = client_for(crate::project::Project::open(&path).unwrap()).await;
+        let tool = client
+            .list_all_tools()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|tool| tool.name == "set_font")
+            .unwrap();
+        assert_eq!(tool.input_schema["required"], json!(["family"]));
+        assert_eq!(tool.input_schema["oneOf"].as_array().unwrap().len(), 2);
+        for name in ["src", "href", "sha256"] {
+            assert!(
+                tool.input_schema["properties"].get(name).is_some(),
+                "missing {name}"
+            );
+        }
+        assert!(tool.description.unwrap().contains("@font-face"));
+
+        let request = |input: serde_json::Value| {
+            rmcp::model::CallToolRequestParams::new("set_font")
+                .with_arguments(input.as_object().unwrap().clone())
+        };
+        let invalid = client
+            .call_tool(request(json!({ "family": "Fira Sans" })))
+            .await
+            .unwrap();
+        assert_eq!(invalid.is_error, Some(true));
+        assert!(format!("{:?}", invalid.content).contains("exactly one"));
+
+        let declared = client
+            .call_tool(request(json!({ "family": "Fira Sans", "src": "font.ttf" })))
+            .await
+            .unwrap();
+        assert_eq!(declared.is_error, Some(false));
+        let svg = client
+            .call_tool(
+                rmcp::model::CallToolRequestParams::new("get_svg")
+                    .with_arguments(json!({}).as_object().unwrap().clone()),
+            )
+            .await
+            .unwrap();
+        assert!(format!("{:?}", svg.content).contains("shaipe:font"));
     }
 
     #[tokio::test]

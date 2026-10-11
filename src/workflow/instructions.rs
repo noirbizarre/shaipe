@@ -74,7 +74,10 @@ when a letter or the font is doubtful, write your best reading and say so with \
 `data-shaipe-confidence` (`high`, `medium` or `low`) and a `data-shaipe-note` naming what is \
 doubtful on the `<text>`, and tell the user. Prefer `<text>` in a font the project declares \
 (`get_project` lists them) to drawing the letters as paths, so the words stay editable; draw \
-them as paths only when no declared font is close, and say that. Size the text from the \
+them as paths only when no usable font is available, and say that. Font identification \
+is your task: once you have selected a font, call `get_project` to inspect existing \
+declarations and `set_font` to declare a committed `src` or a checksum-pinned URL before \
+using its family in `<text font-family=\"...\">`. SVG `@font-face` does not load it. Size the text from the \
 measured letter height, not by eye (font size is about the tall height over the typeface's \
 cap height, near 0.7). Keep each word's and symbol's fill as its own assignment; do not give \
 a wordmark and the mark beside it one colour because they sit together. `compare_reference` \

@@ -312,6 +312,7 @@ decided in your agent. Your agent is configured and authenticated in your agent.
 | `render_grid` | Draw one variant at several sizes, to check it still reads small |
 | `write_svg` | Replace the document, checked first; to add a variant or change several elements |
 | `write_variant` | Replace one variant's element, without resending the whole document |
+| `set_font` | Declare a selected local font or fetch and pin a font URL for editable SVG text |
 | `set_palette_colour` | Set a colour's value or role by name, or declare a new one |
 | `set_reference` | Attach a file for context, or update one already attached |
 | `set_generation` | Record which agent and model produced the current state, and when |
