@@ -13,7 +13,7 @@ use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wr
 
 use crate::project::{Palette, Project, Rgba};
 
-use super::app::{AgentStatus, App, Focus, LeftView, PaletteEdit, PaletteField, View};
+use super::app::{AgentStatus, App, Destination, Focus, PaletteEdit, PaletteField, View};
 use super::markdown;
 use super::transcript::Entry;
 use crate::acp::ToolStatus;
@@ -181,8 +181,7 @@ fn agent_activity(app: &App) -> Option<String> {
 
 /// What the agent has been doing, one entry at a time.
 ///
-/// Rendered into the top-left box, in place of the prompt — see
-/// [`crate::tui::app::LeftView`].
+/// The chat log is session context, independently visible from the description.
 pub fn transcript_lines(app: &App) -> Vec<Line<'static>> {
     if app.transcript.is_empty() {
         return vec![Line::styled(
@@ -675,7 +674,7 @@ fn hints(app: &App) -> Vec<Hint> {
     // `enter` does nothing on the references pane — it is edited only
     // through the modal `x` opens, below — so naming it here would be a hint
     // that lies.
-    if app.focus != Focus::References {
+    if !matches!(app.focus, Focus::References | Focus::ChatLog) {
         hints.push(Hint::essential("enter", "edit"));
     }
 
@@ -683,7 +682,7 @@ fn hints(app: &App) -> Vec<Hint> {
         // Sending is only possible from the transient message composer.
         hints.push(Hint::essential("a", "send"));
         hints.push(Hint::optional("e", "$EDITOR", 3));
-    } else if app.focus == Focus::Prompt && app.left_view() == LeftView::Prompt {
+    } else if app.focus == Focus::Prompt {
         hints.push(Hint::optional("e", "$EDITOR", 3));
     }
 
@@ -711,12 +710,20 @@ fn hints(app: &App) -> Vec<Hint> {
     ));
     hints.push(Hint::optional(
         "t",
-        match app.left_view() {
-            LeftView::Prompt => "transcript",
-            LeftView::Transcript => "description",
+        if app.chat_open() || app.destination() == Destination::Chat {
+            "close chat"
+        } else {
+            "chat"
         },
         6,
     ));
+    if app.total_width() < super::app::NARROW_WIDTH {
+        hints.push(Hint::optional("d", "description", 5));
+        hints.push(Hint::optional("v", "evidence", 5));
+    }
+    if app.focus == Focus::ChatLog {
+        hints.push(Hint::optional("pg↑↓", "scroll chat", 4));
+    }
     // `x` opens whichever editor matches where the keyboard is: the tab
     // strip's mode everywhere else, or the references pane when that has it.
     hints.push(Hint::optional(

@@ -1,15 +1,12 @@
 //! Where the panes go.
 //!
 //! ```text
-//! ┌ Shaipe  [Transcript] [Source] [Renders] [Edit variants] ────────────────┐
-//! ├──────────── left, half ─────────┬──────────────── right ────────────────┤
-//! │ prompt, or the transcript  50%  │ ‹ icon │ wordmark ›                   │
-//! │                                 │                                       │
-//! ├────────────────────────── 25% ──┤        preview, or the source         │
-//! │ palette                         │                                       │
-//! ├────────────────────────── 25% ──┤                                       │
-//! │ references                      │                                       │
-//! └─────────────────────────────────┴───────────────────────────────────────┘
+//! ┌ Shaipe  [Chat] [Source] [Renders] [Edit variants] ──────────────────────┐
+//! │ description │ visual evidence │ agent chat log (when open)             │
+//! │ palette     │                 │                                         │
+//! │ references  │                 ├─────────────────────────────────────────┤
+//! │             │                 │ transient message composer              │
+//! └─────────────┴─────────────────┴─────────────────────────────────────────┘
 //! ```
 //!
 //! The preview draws through [`crate::preview::Preview`], which is a widget
@@ -24,7 +21,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 use crate::preview::Preview as Backend;
 
-use super::app::{App, Focus, LeftView, Preview, View};
+use super::app::{App, Destination, Focus, NARROW_WIDTH, Preview, View};
 use super::modal::Modal;
 use super::{modal, panes, toolbar};
 
@@ -39,21 +36,49 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend) {
         ])
         .areas(frame.area());
 
+    app.clear_areas(body.width);
     toolbar::draw(frame, app, bar);
 
-    // Half the body until somebody drags the divider. Proportional rather than
-    // a fixed number of characters, because the left column is prose and a
-    // palette now rather than four lists of known width.
-    let [left, right] = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(app.column(body.width)),
-            Constraint::Min(crate::tui::app::MIN_PREVIEW),
-        ])
-        .areas(body);
-
-    draw_left(frame, app, left);
-    draw_right(frame, app, backend, right);
+    if body.width < NARROW_WIDTH {
+        match app.destination() {
+            Destination::Evidence => draw_right(frame, app, backend, body),
+            Destination::Description => draw_left(frame, app, body),
+            Destination::Chat => draw_chat(frame, app, body),
+        }
+    } else {
+        let chat_width = if app.chat_open() {
+            app.chat_width(body.width)
+        } else {
+            0
+        };
+        let [main, chat] = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(body.width.saturating_sub(chat_width)),
+                Constraint::Length(chat_width),
+            ])
+            .areas(body);
+        let [left, right] = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(app.column(main.width)),
+                Constraint::Min(crate::tui::app::MIN_PREVIEW),
+            ])
+            .areas(main);
+        app.set_dividers(
+            Rect::new(right.x, body.y, 1, body.height),
+            if app.chat_open() {
+                Rect::new(chat.x, body.y, 1, body.height)
+            } else {
+                Rect::ZERO
+            },
+        );
+        draw_left(frame, app, left);
+        draw_right(frame, app, backend, right);
+        if app.chat_open() {
+            draw_chat(frame, app, chat);
+        }
+    }
 
     frame.render_widget(panes::status(app, status.width), status);
 
@@ -75,32 +100,38 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend) {
 
 /// Draw the description column.
 ///
-/// The description keeps the largest share for long-lived prose; the transient
-/// message, palette and references share the rest without hiding one another.
+/// The description and its project lists remain visible when chat opens.
 fn draw_left(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
-    let [top, message, middle, bottom] = Layout::default()
+    let [top, middle, bottom] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(40),
-            Constraint::Percentage(20),
+            Constraint::Percentage(60),
             Constraint::Percentage(20),
             Constraint::Percentage(20),
         ])
         .areas(area);
 
     app.set_area(Focus::Prompt, top);
-    app.set_area(Focus::Message, message);
     app.set_area(Focus::Palette, middle);
     app.set_area(Focus::References, bottom);
 
     draw_prompt(frame, app, top);
-    draw_message(frame, app, message);
     draw_palette(frame, app, middle);
     draw_references(frame, app, bottom);
 }
 
-/// The message always has its own session-only buffer, even while the
-/// description box is showing the transcript.
+fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let [log, message] = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Percentage(25)])
+        .areas(area);
+    app.set_area(Focus::ChatLog, log);
+    app.set_area(Focus::Message, message);
+    draw_log(frame, app, log);
+    draw_message(frame, app, message);
+}
+
+/// The message always has its own session-only buffer.
 fn draw_message(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let focused = app.focus == Focus::Message;
     let block = panes::frame_titled(Focus::Message, focused, "message", &panes::agent_title(app));
@@ -116,47 +147,50 @@ fn draw_message(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
 }
 
-/// Draw the prompt, or the transcript in its place.
+/// Draw the durable project description.
 fn draw_prompt(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Prompt;
-    let left = app.left_view();
 
     // The frame is drawn separately and its interior filled in, rather than
     // the editor carrying a block of its own: a block would have to be set on
     // the text area, and that mutable borrow cannot coexist with the immutable
     // one the contents take below.
-    let note = match left {
-        LeftView::Prompt => String::new(),
-        // The transcript is not editable, so naming a key that reaches the
-        // agent from it would be naming a key that does nothing.
-        LeftView::Transcript => String::new(),
-    };
-    let block = panes::frame_titled(Focus::Prompt, focused, left.title(), &note);
+    let block = panes::frame_titled(Focus::Prompt, focused, "description", "");
     let interior = block.inner(area);
     frame.render_widget(&block, area);
     if interior.height == 0 {
         return;
     }
 
-    match left {
-        LeftView::Prompt if app.is_editing_prompt() => {
-            frame.render_widget(app.editor(), interior);
-        }
-        LeftView::Prompt => frame.render_widget(panes::prompt(app), interior),
-        LeftView::Transcript => {
-            let paragraph = Paragraph::new(panes::transcript_lines(app)).wrap(Wrap { trim: false });
-            // Anchored to the bottom, measured in **wrapped rows**. Counting
-            // entries instead is the bug that kept the transcript off screen
-            // for a whole session: one 446-character prompt is a single line
-            // and fifteen rows.
-            let rows = u16::try_from(paragraph.line_count(interior.width)).unwrap_or(u16::MAX);
-            let bottom = rows.saturating_sub(interior.height);
-            frame.render_widget(
-                paragraph.scroll((bottom.saturating_sub(app.transcript_scroll()), 0)),
-                interior,
-            );
-        }
+    if app.is_editing_prompt() {
+        frame.render_widget(app.editor(), interior);
+    } else {
+        frame.render_widget(panes::prompt(app), interior);
     }
+}
+
+fn draw_log(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let focused = app.focus == Focus::ChatLog;
+    let block = panes::frame_titled(
+        Focus::ChatLog,
+        focused,
+        "chat log",
+        &panes::agent_title(app),
+    );
+    let interior = block.inner(area);
+    frame.render_widget(block, area);
+    if interior.width == 0 || interior.height == 0 {
+        return;
+    }
+    let paragraph = Paragraph::new(panes::transcript_lines(app)).wrap(Wrap { trim: false });
+    // A long wrapped message occupies more than one row; scroll in rendered
+    // rows so the latest response stays in view until the reader scrolls back.
+    let rows = u16::try_from(paragraph.line_count(interior.width)).unwrap_or(u16::MAX);
+    let bottom = rows.saturating_sub(interior.height);
+    frame.render_widget(
+        paragraph.scroll((bottom.saturating_sub(app.transcript_scroll()), 0)),
+        interior,
+    );
 }
 
 /// Draw the palette pane.
@@ -402,12 +436,11 @@ mod tests {
         for expected in [
             // The toolbar: the workspace's name, and what each button does.
             "Shaipe",
-            "Transcript",
+            "Chat",
             "Source",
             "Renders",
             // The panes that are left.
             "description",
-            "message",
             "palette",
             // A tab per variant, and a way out.
             "icon",
@@ -493,7 +526,7 @@ text, so it reads at 16 pixels.";
                     "{LONG_PROMPT} — answered{turn}"
                 )));
         }
-        app.toggle_left_view();
+        app.toggle_chat();
 
         let text = render(&mut app, 100, 30);
         // A single unbroken word, because the screen is rows and a phrase
@@ -511,10 +544,77 @@ text, so it reads at 16 pixels.";
     #[test]
     fn the_transcript_says_what_to_do_when_it_is_empty() {
         let mut app = App::new(fixtures::project(), "blocks");
-        app.toggle_left_view();
+        app.toggle_chat();
 
         let text = render(&mut app, 100, 30);
         assert!(text.contains("Nothing yet"), "{text}");
+    }
+
+    #[test]
+    fn opening_chat_keeps_the_description_and_evidence_visible() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.transcript
+            .push_user("make the tail more angular".to_owned());
+        let original = app.project.metadata().description.clone();
+        app.toggle_chat();
+
+        let text = render(&mut app, 120, 30);
+        for label in [
+            "description",
+            "A square and a bar",
+            "preview",
+            "chat log",
+            "more angular",
+            "message",
+        ] {
+            assert!(text.contains(label), "{label} missing from:\n{text}");
+        }
+        assert_eq!(
+            app.focus,
+            Focus::Prompt,
+            "opening chat must not steal focus"
+        );
+        assert_eq!(app.project.metadata().description, original);
+        assert!(!app.is_dirty());
+        assert!(app.area(Focus::ChatLog).width >= 24);
+    }
+
+    #[test]
+    fn a_narrow_screen_has_separate_evidence_description_and_chat_destinations() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        let evidence = render(&mut app, 70, 26);
+        assert!(evidence.contains("preview"), "{evidence}");
+        assert_eq!(app.area(Focus::Prompt), Rect::ZERO);
+
+        app.show_destination(Destination::Description);
+        let description = render(&mut app, 70, 26);
+        assert!(description.contains("A square and a bar"), "{description}");
+        assert_eq!(app.area(Focus::ChatLog), Rect::ZERO);
+
+        app.toggle_chat();
+        let chat = render(&mut app, 70, 26);
+        assert!(chat.contains("chat log"), "{chat}");
+        assert!(chat.contains("message"), "{chat}");
+        assert_eq!(app.area(Focus::Prompt), Rect::ZERO);
+        assert_eq!(app.pane_at(2, 3), Some(Focus::ChatLog));
+
+        app.focus_next();
+        assert_eq!(app.focus, Focus::ChatLog);
+        app.focus_next();
+        assert_eq!(app.focus, Focus::Message);
+        app.show_destination(Destination::Description);
+        assert_eq!(app.focus, Focus::Prompt);
+        assert_eq!(
+            app.area(Focus::Prompt),
+            Rect::ZERO,
+            "no draw has happened yet"
+        );
+        render(&mut app, 70, 26);
+        assert_eq!(
+            app.area(Focus::ChatLog),
+            Rect::ZERO,
+            "hidden panes are not clickable"
+        );
     }
 
     #[test]

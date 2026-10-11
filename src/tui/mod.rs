@@ -1,18 +1,13 @@
 //! The interactive workspace.
 //!
 //! ```text
-//! ┌ Shaipe  [Transcript] [Source] [Renders] [Edit variants] ───────────────┐
-//! ├───────────────────────┬────────────────────────────────────────────────┤
-//! │ prompt or transcript  │ ‹ icon │ wordmark ›                            │
-//! │                       │                                                │
-//! ├───────────────────────┤            preview or source                   │
-//! │ palette               │                                                │
-//! ├───────────────────────┤                                                │
-//! │ references            │                                                │
-//! └───────────────────────┴────────────────────────────────────────────────┘
+//! ┌ Shaipe [Chat] [Source] [Renders] [Edit variants] ───────────────────────┐
+//! │ description/palette/references │ preview/source │ chat log (optional)   │
+//! │                                │                │ message composer      │
+//! └────────────────────────────────┴────────────────┴───────────────────────┘
 //! ```
 //!
-//! The left column describes the project, the right shows what the selected
+//! The left column describes the project, the middle shows what the selected
 //! tab renders to. The preview goes through [`crate::preview`], so the TUI
 //! knows nothing about escape sequences or which graphics protocol is in use,
 //! and it renders through [`crate::render`], so it shows exactly what
@@ -327,10 +322,6 @@ async fn event_loop(
     while !app.should_quit {
         let arrived = app.collect_preview();
         app.update_preview();
-        // The transcript takes the box when a turn starts and gives it back
-        // when one ends. Edge-triggered, so `t` during a turn is not undone on
-        // the very next frame.
-        app.follow_the_turn();
 
         // A new image is written *inside* `draw`, and under tmux that write is
         // over a megabyte of passthrough sequences and takes seconds. Nothing
@@ -764,19 +755,13 @@ fn handle(app: &mut App, key: KeyEvent) {
         // The focused pane's editor: the prompt's text area, or the palette's
         // fields. One key, because one edit mode.
         KeyCode::Enter => app.engage_editor(),
-        // The prompt *is* the instruction. `a` sends it; there is no second
-        // buffer to compose in and nothing to type first. Only from the prompt
-        // itself, and not while the transcript is in its place, so it never
-        // names a key that would work somewhere the user is not.
+        // Only the transient composer sends a turn, never the description.
         KeyCode::Char('a') if app.can_send() => app.send_prompt(),
         // Only on the prompt, and only while the editor is not engaged — once
         // it is, `e` is a letter someone is writing. The editor's own key map
         // has `ctrl-e` for the end of the line, so there is no chord left
         // inside it that would not be taking something else away.
-        KeyCode::Char('e')
-            if app.can_send()
-                || (app.focus == Focus::Prompt && app.left_view() == app::LeftView::Prompt) =>
-        {
+        KeyCode::Char('e') if app.can_send() || app.focus == Focus::Prompt => {
             app.request_system_editor()
         }
         KeyCode::Tab | KeyCode::Down => app.focus_next(),
@@ -792,14 +777,15 @@ fn handle(app: &mut App, key: KeyEvent) {
         // Not `ctrl-r`, which is redo inside the prompt editor and worth more
         // there than a second way to reach this.
         KeyCode::Char('R') => app.reload_from_disk(),
-        // The three toggles, all global: what the right column shows, what the
-        // tabs list, and what the top-left box holds.
+        // The toggles never turn a conversation into project metadata.
         KeyCode::Char('s') => app.toggle_view(),
         KeyCode::Char('m') => app.toggle_mode(),
         KeyCode::Char('W') => app.next_workflow_kind(),
         KeyCode::Char(',') => app.previous_phase(),
         KeyCode::Char('.') => app.next_phase(),
-        KeyCode::Char('t') => app.toggle_left_view(),
+        KeyCode::Char('t') => app.toggle_chat(),
+        KeyCode::Char('d') => app.show_destination(app::Destination::Description),
+        KeyCode::Char('v') => app.show_destination(app::Destination::Evidence),
         KeyCode::Char('x') => app.open_editor(),
         // Only from the palette: elsewhere there is no selected colour for it
         // to open on.
@@ -875,8 +861,8 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
             // The divider is checked first: it sits on the preview column's
             // left edge, so a click there would otherwise be swallowed as a
             // click on the preview.
-            if column == app.column_width || column + 1 == app.column_width {
-                app.begin_resize();
+            if let Some(divider) = app.divider_at(column, row) {
+                app.begin_resize(divider);
                 return;
             }
 
@@ -894,22 +880,33 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                 app.engage_editor();
             }
         }
-        MouseEventKind::Drag(MouseButton::Left) => {
-            if app.is_resizing() {
-                app.resize_column(column, app.total_width());
-            }
-        }
+        MouseEventKind::Drag(MouseButton::Left) => match app.is_resizing() {
+            Some(app::Divider::Description) => app.resize_column(
+                column,
+                app.total_width().saturating_sub(if app.chat_open() {
+                    app.chat_width(app.total_width())
+                } else {
+                    0
+                }),
+            ),
+            Some(app::Divider::Chat) => app.resize_chat(column),
+            None => {}
+        },
         MouseEventKind::Up(MouseButton::Left) => app.end_resize(),
         // The pane under the pointer scrolls, not the focused one: reaching
         // for the wheel over a list is an unambiguous statement about which
         // list is meant.
         MouseEventKind::ScrollDown => {
-            if let Some(focus) = app.pane_at(column, row) {
+            if app.pane_at(column, row) == Some(Focus::ChatLog) {
+                app.scroll_chat(3);
+            } else if let Some(focus) = app.pane_at(column, row) {
                 app.select_next_in(focus);
             }
         }
         MouseEventKind::ScrollUp => {
-            if let Some(focus) = app.pane_at(column, row) {
+            if app.pane_at(column, row) == Some(Focus::ChatLog) {
+                app.scroll_chat(-3);
+            } else if let Some(focus) = app.pane_at(column, row) {
                 app.select_previous_in(focus);
             }
         }
@@ -923,10 +920,12 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
 /// mouse and another to the keyboard.
 fn press(app: &mut App, button: Button) {
     match button {
+        Button::Evidence => app.show_destination(app::Destination::Evidence),
+        Button::Description => app.show_destination(app::Destination::Description),
         Button::View => app.toggle_view(),
         Button::Mode => app.toggle_mode(),
         Button::Editor => app.open_editor(),
-        Button::Transcript => app.toggle_left_view(),
+        Button::Chat => app.toggle_chat(),
     }
 }
 
@@ -1292,7 +1291,7 @@ mod tests {
         assert_eq!(app.pending_agent_request, None, "from the palette");
 
         app.focus = Focus::Prompt;
-        app.toggle_left_view();
+        app.toggle_chat();
         press(&mut app, KeyCode::Char('a'));
         assert_eq!(app.pending_agent_request, None, "from the transcript");
     }
@@ -1550,51 +1549,37 @@ mod tests {
     }
 
     #[test]
-    fn the_transcript_takes_the_box_while_the_agent_works_and_gives_it_back() {
-        // Nobody should have to know to press a key to watch a turn happen.
+    fn a_turn_does_not_replace_the_description_or_open_chat() {
         let mut app = app();
         app.agent = AgentStatus::Ready;
-        assert_eq!(app.left_view(), app::LeftView::Prompt);
+        assert!(!app.chat_open());
         app.focus = Focus::Message;
         app.set_message_draft("change it");
 
         press(&mut app, KeyCode::Char('a'));
-        app.follow_the_turn();
-        assert_eq!(
-            app.left_view(),
-            app::LeftView::Transcript,
-            "the turn is invisible"
-        );
+        assert!(!app.chat_open());
+        assert_eq!(app.focus, Focus::Message);
 
-        // The turn ends, and the thing worth looking at is the prompt again.
         app.pending_agent_request = None;
         app.transcript.apply(crate::acp::AgentUpdate::Idle);
-        app.follow_the_turn();
-        assert_eq!(app.left_view(), app::LeftView::Prompt);
+        assert!(!app.chat_open());
     }
 
     #[test]
-    fn the_transcript_can_be_toggled_back_during_a_turn() {
-        // The box is a plain state, not an override that latches: a rule
-        // derived from `is_asking` on every frame would undo `t` before it
-        // reached the screen.
+    fn chat_can_be_opened_and_closed_during_a_turn_without_changing_intent() {
         let mut app = app();
         app.agent = AgentStatus::Ready;
         app.focus = Focus::Message;
         app.set_message_draft("change it");
 
+        let original = app.project.metadata().description.clone();
         press(&mut app, KeyCode::Char('a'));
-        app.follow_the_turn();
-        assert_eq!(app.left_view(), app::LeftView::Transcript);
-
         press(&mut app, KeyCode::Char('t'));
-        assert_eq!(app.left_view(), app::LeftView::Prompt);
-        app.follow_the_turn();
-        assert_eq!(
-            app.left_view(),
-            app::LeftView::Prompt,
-            "the next frame took the choice back"
-        );
+        assert!(app.chat_open());
+        press(&mut app, KeyCode::Char('t'));
+        assert!(!app.chat_open());
+        assert_eq!(app.project.metadata().description, original);
+        assert!(!app.is_dirty());
     }
 
     #[test]
@@ -1644,7 +1629,7 @@ mod tests {
     fn tab_cycles_focus_through_every_pane_and_back_to_the_first() {
         let mut app = app();
         let first = app.focus;
-        for _ in 0..Focus::COUNT {
+        for _ in 0..3 {
             press(&mut app, KeyCode::Tab);
         }
         assert_eq!(app.focus, first);
@@ -1660,16 +1645,15 @@ mod tests {
         assert_eq!(app.focus, Focus::Prompt);
 
         press(&mut app, KeyCode::Down);
-        assert_eq!(app.focus, Focus::Message);
-        press(&mut app, KeyCode::Down);
         assert_eq!(app.focus, Focus::Palette);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.focus, Focus::References);
         assert_eq!(app.selection(Focus::Palette), 0, "and selected nothing");
 
         press(&mut app, KeyCode::Up);
-        assert_eq!(app.focus, Focus::Message);
+        assert_eq!(app.focus, Focus::Palette);
 
         // Once the palette is engaged they belong to it.
-        press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::Down);
         assert_eq!(app.focus, Focus::Palette, "it left the pane it was editing");
@@ -1742,8 +1726,8 @@ mod tests {
 
         press(&mut app, KeyCode::Tab);
 
-        assert_eq!(app.focus, Focus::Message);
-        assert_eq!(app.editing(), Some(Focus::Message));
+        assert_eq!(app.focus, Focus::Palette);
+        assert_eq!(app.editing(), Some(Focus::Palette));
         assert_eq!(app.draft(), "prose", "no tab reached the buffer");
 
         // And back, without the palette's buffer following it across.
@@ -1948,6 +1932,59 @@ mod tests {
     }
 
     #[test]
+    fn chat_scroll_and_focus_are_independent_of_the_description() {
+        let mut app = laid_out();
+        app.toggle_chat();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        let mut preview = Preview::detect(Backend::Blocks);
+        terminal
+            .draw(|frame| ui::draw(frame, &mut app, &mut preview))
+            .unwrap();
+        assert_eq!(app.focus, Focus::Prompt);
+
+        let log = app.area(Focus::ChatLog);
+        wheel(&mut app, MouseEventKind::ScrollDown, log.x + 2, log.y + 2);
+        assert_eq!(app.transcript_scroll(), 3);
+        assert_eq!(app.focus, Focus::Prompt);
+
+        click(&mut app, log.x + 2, log.y + 2);
+        assert_eq!(app.focus, Focus::ChatLog);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.transcript_scroll(), 13);
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.is_editing(), "the log is read-only");
+        assert!(!app.is_dirty());
+    }
+
+    #[test]
+    fn dragging_chat_does_not_resize_the_description() {
+        let mut app = laid_out();
+        app.toggle_chat();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        let mut preview = Preview::detect(Backend::Blocks);
+        terminal
+            .draw(|frame| ui::draw(frame, &mut app, &mut preview))
+            .unwrap();
+        let original = app.column_width;
+        let edge = app.area(Focus::ChatLog).x;
+        click(&mut app, edge, 5);
+        assert_eq!(app.is_resizing(), Some(app::Divider::Chat));
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Left),
+                column: edge.saturating_sub(5),
+                row: 5,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(app.column_width, original);
+        assert!(app.chat_width(100) > 100 / 3);
+    }
+
+    #[test]
     fn clicking_a_toolbar_button_does_what_the_key_beside_it_does() {
         // One function for both, so a control cannot mean one thing to the
         // mouse and another to the keyboard.
@@ -1962,10 +1999,7 @@ mod tests {
                 Button::Mode,
                 Box::new(|app: &App| app.mode() == app::Mode::Renders),
             ),
-            (
-                Button::Transcript,
-                Box::new(|app: &App| app.left_view() == app::LeftView::Transcript),
-            ),
+            (Button::Chat, Box::new(|app: &App| app.chat_open())),
             (Button::Editor, Box::new(|app: &App| app.modal().is_some())),
         ] {
             let area = app.button_area(button).expect("it was drawn");
@@ -2038,7 +2072,7 @@ mod tests {
         let divider = app.column_width;
 
         click(&mut app, divider, 5);
-        assert!(app.is_resizing());
+        assert!(app.is_resizing().is_some());
 
         handle_mouse(
             &mut app,
@@ -2060,7 +2094,7 @@ mod tests {
                 modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
             },
         );
-        assert!(!app.is_resizing());
+        assert!(app.is_resizing().is_none());
     }
 
     #[test]

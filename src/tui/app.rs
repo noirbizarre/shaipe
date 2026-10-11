@@ -39,6 +39,10 @@ pub const MIN_COLUMN: u16 = 24;
 /// How much room the preview column always keeps.
 pub const MIN_PREVIEW: u16 = 12;
 
+/// Below this width the three destinations get their own screen.
+pub const NARROW_WIDTH: u16 = 96;
+const MIN_CHAT: u16 = 24;
+
 /// How close together two clicks count as one double-click.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
@@ -67,19 +71,27 @@ const DEBOUNCE: Duration = Duration::from_millis(120);
 /// focusable panes. References remain a management list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
-    /// The durable description, or the transcript in its place.
+    /// The durable description.
     Prompt,
-    /// A transient message for the next turn.
-    Message,
     /// The palette.
     Palette,
     /// The attached references.
     References,
+    /// The session-only conversation history.
+    ChatLog,
+    /// A transient message for the next turn.
+    Message,
 }
 
 impl Focus {
     /// Every pane, in the order `Tab` visits them.
-    pub const ALL: [Self; 4] = [Self::Prompt, Self::Message, Self::Palette, Self::References];
+    pub const ALL: [Self; 5] = [
+        Self::Prompt,
+        Self::Palette,
+        Self::References,
+        Self::ChatLog,
+        Self::Message,
+    ];
 
     /// How many panes there are.
     pub const COUNT: usize = Self::ALL.len();
@@ -92,41 +104,30 @@ impl Focus {
             Self::Message => "message",
             Self::Palette => "palette",
             Self::References => "references",
+            Self::ChatLog => "chat log",
         }
     }
 }
 
-/// What the top-left box is showing.
-///
-/// One box alternates the description and transcript; the separate message
-/// composer stays visible during either view so a turn never becomes metadata.
+/// Which surface owns the body when columns would be unreadable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LeftView {
-    /// The project's own description of itself.
+pub enum Destination {
+    /// The visual evidence, including its selected variant/render.
     #[default]
-    Prompt,
-    /// What the agent has said and done.
-    Transcript,
+    Evidence,
+    /// Durable intent and project lists.
+    Description,
+    /// The agent's log and transient composer.
+    Chat,
 }
 
-impl LeftView {
-    /// The other one.
-    #[must_use]
-    pub const fn other(self) -> Self {
-        match self {
-            Self::Prompt => Self::Transcript,
-            Self::Transcript => Self::Prompt,
-        }
-    }
-
-    /// What to call it, in a pane title.
-    #[must_use]
-    pub const fn title(self) -> &'static str {
-        match self {
-            Self::Prompt => "description",
-            Self::Transcript => "transcript",
-        }
-    }
+/// The independently draggable edges of the workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Divider {
+    /// Edge between the durable editors and the visual surface.
+    Description,
+    /// Edge between the visual surface and the chat workspace.
+    Chat,
 }
 
 /// What the preview's tabs are listing.
@@ -381,9 +382,8 @@ fn instruct(message: &str, description: Option<&str>, references: &[Reference]) 
 
 /// What the right-hand column is showing.
 ///
-/// Two, not three: the transcript used to be a third view here, and it is the
-/// top-left box now — see [`LeftView`]. What is left is the artwork and the
-/// document that produced it, which is a toggle rather than a cycle.
+/// The transcript lives in a separate chat pane; this surface toggles between
+/// the artwork and the document that produced it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum View {
     /// The rendered artwork.
@@ -447,6 +447,12 @@ pub struct App {
 
     /// How wide the description column is. Draggable.
     pub column_width: u16,
+    chat_width: u16,
+    chat_open: bool,
+    destination: Destination,
+    layout_width: u16,
+    column_divider: Rect,
+    chat_divider: Rect,
     /// A transient message, shown in the status line until it ages out.
     pub notice: Option<Notice>,
 
@@ -535,19 +541,8 @@ pub struct App {
     /// Only the spinner reads it, which derives its frame from elapsed time
     /// rather than storing one.
     agent_since: Instant,
-    /// Which view the right-hand column is showing.
-    ///
-    /// A plain state, toggled by `s`. Nothing chooses it on the user's behalf:
-    /// the transcript, which was the one view worth showing automatically, is
-    /// in the left column now and has its own rule — see [`App::follow_the_turn`].
+    /// Which view the visual evidence surface is showing.
     view: View,
-    /// Which of the prompt and the transcript the top-left box is showing.
-    left: LeftView,
-    /// Whether a turn was running last time the box was asked to follow one.
-    ///
-    /// Edge-triggered rather than derived, so that toggling with `t` during a
-    /// turn is not undone on the very next frame.
-    was_asking: bool,
     /// What the preview's tabs are listing.
     mode: Mode,
     /// The selected tab, per mode.
@@ -580,7 +575,7 @@ pub struct App {
     /// The last click on a tab, for the same reason.
     last_tab_click: Option<(usize, Instant)>,
     /// Whether the column divider is being dragged.
-    resizing: bool,
+    resizing: Option<Divider>,
     /// Whether to skip drawing the image for one frame.
     holding_image: bool,
     /// Scroll state per list pane, so the selection stays visible when a pane
@@ -631,6 +626,12 @@ impl App {
             backend,
             verbose: 0,
             column_width: 0,
+            chat_width: 0,
+            chat_open: false,
+            destination: Destination::default(),
+            layout_width: NARROW_WIDTH,
+            column_divider: Rect::ZERO,
+            chat_divider: Rect::ZERO,
             notice: None,
             editor,
             message_editor: Self::editor_for(""),
@@ -656,8 +657,6 @@ impl App {
             pending_message: None,
             agent_since: Instant::now(),
             view: View::default(),
-            left: LeftView::default(),
-            was_asking: false,
             mode: Mode::default(),
             tab: [0; 2],
             view_scroll: 0,
@@ -670,7 +669,7 @@ impl App {
             preview_pixels: (0, 0),
             last_click: None,
             last_tab_click: None,
-            resizing: false,
+            resizing: None,
             holding_image: false,
             list_states: std::array::from_fn(|_| ListState::default()),
             selected: [0; Focus::COUNT],
@@ -712,12 +711,39 @@ impl App {
     /// dropping out of editing on the way would make moving between two
     /// editable panes cost an extra keystroke every time.
     pub fn focus_next(&mut self) {
-        self.move_focus(Focus::ALL[(self.focus_index() + 1) % Focus::COUNT]);
+        self.step_focus(1);
     }
 
     /// Move the keyboard to the previous pane.
     pub fn focus_previous(&mut self) {
-        self.move_focus(Focus::ALL[(self.focus_index() + Focus::COUNT - 1) % Focus::COUNT]);
+        self.step_focus(Focus::COUNT - 1);
+    }
+
+    fn step_focus(&mut self, offset: usize) {
+        if self.layout_width < NARROW_WIDTH && self.destination == Destination::Evidence {
+            self.destination = Destination::Description;
+        }
+        let visible = |focus| self.focus_visible(focus);
+        let next = (1..=Focus::COUNT)
+            .map(|step| Focus::ALL[(self.focus_index() + offset * step) % Focus::COUNT])
+            .find(|focus| visible(*focus));
+        if let Some(focus) = next {
+            self.move_focus(focus);
+        }
+    }
+
+    fn focus_visible(&self, focus: Focus) -> bool {
+        if self.layout_width < NARROW_WIDTH {
+            match self.destination {
+                Destination::Evidence => false,
+                Destination::Description => {
+                    matches!(focus, Focus::Prompt | Focus::Palette | Focus::References)
+                }
+                Destination::Chat => matches!(focus, Focus::ChatLog | Focus::Message),
+            }
+        } else {
+            !matches!(focus, Focus::ChatLog | Focus::Message) || self.chat_open
+        }
     }
 
     /// Move the keyboard to a named pane, taking the edit mode with it.
@@ -759,7 +785,7 @@ impl App {
     /// and that lives behind `x` (see [`Self::open_references_editor`]), not
     /// behind `enter`.
     pub fn engage_editor(&mut self) {
-        if self.focus == Focus::References {
+        if matches!(self.focus, Focus::References | Focus::ChatLog) {
             return;
         }
         self.editing = Some(self.focus);
@@ -782,7 +808,7 @@ impl App {
             // `engage_editor` never sets `editing` to this — references are
             // edited only through their modal — so this arm exists solely to
             // keep the match exhaustive as `Focus` grows.
-            Some(Focus::References) | None => {}
+            Some(Focus::References | Focus::ChatLog) | None => {}
         }
     }
 
@@ -1145,34 +1171,40 @@ impl App {
         self.view_scroll = 0;
     }
 
-    /// Which of the prompt and the transcript the top-left box is showing.
+    /// Whether the independent chat pane is open.
     #[must_use]
-    pub const fn left_view(&self) -> LeftView {
-        self.left
+    pub const fn chat_open(&self) -> bool {
+        self.chat_open
     }
 
-    /// Swap one for the other.
-    pub const fn toggle_left_view(&mut self) {
-        self.left = self.left.other();
-        self.transcript_scroll = 0;
-    }
-
-    /// Show whichever of the two the turn makes interesting.
-    ///
-    /// The transcript when one starts, the prompt when it ends. Edge-triggered
-    /// on purpose: the box is a plain state that `t` toggles at any moment, and
-    /// a rule derived from `is_asking` on every frame would undo that toggle
-    /// before it reached the screen.
-    pub fn follow_the_turn(&mut self) {
-        let asking = self.is_asking();
-        if asking != self.was_asking {
-            self.was_asking = asking;
-            self.left = if asking {
-                LeftView::Transcript
+    /// Open or close the chat without taking keyboard focus on opening.
+    pub fn toggle_chat(&mut self) {
+        if self.layout_width < NARROW_WIDTH {
+            self.destination = if self.destination == Destination::Chat {
+                Destination::Evidence
             } else {
-                LeftView::Prompt
+                Destination::Chat
             };
-            self.transcript_scroll = 0;
+        } else {
+            self.chat_open = !self.chat_open;
+        }
+        if !self.focus_visible(self.focus) && self.destination != Destination::Chat {
+            self.move_focus(Focus::Prompt);
+        }
+    }
+
+    /// Which narrow-screen destination is shown.
+    #[must_use]
+    pub const fn destination(&self) -> Destination {
+        self.destination
+    }
+
+    /// Switch narrow-screen surfaces; returning to the editors restores focus
+    /// if it was left in a now-hidden chat pane.
+    pub fn show_destination(&mut self, destination: Destination) {
+        self.destination = destination;
+        if destination == Destination::Description && !self.focus_visible(self.focus) {
+            self.move_focus(Focus::Prompt);
         }
     }
 
@@ -1272,7 +1304,9 @@ impl App {
     /// Whether something on screen scrolls.
     #[must_use]
     pub fn scrolls(&self) -> bool {
-        self.view == View::Source || self.left == LeftView::Transcript
+        self.focus == Focus::ChatLog && self.focus_visible(Focus::ChatLog)
+            || self.view == View::Source
+                && (self.layout_width >= NARROW_WIDTH || self.destination == Destination::Evidence)
     }
 
     /// How far down the source is scrolled.
@@ -1295,14 +1329,21 @@ impl App {
     ///
     /// Clamped at the top; the bottom is left to the widget, which simply
     /// draws nothing past the end.
-    pub const fn scroll_view(&mut self, rows: i16) {
-        if matches!(self.view, View::Source) {
+    pub fn scroll_view(&mut self, rows: i16) {
+        if !(self.focus == Focus::ChatLog && self.focus_visible(Focus::ChatLog))
+            && matches!(self.view, View::Source)
+        {
             self.view_scroll = self.view_scroll.saturating_add_signed(rows);
         } else {
             // The transcript is anchored to its newest entry, so scrolling
             // "down" is going back through it.
             self.transcript_scroll = self.transcript_scroll.saturating_add_signed(rows);
         }
+    }
+
+    /// Mouse wheel over the log scrolls it even when another pane has focus.
+    pub const fn scroll_chat(&mut self, rows: i16) {
+        self.transcript_scroll = self.transcript_scroll.saturating_add_signed(rows);
     }
 
     /// The document as it now stands, for the source view.
@@ -1564,7 +1605,7 @@ impl App {
         match focus {
             // Prose, not rows. The arrows scroll it rather than selecting in
             // it, so it has nothing for the selection machinery to move.
-            Focus::Prompt | Focus::Message => 0,
+            Focus::Prompt | Focus::Message | Focus::ChatLog => 0,
             Focus::Palette => self.project.metadata().palette.len(),
             Focus::References => self.project.metadata().references.len(),
         }
@@ -1911,6 +1952,32 @@ impl App {
         self.areas[Self::index_of(focus)] = area;
     }
 
+    /// Clear rectangles from the last layout before recording this frame's panes.
+    pub(crate) fn clear_areas(&mut self, width: u16) {
+        self.areas.fill(Rect::ZERO);
+        self.column_divider = Rect::ZERO;
+        self.chat_divider = Rect::ZERO;
+        self.layout_width = width;
+    }
+
+    pub(crate) const fn set_dividers(&mut self, description: Rect, chat: Rect) {
+        self.column_divider = description;
+        self.chat_divider = chat;
+    }
+
+    /// Which recorded divider, if any, contains this pointer position.
+    #[must_use]
+    pub fn divider_at(&self, column: u16, row: u16) -> Option<Divider> {
+        let point = ratatui::layout::Position::new(column, row);
+        if self.chat_divider.contains(point) {
+            Some(Divider::Chat)
+        } else if self.column_divider.contains(point) {
+            Some(Divider::Description)
+        } else {
+            None
+        }
+    }
+
     /// Where a pane was drawn last frame.
     #[must_use]
     pub fn area(&self, focus: Focus) -> Rect {
@@ -1961,7 +2028,7 @@ impl App {
     /// Move the description column's edge, keeping both columns usable.
     pub fn resize_column(&mut self, column: u16, total_width: u16) {
         let most = total_width.saturating_sub(MIN_PREVIEW).max(MIN_COLUMN);
-        self.column_width = column.clamp(MIN_COLUMN, most);
+        self.column_width = column.clamp(MIN_COLUMN, most).min(total_width);
     }
 
     /// How wide the description column should be drawn.
@@ -1980,6 +2047,29 @@ impl App {
         };
         self.resize_column(wanted, total_width);
         self.column_width
+    }
+
+    /// Chat width never consumes the minimum visual and description columns.
+    pub fn chat_width(&self, total_width: u16) -> u16 {
+        let maximum = total_width
+            .saturating_sub(MIN_COLUMN + MIN_PREVIEW)
+            .max(MIN_CHAT);
+        let wanted = if self.chat_width == 0 {
+            total_width / 3
+        } else {
+            self.chat_width
+        };
+        wanted.clamp(MIN_CHAT, maximum).min(total_width)
+    }
+
+    /// Drag the chat edge while reserving room for editor and preview.
+    pub fn resize_chat(&mut self, column: u16) {
+        // Store the distance from the right edge, bounded by the space still
+        // needed for the editor and the image.
+        self.chat_width = self.layout_width.saturating_sub(column).clamp(
+            MIN_CHAT,
+            self.layout_width.saturating_sub(MIN_COLUMN + MIN_PREVIEW),
+        );
     }
 
     /// Record where a toolbar button was drawn.
@@ -2279,25 +2369,25 @@ impl App {
     }
 
     /// Begin dragging the column divider.
-    pub const fn begin_resize(&mut self) {
-        self.resizing = true;
+    pub const fn begin_resize(&mut self, divider: Divider) {
+        self.resizing = Some(divider);
     }
 
     /// Stop dragging the column divider.
     pub const fn end_resize(&mut self) {
-        self.resizing = false;
+        self.resizing = None;
     }
 
     /// Whether the column divider is being dragged.
     #[must_use]
-    pub const fn is_resizing(&self) -> bool {
+    pub const fn is_resizing(&self) -> Option<Divider> {
         self.resizing
     }
 
     /// The full width of the last frame.
     #[must_use]
     pub const fn total_width(&self) -> u16 {
-        self.column_width + self.preview_area.width
+        self.layout_width
     }
 
     /// Move the selection down in a named pane.

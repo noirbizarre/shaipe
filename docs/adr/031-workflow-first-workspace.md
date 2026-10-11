@@ -6,7 +6,7 @@ Accepted; extends ADR-021 and ADR-030
 
 ## Context
 
-The existing workspace puts a description or transcript in the same box,
+The workspace originally put a description or transcript in the same box,
 separate from a message editor, palette and references. Variant/render tabs
 above one preview are the only artwork navigation. This makes a conversation
 look like an alternative to durable intent, and leaves reference comparison,
@@ -95,11 +95,13 @@ phase completion or comparison threshold crossing. #36 retains snapshots,
 evidence, relevant activity and phase outside the source SVG. Save and disk
 conflict resolution remain separate explicit actions.
 
-The current implementation introduces only the session-owned phase model and
-visible keyboard navigation. The independent chat, comparison surfaces,
-review actions and iteration snapshots are the implementation work of issues
-numbered #34–#36. This decision fixes their interaction and ownership
-boundaries.
+The session-owned phase model and the independent chat workspace are
+implemented. Chat opens as a separately resizable side pane without replacing
+the description or taking focus. On narrow terminals, evidence, description
+and chat are distinct destinations (the latter two are reachable by `d` and
+`t`, with `v` returning to evidence). Comparison surfaces, review actions and
+iteration snapshots remain the implementation work of #34 and #36. This
+decision fixes their interaction and ownership boundaries.
 
 ## Consequences
 
@@ -109,6 +111,4 @@ work cannot be represented by a single monotonic completion bar. Keeping
 evidence and iteration snapshots outside SVG avoids turning a normal SVG into
 a session database, but future history needs its own bounded lifetime and
 storage policy. Small terminals need explicit destinations and focus rules
-rather than proportional slices of every pane. The pre-existing
-description/transcript toggle remains until #35 replaces it with independent
-chat; it is a temporary layout limitation, not the ownership model.
+rather than proportional slices of every pane.
