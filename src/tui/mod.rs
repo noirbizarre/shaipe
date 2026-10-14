@@ -994,6 +994,56 @@ mod tests {
         assert_eq!(app.evidence_view(), app::EvidenceView::Current);
     }
 
+    #[test]
+    fn review_shortcuts_select_a_specific_candidate_without_changing_the_live_svg() {
+        let mut app = app();
+        let baseline = app.project.to_svg().unwrap();
+        app.set_draft("first change");
+        app.set_draft("second change");
+        let live = app.project.to_svg().unwrap();
+        press(&mut app, KeyCode::Char('{'));
+        assert_eq!(app.history_selected().unwrap().origin, "edited description");
+        press(&mut app, KeyCode::Char('A'));
+        assert_eq!(
+            app.history_selected().unwrap().decision,
+            history::Decision::Approved
+        );
+        press(&mut app, KeyCode::Char('{'));
+        assert_eq!(app.display_source(), baseline);
+        press(&mut app, KeyCode::Char('}'));
+        press(&mut app, KeyCode::Char('J'));
+        assert_eq!(
+            app.history_selected().unwrap().decision,
+            history::Decision::Rejected
+        );
+        assert_eq!(app.project.to_svg().unwrap(), live);
+        press(&mut app, KeyCode::Char('U'));
+        assert_eq!(
+            app.project.metadata().description.as_deref(),
+            Some("first change")
+        );
+        assert!(!app.history.is_browsing());
+        press(&mut app, KeyCode::Char('H'));
+        assert!(app.history_selected().is_none());
+    }
+
+    #[test]
+    fn clicking_a_review_control_commits_a_partial_edit_before_browsing() {
+        let mut app = laid_out();
+        let old = app.project.to_svg().unwrap();
+        press(&mut app, KeyCode::Enter);
+        type_text(&mut app, "fresh intent");
+        assert_eq!(app.history.entries().len(), 1);
+        let column = (0..100)
+            .find(|x| app.history_button_at(*x, 2) == Some(history::Action::Previous))
+            .unwrap();
+        click(&mut app, column, 2);
+        assert_eq!(app.history.entries().len(), 2);
+        assert_eq!(app.display_source(), old);
+        assert!(!app.is_editing());
+        assert!(app.project.to_svg().unwrap().contains("fresh intent"));
+    }
+
     /// A keypress with no modifiers.
     fn press(app: &mut App, code: KeyCode) {
         handle(app, KeyEvent::new(code, KeyModifiers::NONE));

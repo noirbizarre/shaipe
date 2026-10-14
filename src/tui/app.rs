@@ -3178,6 +3178,58 @@ mod tests {
     }
 
     #[test]
+    fn browsing_a_failed_snapshot_shows_its_error_without_leaking_live_comparison_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project =
+            Project::from_source(dir.path().join("logo.svg"), fixtures::PROJECT.to_owned())
+                .unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("gone.png", ReferenceKind::Source));
+        let mut app = App::new(project, "blocks");
+        app.history.wait();
+        app.set_draft("a later candidate");
+        app.previous_iteration();
+        assert!(app.display_has_source());
+        assert!(app.display_error().unwrap().contains("gone.png"));
+        app.cycle_evidence();
+        assert_eq!(app.evidence_view(), EvidenceView::Reference);
+        app.latest_iteration();
+        assert!(
+            !app.display_has_source(),
+            "an unset live workflow does not infer a comparison"
+        );
+        assert!(
+            app.display_error().is_none(),
+            "old errors belong to the old candidate"
+        );
+    }
+
+    #[test]
+    fn restoring_a_render_candidate_preserves_its_named_render_context() {
+        let mut app = app();
+        app.toggle_mode();
+        app.next_tab();
+        assert_eq!(app.preview_spec().unwrap().name, "banner");
+        app.set_draft("first candidate");
+        app.previous_tab();
+        app.set_draft("second candidate");
+        app.previous_iteration();
+        assert_eq!(
+            app.history_selected().unwrap().spec.as_ref().unwrap().name,
+            "banner"
+        );
+        app.restore_iteration();
+        assert_eq!(app.mode(), Mode::Renders);
+        assert_eq!(app.preview_spec().unwrap().name, "banner");
+        assert_eq!(
+            app.project.metadata().description.as_deref(),
+            Some("first candidate")
+        );
+    }
+
+    #[test]
     fn evidence_selection_only_uses_sources_and_does_not_dirty_the_project() {
         let mut app = app();
         app.project.metadata_mut().references.extend([

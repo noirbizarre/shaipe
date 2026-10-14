@@ -288,7 +288,7 @@ impl History {
     }
 
     #[cfg(test)]
-    fn wait(&mut self) {
+    pub(crate) fn wait(&mut self) {
         let answer = self
             .answers
             .recv_timeout(std::time::Duration::from_secs(10))
@@ -452,5 +452,132 @@ mod tests {
                 .image(super::super::app::EvidenceView::Difference)
                 .is_some()
         );
+    }
+
+    #[test]
+    fn missing_and_invalid_references_leave_the_candidate_render_inspectable() {
+        let dir = tempfile::tempdir().unwrap();
+        let project =
+            Project::from_source(dir.path().join("logo.svg"), fixtures::PROJECT.to_owned())
+                .unwrap();
+        let spec = RenderSpec::square("icon", "icon", 48);
+        let mut history = History::new();
+        history.record(
+            &project,
+            Context {
+                spec: Some(spec.clone()),
+                source: Some("missing.png".into()),
+                variant: Some("icon".into()),
+                ..Context::default()
+            },
+            "missing reference".into(),
+        );
+        history.wait();
+        let missing = &history.entries()[0];
+        assert!(
+            missing.preview.is_some(),
+            "a broken reference must not hide the render"
+        );
+        assert!(missing.error.as_deref().unwrap().contains("missing.png"));
+
+        std::fs::write(dir.path().join("invalid.png"), b"not an image").unwrap();
+        let mut changed = project.clone();
+        changed.metadata_mut().description = Some("second candidate".into());
+        history.record(
+            &changed,
+            Context {
+                spec: Some(spec),
+                source: Some("invalid.png".into()),
+                variant: Some("icon".into()),
+                ..Context::default()
+            },
+            "invalid reference".into(),
+        );
+        history.wait();
+        let invalid = history.entries().back().unwrap();
+        assert!(invalid.preview.is_some());
+        assert!(invalid.error.is_some());
+        assert!(!invalid.pending);
+    }
+
+    #[test]
+    fn a_late_result_cannot_replace_an_evicted_iteration_or_the_latest_candidate() {
+        let mut history = History::new();
+        let mut project = fixtures::project();
+        history.record(&project, Context::default(), "opened".into());
+        let evicted_id = history.entries()[0].id;
+        for index in 0..LIMIT {
+            project.metadata_mut().description = Some(format!("candidate {index}"));
+            history.record(&project, Context::default(), format!("candidate {index}"));
+        }
+        let newest = history.entries().back().unwrap().id;
+        assert!(history.entries().iter().all(|entry| entry.id != evicted_id));
+        assert!(!history.apply(Answer {
+            id: evicted_id,
+            preview: Err("late failure".into()),
+            evidence: None,
+        }));
+        assert_eq!(history.entries().back().unwrap().id, newest);
+        assert_ne!(
+            history.entries().back().unwrap().error.as_deref(),
+            Some("late failure")
+        );
+    }
+
+    #[test]
+    fn an_oversized_reference_reports_why_its_comparison_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let project =
+            Project::from_source(dir.path().join("logo.svg"), fixtures::PROJECT.to_owned())
+                .unwrap();
+        let image = Image::from_rgba(1_601, 1, vec![255; 1_601 * 4]);
+        std::fs::write(dir.path().join("wide.png"), image.to_png().unwrap()).unwrap();
+        let mut history = History::new();
+        history.record(
+            &project,
+            Context {
+                source: Some("wide.png".into()),
+                variant: Some("icon".into()),
+                spec: Some(RenderSpec::square("icon", "icon", 32)),
+                ..Context::default()
+            },
+            "wide reference".into(),
+        );
+        history.wait();
+        let entry = history.entries().back().unwrap();
+        assert!(entry.preview.is_some());
+        assert!(entry.error.as_deref().unwrap().contains("1600px"));
+        assert!(entry.comparison().is_none());
+    }
+
+    #[test]
+    fn a_candidate_with_an_unrenderable_variant_keeps_its_reference_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        let project =
+            Project::from_source(dir.path().join("logo.svg"), fixtures::PROJECT.to_owned())
+                .unwrap();
+        let source = Image::from_rgba(24, 24, vec![255; 24 * 24 * 4]);
+        std::fs::write(dir.path().join("source.png"), source.to_png().unwrap()).unwrap();
+        let mut history = History::new();
+        history.record(
+            &project,
+            Context {
+                source: Some("source.png".into()),
+                variant: Some("absent".into()),
+                spec: Some(RenderSpec::square("absent", "absent", 24)),
+                ..Context::default()
+            },
+            "unrenderable candidate".into(),
+        );
+        history.wait();
+        let entry = history.entries().back().unwrap();
+        assert!(entry.preview.is_none());
+        assert!(entry.error.is_some());
+        assert!(
+            entry
+                .image(super::super::app::EvidenceView::Reference)
+                .is_some()
+        );
+        assert!(entry.comparison().is_none());
     }
 }

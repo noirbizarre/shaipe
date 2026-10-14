@@ -569,6 +569,48 @@ mod tests {
     }
 
     #[test]
+    fn inspecting_a_candidate_shows_its_frozen_reference_and_comparison_after_live_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project =
+            crate::Project::from_source(dir.path().join("logo.svg"), fixtures::PROJECT.to_owned())
+                .unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(crate::project::Reference::new(
+                "source.png",
+                crate::project::ReferenceKind::Source,
+            ));
+        let white = crate::preview::Image::from_rgba(32, 32, vec![255; 32 * 32 * 4]);
+        std::fs::write(dir.path().join("source.png"), white.to_png().unwrap()).unwrap();
+        let mut app = App::new(project, "blocks");
+        app.history.wait();
+        app.set_draft("different live intent");
+        app.previous_iteration();
+        app.cycle_evidence();
+        assert_eq!(app.evidence_view(), EvidenceView::Reference);
+        assert_eq!(app.display_image().unwrap().pixel(0, 0), [255; 4]);
+        let text = render(&mut app, 120, 36);
+        assert!(text.contains("foreground overlap"), "{text}");
+        assert!(text.contains("source.png"), "{text}");
+        assert!(painted(&frame(&mut app, 120, 36), app.preview_area()) > 0);
+        app.cycle_evidence();
+        assert!(
+            app.display_image().is_some(),
+            "overlay is retained for review"
+        );
+        app.cycle_evidence();
+        assert!(
+            app.display_image().is_some(),
+            "difference is retained for review"
+        );
+        assert_eq!(
+            app.project.metadata().description.as_deref(),
+            Some("different live intent")
+        );
+    }
+
+    #[test]
     fn reference_and_difference_views_show_their_pixels_with_named_measurements() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("logo.svg");
