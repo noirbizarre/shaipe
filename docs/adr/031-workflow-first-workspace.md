@@ -87,7 +87,7 @@ description or artifacts directly, send a new transient instruction, redirect
 the next turn or cancel a running one. Project mutations from Shaipe tools
 are immediately visible as unsaved edits under the existing single-owner
 message boundary; an ACP permission request for an agent's own tool is not
-approval of an artwork iteration. Approve/reject in #34/#36 will apply to an
+approval of an artwork iteration. Approve/reject applies to an
 identified candidate iteration, never silently to all project changes or
 the transcript. Rejection retains a way to inspect the candidate and return
 to a chosen artifact state; approval records a review decision, not a save,
@@ -102,8 +102,25 @@ evidence, description and chat are distinct destinations (the latter two are
 reachable by `d` and `t`, with `v` returning to evidence). The `c` key cycles
 reference/current/overlay/difference evidence when a source is attached to a
 reference or hybrid workflow; named metrics come from the existing comparison
-service. Candidate review and iteration snapshots remain #36's work. This
-decision fixes their interaction and ownership boundaries.
+service. Issue #36 adds bounded, in-memory history of complete SVG snapshots,
+selected render context, phase, origin and asynchronously computed visual
+evidence. One candidate is captured per agent turn with successful mutations,
+completed direct edit or disk reload, rather than on each text keystroke;
+identical document bytes do not create duplicates. Reference bytes are frozen
+on capture so historical comparisons remain attributable even if a reference
+file changes. At most twelve candidates and 64 MiB of decoded historical
+images are retained; older unselected candidates are evicted at those limits,
+with SVG state preferred over images when two protected candidates exceed the
+image budget. A busy worker reports unavailable evidence instead of blocking
+the workspace. Historical comparison reports an unavailable reference when
+the input exceeds 16 MiB or 1600 pixels on either axis, avoiding unbounded
+decoded evidence; the live comparison is unaffected. Closing the workspace
+discards the history. The history strip uses `{`/`}` for earlier/later, `H`
+for live, `A`/`J` for approve/reject and `U` to restore an
+inspected snapshot explicitly as a new unsaved candidate. Reviewing never
+mutates SVG; the live project must first reach a checkpoint to be reviewed,
+and an active agent turn must finish or stop before restoring. Restoring
+preserves the normal save and disk-conflict checks.
 
 ## Consequences
 
@@ -111,6 +128,5 @@ Phase navigation offers context without falsely certifying model behavior,
 but a user must select a workflow kind before navigating phases. Repeated
 work cannot be represented by a single monotonic completion bar. Keeping
 evidence and iteration snapshots outside SVG avoids turning a normal SVG into
-a session database, but future history needs its own bounded lifetime and
-storage policy. Small terminals need explicit destinations and focus rules
+a session database. Small terminals need explicit destinations and focus rules
 rather than proportional slices of every pane.

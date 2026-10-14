@@ -22,6 +22,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use crate::preview::Preview as Backend;
 
 use super::app::{App, Destination, EvidenceView, Focus, NARROW_WIDTH, Preview, View};
+use super::history::{Action, Decision};
 use super::modal::Modal;
 use super::{modal, panes, toolbar};
 
@@ -215,17 +216,22 @@ fn draw_references(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 
 /// Draw the preview column: a row of tabs, and whatever they select.
 fn draw_right(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend, area: Rect) {
-    let [bar, body] = Layout::default()
+    let [bar, history, body] = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
         .areas(area);
 
     draw_tabs(frame, app, bar);
+    draw_history(frame, app, history);
 
     // Told about the area either way, so the preview stays correctly sized
     // and switching back to it is instant rather than a re-render.
     let [image_area, metrics_area] =
-        if app.view() == View::Preview && app.has_comparison_source() && body.height >= 19 {
+        if app.view() == View::Preview && app.display_has_source() && body.height >= 19 {
             Layout::vertical([Constraint::Min(8), Constraint::Length(9)]).areas(body)
         } else {
             [body, Rect::ZERO]
@@ -240,6 +246,63 @@ fn draw_right(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend, area:
         }
         View::Source => draw_source(frame, app, body),
     }
+}
+
+fn draw_history(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let actions = [
+        (Action::Previous, "{"),
+        (Action::Next, "}"),
+        (Action::Live, "H"),
+        (Action::Approve, "A✓"),
+        (Action::Reject, "J✗"),
+        (Action::Restore, "U restore"),
+    ];
+    let mut spans = Vec::new();
+    let mut buttons = Vec::new();
+    let mut x = area.x;
+    for (action, label) in actions {
+        let text = format!(" {label} ");
+        let width = text.chars().count() as u16;
+        let rect = Rect::new(x, area.y, width, 1).intersection(area);
+        if rect.width == width {
+            buttons.push((action, rect));
+        }
+        spans.push(Span::styled(text, Style::default().fg(Color::LightCyan)));
+        x = x.saturating_add(width);
+    }
+    let count = app.history.entries().len();
+    let selection = app.history_selected();
+    let label = selection.map_or_else(
+        || {
+            let status =
+                app.history
+                    .entries()
+                    .back()
+                    .map_or("pending", |entry| match entry.decision {
+                        Decision::Pending => "pending",
+                        Decision::Approved => "approved",
+                        Decision::Rejected => "rejected",
+                    });
+            format!(" live · {count} iterations · {status}")
+        },
+        |entry| {
+            let status = match entry.decision {
+                Decision::Pending => "pending",
+                Decision::Approved => "approved",
+                Decision::Rejected => "rejected",
+            };
+            format!(
+                " #{}/{} {status} · {:?}/{:?} · {}",
+                entry.id, count, entry.kind, entry.phase, entry.origin
+            )
+        },
+    );
+    spans.push(Span::styled(
+        label,
+        Style::default().fg(Color::LightMagenta),
+    ));
+    app.set_history_buttons(buttons);
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Draw the tab bar, recording where each tab landed.
@@ -307,7 +370,7 @@ fn draw_source(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // Not wrapped: an SVG has meaningful line structure, and rewrapping a
     // path's coordinates across a narrow column makes it unreadable. It runs
     // off the edge instead, which is the lesser harm.
-    let paragraph = Paragraph::new(app.source_text()).style(Style::default().fg(Color::Gray));
+    let paragraph = Paragraph::new(app.display_source()).style(Style::default().fg(Color::Gray));
     frame.render_widget(paragraph.scroll((app.view_scroll(), 0)), inner);
 }
 
@@ -326,7 +389,16 @@ fn draw_preview(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend, are
         }
         _ => format!(" preview ({}) ", app.backend),
     };
-    let caption = format!(" {} —{caption}", app.evidence_view().title());
+    let caption = if let Some(entry) = app.history_selected() {
+        format!(
+            " {} — iteration #{} · {} ",
+            app.evidence_view().title(),
+            entry.id,
+            entry.variant.as_deref().unwrap_or("no variant")
+        )
+    } else {
+        format!(" {} —{caption}", app.evidence_view().title())
+    };
     // In the title rather than over the image: a render can take a noticeable
     // moment, and replacing the previous preview with a spinner would be a
     // downgrade. The old image is more useful than an empty pane.
@@ -347,6 +419,25 @@ fn draw_preview(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend, are
         ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    if let Some(entry) = app.history_selected() {
+        if let Some(image) = app.display_image() {
+            if !app.is_holding_image() {
+                backend.draw(image, app.preview_generation(), inner, frame);
+            }
+        } else {
+            frame.render_widget(
+                Paragraph::new(entry.error.as_deref().unwrap_or(if entry.pending {
+                    "preparing iteration evidence…"
+                } else {
+                    "this iteration has no image for this view"
+                }))
+                .wrap(Wrap { trim: false }),
+                inner,
+            );
+        }
+        return;
+    }
 
     if app.evidence_view() != EvidenceView::Current {
         if (app.evidence_view() != EvidenceView::Reference || app.evidence_image().is_none())
@@ -405,8 +496,8 @@ fn draw_metrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let block = Block::default().borders(Borders::ALL).title(" comparison ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let Some(report) = app.comparison() else {
-        let message = app.evidence_error().unwrap_or(if app.evidence_pending() {
+    let Some(report) = app.display_comparison() else {
+        let message = app.display_error().unwrap_or(if app.evidence_pending() {
             "computing comparison…"
         } else {
             "select a variant to compare"
@@ -415,7 +506,14 @@ fn draw_metrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
         return;
     };
     let (source, variant) = app
-        .comparison_context()
+        .history_selected()
+        .and_then(|entry| {
+            entry
+                .evidence
+                .as_ref()
+                .map(|e| (e.source.as_path(), e.variant.as_deref()))
+        })
+        .or_else(|| app.comparison_context())
         .unwrap_or((std::path::Path::new(""), None));
     let text = format!(
         "{} ↔ {}  {}×{}\nforeground overlap {:.1}% · edges {:.1}%\nchanged pixels {:.1}% · MAE {:.3}\nperceptual similarity {:.3} ({})\ncentroid offset {}\nappearance: {} · lettering: {}",
@@ -456,6 +554,61 @@ mod tests {
     use crate::fixtures;
     use crate::preview::Backend as PreviewBackend;
     use crate::tui::app::Mode;
+
+    #[test]
+    fn history_controls_and_candidate_status_are_visible_and_clickable_on_a_narrow_screen() {
+        let mut app = App::new(fixtures::project(), "blocks");
+        app.set_draft("a newly edited description");
+        app.previous_iteration();
+        app.review_iteration(Decision::Rejected);
+        let text = render(&mut app, 50, 25);
+        assert!(text.contains("U restore"), "{text}");
+        assert!(text.contains("rejected"), "{text}");
+        assert!((0..50).any(|x| app.history_button_at(x, 2) == Some(Action::Restore)));
+        assert!(text.contains("#1/2"), "{text}");
+    }
+
+    #[test]
+    fn inspecting_a_candidate_shows_its_frozen_reference_and_comparison_after_live_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project =
+            crate::Project::from_source(dir.path().join("logo.svg"), fixtures::PROJECT.to_owned())
+                .unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(crate::project::Reference::new(
+                "source.png",
+                crate::project::ReferenceKind::Source,
+            ));
+        let white = crate::preview::Image::from_rgba(32, 32, vec![255; 32 * 32 * 4]);
+        std::fs::write(dir.path().join("source.png"), white.to_png().unwrap()).unwrap();
+        let mut app = App::new(project, "blocks");
+        app.history.wait();
+        app.set_draft("different live intent");
+        app.previous_iteration();
+        app.cycle_evidence();
+        assert_eq!(app.evidence_view(), EvidenceView::Reference);
+        assert_eq!(app.display_image().unwrap().pixel(0, 0), [255; 4]);
+        let text = render(&mut app, 120, 36);
+        assert!(text.contains("foreground overlap"), "{text}");
+        assert!(text.contains("source.png"), "{text}");
+        assert!(painted(&frame(&mut app, 120, 36), app.preview_area()) > 0);
+        app.cycle_evidence();
+        assert!(
+            app.display_image().is_some(),
+            "overlay is retained for review"
+        );
+        app.cycle_evidence();
+        assert!(
+            app.display_image().is_some(),
+            "difference is retained for review"
+        );
+        assert_eq!(
+            app.project.metadata().description.as_deref(),
+            Some("different live intent")
+        );
+    }
 
     #[test]
     fn reference_and_difference_views_show_their_pixels_with_named_measurements() {

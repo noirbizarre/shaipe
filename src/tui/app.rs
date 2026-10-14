@@ -22,6 +22,7 @@ use crate::project::{Background, Format, Project, Reference, ReferenceKind, Rend
 use crate::render::{RenderOptions, Renderer};
 use crate::settings::Settings;
 use crate::tui::evidence_worker::{Evidence, Worker as EvidenceWorker};
+use crate::tui::history::{Context, Decision, History, Iteration};
 use crate::tui::modal::{
     ColourPicker, Modal, ModelPicker, ReferencesEditor, RendersEditor, VariantsEditor,
 };
@@ -476,6 +477,13 @@ pub struct App {
     pub project: Project,
     /// Explicit, session-only workflow navigation; not a completion tracker.
     pub workflow: super::workspace::Workspace,
+    /// Session-only, bounded candidates. Never serialized into the SVG.
+    pub history: History,
+    agent_edits: Vec<String>,
+    agent_location: Option<super::workspace::Workspace>,
+    turn_start: usize,
+    edit_started: Option<String>,
+    modal_started: Option<String>,
     /// Which pane has the keyboard.
     pub focus: Focus,
     /// Whether the event loop should stop.
@@ -609,6 +617,7 @@ pub struct App {
     modal: Option<Modal>,
     /// Where each toolbar button was drawn last frame.
     toolbar: Vec<(Button, Rect)>,
+    history_buttons: Vec<(super::history::Action, Rect)>,
     /// Where each preview tab was drawn last frame.
     tabs: Vec<Rect>,
 
@@ -669,9 +678,15 @@ impl App {
                 .as_deref()
                 .unwrap_or_default(),
         );
-        Self {
+        let mut app = Self {
             project,
             workflow: super::workspace::Workspace::default(),
+            history: History::new(),
+            agent_edits: Vec::new(),
+            agent_location: None,
+            turn_start: 0,
+            edit_started: None,
+            modal_started: None,
             focus: Focus::Prompt,
             should_quit: false,
             backend,
@@ -724,6 +739,7 @@ impl App {
             transcript_scroll: 0,
             modal: None,
             toolbar: Vec::new(),
+            history_buttons: Vec::new(),
             tabs: Vec::new(),
             areas: [Rect::ZERO; Focus::COUNT],
             preview_area: Rect::ZERO,
@@ -745,7 +761,262 @@ impl App {
             last_render: None,
             worker: Worker::new(&project_for_worker),
             generation: 0,
+        };
+        app.checkpoint("opened project");
+        app
+    }
+
+    /// Preserve one completed candidate; byte-identical edits are ignored.
+    pub fn checkpoint(&mut self, origin: &str) {
+        self.checkpoint_at(origin, self.workflow);
+    }
+
+    fn checkpoint_at(&mut self, origin: &str, location: super::workspace::Workspace) {
+        // An initial baseline can be captured before a workflow is chosen;
+        // retaining its source now still allows comparison when revisiting it.
+        let source = self.evidence_source();
+        let spec = self.preview_spec();
+        self.history.record(
+            &self.project,
+            Context {
+                mode: self.mode,
+                variant: self.current_variant(),
+                spec,
+                kind: location.kind(),
+                phase: location.phase(),
+                source,
+            },
+            origin.to_owned(),
+        );
+    }
+
+    /// Candidate under inspection, if history rather than live artwork is selected.
+    pub fn history_selected(&self) -> Option<&Iteration> {
+        self.history.selected()
+    }
+
+    /// Remember the controls actually drawn, so hit-testing cannot drift.
+    pub fn set_history_buttons(&mut self, buttons: Vec<(super::history::Action, Rect)>) {
+        self.history_buttons = buttons;
+    }
+
+    /// Return the history action under a screen cell.
+    pub fn history_button_at(&self, x: u16, y: u16) -> Option<super::history::Action> {
+        self.history_buttons
+            .iter()
+            .find_map(|(action, area)| area.contains((x, y).into()).then_some(*action))
+    }
+
+    /// Perform the same action for keys and clicks.
+    pub fn history_action(&mut self, action: super::history::Action) {
+        use super::history::Action;
+        match action {
+            Action::Previous => self.previous_iteration(),
+            Action::Next => self.next_iteration(),
+            Action::Live => self.latest_iteration(),
+            Action::Approve => self.review_iteration(Decision::Approved),
+            Action::Reject => self.review_iteration(Decision::Rejected),
+            Action::Restore => self.restore_iteration(),
         }
+    }
+
+    /// Historical metrics when inspecting a candidate, otherwise live metrics.
+    pub fn display_comparison(&self) -> Option<&crate::compare::Comparison> {
+        self.history_selected()
+            .map_or_else(|| self.comparison(), Iteration::comparison)
+    }
+
+    /// SVG belonging to the selected candidate rather than the editable project.
+    pub fn display_source(&self) -> String {
+        self.history_selected()
+            .map_or_else(|| self.source_text(), |entry| entry.svg.clone())
+    }
+
+    /// Pixels for the selected historical evidence view, if ready.
+    pub fn display_image(&self) -> Option<&Image> {
+        self.history_selected()
+            .and_then(|entry| entry.image(self.evidence_view))
+    }
+
+    /// Report an unavailable historical view rather than a live error.
+    pub fn display_error(&self) -> Option<&str> {
+        match self.history_selected() {
+            Some(entry) => entry
+                .error
+                .as_deref()
+                .or_else(|| entry.evidence.as_ref().and_then(|e| e.error.as_deref())),
+            None => self.evidence_error(),
+        }
+    }
+
+    /// Whether comparison is applicable to the selected candidate.
+    pub fn display_has_source(&self) -> bool {
+        self.history_selected().map_or_else(
+            || self.has_comparison_source(),
+            |entry| {
+                entry.kind != Some(crate::workflow::WorkflowKind::FromScratch)
+                    && (entry.evidence.is_some()
+                        || entry
+                            .project
+                            .metadata()
+                            .references
+                            .iter()
+                            .any(|r| r.kind == ReferenceKind::Source))
+            },
+        )
+    }
+
+    /// Collect completed snapshot evidence, invalidating the terminal image
+    /// only if the history surface is on screen.
+    pub fn collect_history(&mut self) -> bool {
+        let changed = self.history.collect();
+        if changed && self.history.is_browsing() {
+            self.generation = self.generation.wrapping_add(1);
+        }
+        changed && self.history.is_browsing()
+    }
+
+    /// Inspect the preceding snapshot without changing the editable project.
+    pub fn previous_iteration(&mut self) {
+        self.history.step(-1);
+        self.view_scroll = 0;
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Inspect the following snapshot without changing the editable project.
+    pub fn next_iteration(&mut self) {
+        self.history.step(1);
+        self.view_scroll = 0;
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Return to the editable project.
+    pub fn latest_iteration(&mut self) {
+        self.history.live();
+        self.view_scroll = 0;
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Record a session-only decision on the candidate under review.
+    pub fn review_iteration(&mut self, decision: Decision) {
+        if !self.history.is_browsing()
+            && self.project.to_svg().ok()
+                != self.history.entries().back().map(|entry| entry.svg.clone())
+        {
+            self.notice = Some(Notice::warning(
+                "the live project has uncheckpointed changes — finish the edit or select an iteration",
+            ));
+            return;
+        }
+        self.history.decide(decision);
+    }
+
+    /// Make an earlier candidate editable as a new unsaved iteration.
+    pub fn restore_iteration(&mut self) {
+        if self.transcript.is_busy() {
+            self.notice = Some(Notice::warning(
+                "wait for the agent turn to finish or stop it before restoring an iteration",
+            ));
+            return;
+        }
+        let Some(candidate) = self.history.selected() else {
+            return;
+        };
+        let id = candidate.id;
+        let project = candidate.project.clone();
+        let variant = candidate.variant.clone();
+        let spec = candidate.spec.clone();
+        let mode = candidate.mode;
+        if self.project.to_svg().ok() == project.to_svg().ok() {
+            self.notice = Some(Notice::info("this iteration is already the live project"));
+            return;
+        }
+        let before = self.variant_fingerprint();
+        self.project = project;
+        // Return to the artifact the candidate actually showed, even when
+        // later edits reordered or removed tabs in the live project.
+        self.mode = mode;
+        let index = match mode {
+            Mode::Renders => spec.as_ref().and_then(|selected| {
+                self.project
+                    .metadata()
+                    .renders
+                    .iter()
+                    .position(|render| render.name == selected.name)
+            }),
+            Mode::Variants => variant.as_ref().and_then(|selected| {
+                self.project
+                    .metadata()
+                    .variants
+                    .iter()
+                    .position(|candidate| &candidate.name == selected)
+            }),
+        };
+        if let Some(index) = index {
+            self.tab[mode.index()] = index;
+        }
+        self.reload_prompt();
+        self.absorb_change(before);
+        // An earlier candidate can happen to be exactly what is on disk.
+        // Read for this explicit operation rather than guessing from the
+        // previous dirty flag, which describes the state being replaced.
+        self.dirty = Project::open(self.project.path())
+            .ok()
+            .and_then(|disk| disk.to_svg().ok())
+            != self.project.to_svg().ok();
+        self.checkpoint(&format!("restored iteration #{id}"));
+        self.latest_iteration();
+    }
+
+    /// Attribute a successful project mutation to the active agent turn.
+    pub fn note_agent_mutation(&mut self, name: &str) {
+        if self.agent_edits.is_empty() {
+            self.agent_location = Some(self.workflow);
+        }
+        self.agent_edits.push(name.to_owned());
+        // Standalone workspace tools need a checkpoint even without a turn.
+        if !self.transcript.is_busy() {
+            self.finish_agent_turn();
+        }
+    }
+
+    /// Group successful tool calls and the associated conversation into one iteration.
+    pub fn finish_agent_turn(&mut self) {
+        if self.agent_edits.is_empty() {
+            return;
+        }
+        let activity = self
+            .transcript
+            .entries()
+            .get(self.turn_start..)
+            .unwrap_or_default();
+        let message = activity
+            .iter()
+            .find_map(|entry| match entry {
+                super::transcript::Entry::You(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap_or("agent edit");
+        let response = activity
+            .iter()
+            .rev()
+            .find_map(|entry| match entry {
+                super::transcript::Entry::Agent(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap_or("");
+        let label = format!(
+            "{} · {message}{}",
+            self.agent_edits.join(", "),
+            if response.is_empty() {
+                String::new()
+            } else {
+                format!(" · {response}")
+            }
+        );
+        let location = self.agent_location.take().unwrap_or(self.workflow);
+        self.checkpoint_at(&label, location);
+        self.agent_edits.clear();
     }
 
     /// The index of the focused pane, for indexing `selected`.
@@ -849,7 +1120,13 @@ impl App {
         if matches!(self.focus, Focus::References | Focus::ChatLog) {
             return;
         }
+        if matches!(self.focus, Focus::Prompt | Focus::Palette) {
+            self.finish_agent_turn();
+        }
         self.editing = Some(self.focus);
+        if matches!(self.focus, Focus::Prompt | Focus::Palette) {
+            self.edit_started = self.project.to_svg().ok();
+        }
         if self.focus == Focus::Palette {
             self.load_palette_field();
         }
@@ -862,7 +1139,8 @@ impl App {
 
     /// Leave whichever editor is engaged, committing what it holds.
     fn leave_edit(&mut self) {
-        match self.editing.take() {
+        let editing = self.editing.take();
+        match editing {
             Some(Focus::Prompt) => self.commit_prompt(),
             Some(Focus::Palette) => self.commit_palette_field(),
             Some(Focus::Message) => {}
@@ -870,6 +1148,15 @@ impl App {
             // edited only through their modal — so this arm exists solely to
             // keep the match exhaustive as `Focus` grows.
             Some(Focus::References | Focus::ChatLog) | None => {}
+        }
+        if matches!(editing, Some(Focus::Prompt | Focus::Palette)) {
+            let label = if editing == Some(Focus::Prompt) {
+                "edited description"
+            } else {
+                "edited palette"
+            };
+            self.checkpoint(label);
+            self.edit_started = None;
         }
     }
 
@@ -994,6 +1281,9 @@ impl App {
     pub fn set_draft(&mut self, text: &str) {
         self.editor = Self::editor_for(text);
         self.commit_prompt();
+        if self.edit_started.is_none() {
+            self.checkpoint("edited description");
+        }
     }
 
     /// Apply a keypress to whichever pane is being edited.
@@ -1211,6 +1501,7 @@ impl App {
     /// Move a queued message to the transcript only after agent acceptance.
     pub fn accept_message(&mut self) {
         if let Some(message) = self.pending_message.take() {
+            self.turn_start = self.transcript.entries().len();
             self.transcript.push_user(message);
             self.message_editor = Self::editor_for("");
         }
@@ -1260,7 +1551,7 @@ impl App {
 
     /// Browse only the evidence modes available to this workflow.
     pub fn cycle_evidence(&mut self) {
-        if !self.has_comparison_source() {
+        if !self.display_has_source() {
             self.evidence_view = EvidenceView::Current;
             self.notice = Some(Notice::info(
                 "choose a reference or hybrid workflow and attach a source to compare",
@@ -1722,6 +2013,7 @@ impl App {
         }
 
         self.commit_prompt();
+        self.checkpoint("edited description");
         self.notice = Some(match self.project.save() {
             Ok(()) => Notice::info({
                 self.dirty = false;
@@ -1776,6 +2068,9 @@ impl App {
         // Taken before the project is replaced, so the same rule that governs
         // an agent's tool call governs a text editor in another window.
         let before = self.variant_fingerprint();
+        // A deliberate reload can discard unsaved edits; keep the state that
+        // existed before reading disk, even if the editor was still engaged.
+        self.checkpoint("before disk reload");
 
         match Project::open(&path) {
             Ok(project) => {
@@ -1796,6 +2091,7 @@ impl App {
                         .as_str(),
                 );
                 self.absorb_change(before);
+                self.checkpoint("reloaded from disk");
                 self.notice = Some(Notice::info(format!("reloaded {}", path.display())));
             }
             // Reported, not fatal. A half-written file is a normal thing to
@@ -2542,10 +2838,16 @@ impl App {
     /// Close whatever modal is open.
     pub fn close_modal(&mut self) {
         self.modal = None;
+        if self.modal_started.take().is_some() {
+            self.checkpoint("edited project details");
+        }
     }
 
     /// Apply a keypress to the modal, which owns every key while it is open.
     pub fn modal_key(&mut self, key: KeyEvent) {
+        if self.modal_started.is_none() && self.modal.is_some() {
+            self.modal_started = self.project.to_svg().ok();
+        }
         match self.modal.take() {
             Some(Modal::Variants(mut editor)) => {
                 if editor.key(key, &mut self.project) {
@@ -2592,6 +2894,9 @@ impl App {
                 }
             }
             None => {}
+        }
+        if self.modal.is_none() && self.modal_started.take().is_some() {
+            self.checkpoint("edited project details");
         }
     }
 
@@ -2770,6 +3075,158 @@ mod tests {
 
     fn app() -> App {
         App::new(fixtures::project(), "blocks")
+    }
+
+    #[test]
+    fn a_completed_description_edit_is_one_iteration_and_restore_is_an_unsaved_new_one() {
+        let mut app = app();
+        let original = app.project.to_svg().unwrap();
+        app.engage_editor();
+        app.edit_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.edit_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert_eq!(
+            app.history.entries().len(),
+            1,
+            "individual keystrokes are not iterations"
+        );
+        app.disengage_editor();
+        assert_eq!(app.history.entries().len(), 2);
+        app.previous_iteration();
+        assert_eq!(app.display_source(), original);
+        app.review_iteration(Decision::Rejected);
+        assert_eq!(app.history_selected().unwrap().decision, Decision::Rejected);
+        let edited = app.project.to_svg().unwrap();
+        app.restore_iteration();
+        assert_eq!(app.project.to_svg().unwrap(), original);
+        assert_ne!(edited, original);
+        assert!(app.is_dirty());
+        assert_eq!(app.history.entries().len(), 3);
+        assert_eq!(app.history.entries()[0].decision, Decision::Rejected);
+        assert!(!app.history.is_browsing());
+    }
+
+    #[test]
+    fn an_agent_turn_with_multiple_mutations_has_one_reviewable_candidate() {
+        let mut app = app();
+        app.next_workflow_kind();
+        app.turn_start = app.transcript.entries().len();
+        app.transcript.push_user("make the mark blue".into());
+        app.project.metadata_mut().description = Some("blue mark".into());
+        app.note_agent_mutation("set_description");
+        app.project.metadata_mut().primary = Some("icon".into());
+        app.note_agent_mutation("write_svg");
+        assert_eq!(app.history.entries().len(), 1);
+        app.next_phase();
+        app.transcript
+            .apply(crate::acp::AgentUpdate::Message("Done".into()));
+        app.transcript.apply(crate::acp::AgentUpdate::Idle);
+        app.finish_agent_turn();
+        assert_eq!(app.history.entries().len(), 2);
+        let origin = &app.history.entries()[1].origin;
+        assert!(origin.contains("make the mark blue"), "{origin}");
+        assert!(origin.contains("set_description"), "{origin}");
+        assert!(origin.contains("write_svg"), "{origin}");
+        assert!(origin.contains("Done"), "{origin}");
+        assert_eq!(
+            app.history.entries()[1].phase,
+            Some(crate::workflow::Phase::Construct)
+        );
+    }
+
+    #[test]
+    fn restoring_the_on_disk_baseline_does_not_claim_an_unsaved_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("logo.svg");
+        let mut project = Project::from_source(path, fixtures::PROJECT.to_owned()).unwrap();
+        project.save().unwrap();
+        let mut app = App::new(project, "blocks");
+        app.set_draft("temporary edit");
+        assert!(app.is_dirty());
+        app.previous_iteration();
+        app.restore_iteration();
+        assert!(!app.is_dirty());
+        assert_eq!(app.history.entries().len(), 3);
+    }
+
+    #[test]
+    fn restoring_a_candidate_returns_to_the_variant_it_showed() {
+        let mut app = app();
+        assert_eq!(app.current_variant().as_deref(), Some("icon"));
+        app.next_tab();
+        assert_eq!(app.current_variant().as_deref(), Some("wordmark"));
+        app.set_draft("another description");
+        app.previous_iteration();
+        app.restore_iteration();
+        assert_eq!(app.current_variant().as_deref(), Some("icon"));
+    }
+
+    #[test]
+    fn review_cannot_approve_unfinished_live_edits_or_restore_while_an_agent_is_writing() {
+        let mut app = app();
+        app.set_draft("first completed edit");
+        app.project.metadata_mut().description = Some("still changing".into());
+        app.review_iteration(Decision::Approved);
+        assert_eq!(
+            app.history.entries().back().unwrap().decision,
+            Decision::Pending
+        );
+        app.previous_iteration();
+        app.transcript.push_user("another turn".into());
+        let before = app.project.to_svg().unwrap();
+        app.restore_iteration();
+        assert_eq!(app.project.to_svg().unwrap(), before);
+    }
+
+    #[test]
+    fn browsing_a_failed_snapshot_shows_its_error_without_leaking_live_comparison_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project =
+            Project::from_source(dir.path().join("logo.svg"), fixtures::PROJECT.to_owned())
+                .unwrap();
+        project
+            .metadata_mut()
+            .references
+            .push(Reference::new("gone.png", ReferenceKind::Source));
+        let mut app = App::new(project, "blocks");
+        app.history.wait();
+        app.set_draft("a later candidate");
+        app.previous_iteration();
+        assert!(app.display_has_source());
+        assert!(app.display_error().unwrap().contains("gone.png"));
+        app.cycle_evidence();
+        assert_eq!(app.evidence_view(), EvidenceView::Reference);
+        app.latest_iteration();
+        assert!(
+            !app.display_has_source(),
+            "an unset live workflow does not infer a comparison"
+        );
+        assert!(
+            app.display_error().is_none(),
+            "old errors belong to the old candidate"
+        );
+    }
+
+    #[test]
+    fn restoring_a_render_candidate_preserves_its_named_render_context() {
+        let mut app = app();
+        app.toggle_mode();
+        app.next_tab();
+        assert_eq!(app.preview_spec().unwrap().name, "banner");
+        app.set_draft("first candidate");
+        app.previous_tab();
+        app.set_draft("second candidate");
+        app.previous_iteration();
+        assert_eq!(
+            app.history_selected().unwrap().spec.as_ref().unwrap().name,
+            "banner"
+        );
+        app.restore_iteration();
+        assert_eq!(app.mode(), Mode::Renders);
+        assert_eq!(app.preview_spec().unwrap().name, "banner");
+        assert_eq!(
+            app.project.metadata().description.as_deref(),
+            Some("first candidate")
+        );
     }
 
     #[test]

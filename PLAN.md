@@ -378,7 +378,7 @@ Toolchain, docs, release.
 - [x] Define workflow-first workspace information architecture — #33.
 - [x] Build the workflow and comparison workspace — #34.
 - [x] Rework agent interaction around workflow actions — #35.
-- [ ] Add iteration history and visual review — #36.
+- [x] Add iteration history and visual review — #36.
 - [ ] Define Shaipe capability and skill packaging — #38.
 - [ ] Make the Shaipe workflow consumable headlessly outside the TUI — #39.
 - [ ] Add reusable skills for OpenCode, Pi and generic harnesses — #40.
@@ -397,4 +397,4 @@ Toolchain, docs, release.
 - [x] Persist the project description independently from agent conversation history, so a new session can resume from durable intent — #59.
 - [x] Rework the agent interaction around an accessible chat workspace, transient instructions and visible tool activity — #35.
 - [x] Build the workflow and comparison workspace only after the interaction model is clear — #34.
-- [ ] Add iteration history and visual review so the user can compare, revisit and refine outputs — #36.
+- [x] Add iteration history and visual review so the user can compare, revisit and refine outputs — #36.
