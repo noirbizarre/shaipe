@@ -97,10 +97,21 @@ fn prepare(project: &Project, source: &Path, variant: Option<String>) -> Result<
     let path = project.resolve(source);
     let bytes = std::fs::read(&path)
         .map_err(|error| format!("cannot read source {}: {error}", path.display()))?;
+    prepare_bytes(project, source, &bytes, variant)
+}
+
+/// Compute evidence against frozen reference bytes for a historical candidate.
+pub(crate) fn prepare_bytes(
+    project: &Project,
+    source: &Path,
+    bytes: &[u8],
+    variant: Option<String>,
+) -> Result<Evidence, String> {
+    let path = project.resolve(source);
     // Use the analysis decoder before rendering: it rejects unsupported or
     // empty rasters and supplies the exact comparison canvas dimensions.
-    let probe = crate::analysis::classify(&path, &bytes).map_err(|error| error.to_string())?;
-    let decoded = image::load_from_memory(&bytes)
+    let probe = crate::analysis::classify(&path, bytes).map_err(|error| error.to_string())?;
+    let decoded = image::load_from_memory(bytes)
         .map_err(|error| format!("cannot decode {}: {error}", path.display()))?
         .to_rgba8();
     let reference = Image::from_rgba(decoded.width(), decoded.height(), decoded.into_raw());
@@ -129,7 +140,7 @@ fn prepare(project: &Project, source: &Path, variant: Option<String>) -> Result<
             let asset = renderer.render(&spec).map_err(|error| error.to_string())?;
             let current = Image::from_png(&asset.bytes).map_err(|error| error.to_string())?;
             let label = PathBuf::from(format!("<{variant} render>"));
-            let (report, images) = compare::compare(&path, &bytes, &label, &asset.bytes)
+            let (report, images) = compare::compare(&path, bytes, &label, &asset.bytes)
                 .map_err(|error| error.to_string())?;
             Ok::<_, String>((current, report, images))
         })();

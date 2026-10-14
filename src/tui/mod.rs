@@ -22,6 +22,7 @@
 
 pub mod app;
 mod evidence_worker;
+mod history;
 mod markdown;
 pub mod modal;
 pub mod panes;
@@ -321,7 +322,7 @@ async fn event_loop(
     let mut ticking = IDLE_TICK;
 
     while !app.should_quit {
-        let arrived = app.collect_preview() | app.collect_evidence();
+        let arrived = app.collect_preview() | app.collect_evidence() | app.collect_history();
         app.update_preview();
         app.update_evidence();
 
@@ -395,6 +396,10 @@ async fn event_loop(
                 // between frames, which is the only moment mutating the
                 // project is safe — and the reason there is no lock anywhere
                 // in the library. See ADR 009.
+                let tool_name = match &command {
+                    SessionCommand::Call { name, .. } => Some(name.clone()),
+                    SessionCommand::List { .. } => None,
+                };
                 let applied = tools::session::serve(command, &registry, &mut app.project);
 
                 if applied.mutated {
@@ -407,6 +412,9 @@ async fn event_loop(
                     // The prompt may have changed with it, and the editor's
                     // buffer is a copy.
                     app.reload_prompt();
+                    if let Some(name) = tool_name {
+                        app.note_agent_mutation(&name);
+                    }
                 }
             }
 
@@ -434,7 +442,11 @@ async fn event_loop(
                 // still busy — so `Idle`, the update that ends a turn, latched
                 // `Busy` and nothing ever cleared it. The spinner span and the
                 // title read "working…" for the rest of the session.
+                let idle = matches!(update, AgentUpdate::Idle | AgentUpdate::Failed(_));
                 app.transcript.apply(update);
+                if idle {
+                    app.finish_agent_turn();
+                }
 
                 app.set_agent(said.unwrap_or(if app.transcript.is_busy() {
                     AgentStatus::Busy
@@ -783,6 +795,12 @@ fn handle(app: &mut App, key: KeyEvent) {
         KeyCode::Char('s') => app.toggle_view(),
         KeyCode::Char('m') => app.toggle_mode(),
         KeyCode::Char('c') => app.cycle_evidence(),
+        KeyCode::Char('{') => app.previous_iteration(),
+        KeyCode::Char('}') => app.next_iteration(),
+        KeyCode::Char('H') => app.latest_iteration(),
+        KeyCode::Char('A') => app.review_iteration(history::Decision::Approved),
+        KeyCode::Char('J') => app.review_iteration(history::Decision::Rejected),
+        KeyCode::Char('U') => app.restore_iteration(),
         KeyCode::Char('W') => app.next_workflow_kind(),
         KeyCode::Char(',') => app.previous_phase(),
         KeyCode::Char('.') => app.next_phase(),
@@ -823,6 +841,17 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
     if let Some(button) = app.button_at(column, row) {
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
             press(app, button);
+        }
+        return;
+    }
+    if let Some(action) = app.history_button_at(column, row) {
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            // A click on a review control ends an edit gesture first, so a
+            // restore cannot discard half-typed description or palette work.
+            if app.is_editing() {
+                app.disengage_editor();
+            }
+            app.history_action(action);
         }
         return;
     }
