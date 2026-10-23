@@ -21,12 +21,14 @@
 //! rather than panes, and `m` swaps which of the two the tabs list.
 
 pub mod app;
+mod clipboard;
 mod evidence_worker;
 mod history;
 mod markdown;
 pub mod modal;
 pub mod panes;
 pub mod render_worker;
+mod selection;
 pub mod toolbar;
 pub mod transcript;
 mod ui;
@@ -40,8 +42,9 @@ use futures::{FutureExt as _, StreamExt as _};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
-    KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -96,12 +99,15 @@ pub async fn run(
     scale: Option<Scale>,
     verbose: u8,
     agent: AgentChoice,
+    // Whether the workspace starts with the mouse. `false` leaves it to the
+    // terminal, whose own selection then works; `F2` changes it either way.
+    mouse: bool,
 ) -> Result<()> {
     // Held for the whole session: a warning printed over the alternate screen
     // corrupts it and cannot be scrolled back to.
     let _quiet = crate::logging::suppress();
 
-    let mut terminal = enter()?;
+    let mut terminal = enter(mouse)?;
 
     // After the alternate screen is up and before any event is read: the
     // capability query writes to stdout and reads the reply from stdin, and
@@ -112,6 +118,7 @@ pub async fn run(
     }
     let mut app = App::new(project, preview.name());
     app.verbose = verbose;
+    app.set_mouse_captured(mouse);
     if new_project {
         app.mark_as_new_project();
     }
@@ -220,14 +227,43 @@ pub async fn run(
 /// Separate from [`enter`] because the terminal is also given up and taken
 /// back mid-session, when the prompt is handed to `$EDITOR`. One definition of
 /// "the state the workspace needs" rather than two that can drift.
-fn grab(out: &mut impl io::Write) -> Result<()> {
+///
+/// `mouse` is whether the workspace takes the mouse. Capturing it is what makes
+/// panes clickable and dividers draggable, and it costs the terminal's own text
+/// selection — which is why the workspace selects and copies for itself, and
+/// why `F2` can give the mouse back.
+///
+/// Bracketed paste is always on: without it a paste arrives as keystrokes, and
+/// is read as commands. See [`App::paste`].
+fn grab(out: &mut impl io::Write, mouse: bool) -> Result<()> {
     let io_error = |source| Error::io("the terminal", source);
 
     enable_raw_mode().map_err(io_error)?;
-    // Mouse capture takes the terminal's own text selection with it. That is
-    // the accepted trade for a clickable interface, and every terminal worth
-    // using offers Shift-drag to select through it anyway.
-    execute!(out, EnterAlternateScreen, EnableMouseCapture, cursor::Hide).map_err(io_error)
+    enter_screen(out, mouse)
+}
+
+/// The escape sequences half of [`grab`], which a test can read without a tty.
+fn enter_screen(out: &mut impl io::Write, mouse: bool) -> Result<()> {
+    execute!(
+        out,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        cursor::Hide
+    )
+    .map_err(|source| Error::io("the terminal", source))?;
+    set_mouse(out, mouse)
+}
+
+/// Take the mouse from the terminal, or give it back.
+fn set_mouse(out: &mut impl io::Write, captured: bool) -> Result<()> {
+    let io_error = |source| Error::io("the terminal", source);
+
+    if captured {
+        execute!(out, EnableMouseCapture)
+    } else {
+        execute!(out, DisableMouseCapture)
+    }
+    .map_err(io_error)
 }
 
 /// Give the terminal back, exactly as it was found.
@@ -235,7 +271,21 @@ fn release(out: &mut impl io::Write) -> Result<()> {
     let io_error = |source| Error::io("the terminal", source);
 
     disable_raw_mode().map_err(io_error)?;
-    execute!(out, DisableMouseCapture, LeaveAlternateScreen, cursor::Show).map_err(io_error)
+    leave_screen(out)
+}
+
+/// The escape sequences half of [`release`].
+fn leave_screen(out: &mut impl io::Write) -> Result<()> {
+    // Always, whether or not the mouse was captured: disabling what was never
+    // enabled is harmless, and a terminal left capturing is not.
+    execute!(
+        out,
+        DisableMouseCapture,
+        DisableBracketedPaste,
+        LeaveAlternateScreen,
+        cursor::Show
+    )
+    .map_err(|source| Error::io("the terminal", source))
 }
 
 /// A terminal over the standard output, which [`grab`] must already have taken.
@@ -248,8 +298,8 @@ fn fresh_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
 }
 
 /// Put the terminal into the state the workspace needs.
-fn enter() -> Result<Terminal<CrosstermBackend<Stdout>>> {
-    grab(&mut io::stdout())?;
+fn enter(mouse: bool) -> Result<Terminal<CrosstermBackend<Stdout>>> {
+    grab(&mut io::stdout(), mouse)?;
     fresh_terminal()
 }
 
@@ -320,6 +370,9 @@ async fn event_loop(
     let mut ticks = tokio::time::interval(IDLE_TICK);
     ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut ticking = IDLE_TICK;
+    // Whether the terminal is currently sending the mouse to us, which is what
+    // `app` wants it to be only until `F2` is pressed.
+    let mut captured = app.mouse_captured();
 
     while !app.should_quit {
         let arrived = app.collect_preview() | app.collect_evidence() | app.collect_history();
@@ -473,6 +526,27 @@ async fn event_loop(
             }
         }
 
+        // What the events asked of the terminal itself. Out here because the
+        // state has no terminal to ask.
+        if let Some(text) = app.take_clipboard() {
+            app.notice = Some(match clipboard::write(terminal.backend_mut(), &text) {
+                Ok(copied) => app::Notice::info(format!(
+                    "copied {} characters{}",
+                    copied.characters,
+                    if copied.truncated {
+                        " (cut to fit)"
+                    } else {
+                        ""
+                    }
+                )),
+                Err(error) => app::Notice::warning(format!("could not copy: {error}")),
+            });
+        }
+        if app.mouse_captured() != captured {
+            captured = app.mouse_captured();
+            set_mouse(terminal.backend_mut(), captured)?;
+        }
+
         // Anything a keypress asked the agent for. Done out here rather than
         // in the key handler so that key handling stays synchronous, and
         // testable without a runtime.
@@ -581,6 +655,11 @@ fn apply(app: &mut App, event: Event) {
         // every selection two steps at a time.
         Event::Key(key) if key.kind == KeyEventKind::Press => handle(app, key),
         Event::Mouse(mouse) => handle_mouse(app, mouse),
+        // Whole, and not as the keys it is made of — see `App::paste`.
+        Event::Paste(text) => app.paste(&text),
+        // The region a selection was bounded by has moved, and what it
+        // highlights is no longer where the text is.
+        Event::Resize(..) => app.clear_selection(),
         _ => {}
     }
 }
@@ -640,7 +719,7 @@ fn open_editor(
     } else {
         app.draft()
     };
-    match edit_externally(&draft) {
+    match edit_externally(&draft, app.mouse_captured()) {
         Ok(Some(edited)) if app.focus == Focus::Message => app.set_message_draft(&edited),
         Ok(Some(edited)) => app.set_draft(&edited),
         // The editor exited non-zero, which is how every editor worth the name
@@ -673,7 +752,7 @@ fn open_editor(
 /// whatever happens, including when the editor cannot be started at all: a
 /// workspace that returns to a raw-mode terminal with no alternate screen is
 /// unusable, and that must not depend on the editor behaving.
-fn edit_externally(text: &str) -> Result<Option<String>> {
+fn edit_externally(text: &str, mouse: bool) -> Result<Option<String>> {
     let command = editor_command()?;
 
     // `.md` so the editor reaches for prose mode and spell checking rather
@@ -691,7 +770,7 @@ fn edit_externally(text: &str) -> Result<Option<String>> {
         .args(&command[1..])
         .arg(&path)
         .status();
-    let regrabbed = grab(&mut io::stdout());
+    let regrabbed = grab(&mut io::stdout(), mouse);
 
     // The editor is likely to have asked the terminal a question on its way
     // out — vim asks for the background colour — and the reply arrives on
@@ -726,6 +805,17 @@ fn drain_events() -> Result<()> {
 ///
 /// Separated from the loop so it can be tested without a terminal.
 fn handle(app: &mut App, key: KeyEvent) {
+    // First, and whatever else is open: the way out of a workspace that has
+    // the mouse is worth most when something is in the way, and a modal or an
+    // editor is exactly what is in the way of a person trying to select text.
+    if key.code == KeyCode::F(2) {
+        app.toggle_mouse();
+        return;
+    }
+
+    // What was highlighted is only meaningful until the next thing happens.
+    app.clear_selection();
+
     // A modal owns every key while it is open, including `q`. Anything else
     // would act on a workspace nobody can see.
     if app.modal().is_some() {
@@ -835,6 +925,12 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
         return;
     }
 
+    // A new press ends the last selection, wherever it lands — a click on a
+    // button included, which must not leave a highlight behind it.
+    if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+        app.clear_selection();
+    }
+
     // The toolbar is outside every pane's rectangle, so it is asked before
     // them rather than after — and it works whatever the panes are doing,
     // including while one of them is being edited.
@@ -874,15 +970,23 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
         return;
     }
 
-    // While editing, the prompt pane's rectangle belongs to the editor. Only
-    // the wheel does anything with it — the editor has no way to place the
-    // cursor at a screen cell — but a click there must still not be taken as
-    // a click on a pane. A click anywhere else is a statement that the prompt
-    // is no longer what the user is working on, so the editor is let go of
-    // before that click is handled as it normally would be.
+    // While editing, the prompt pane's rectangle belongs to the editor. The
+    // wheel scrolls it and a drag selects text in it — the editor has no way to
+    // place the cursor at a screen cell, so there is nothing else a pointer
+    // could do there — but a click must still not be taken as a click on a
+    // pane. A click anywhere else is a statement that the prompt is no longer
+    // what the user is working on, so the editor is let go of before that
+    // click is handled as it normally would be.
     if app.is_editing_prompt() || app.is_editing_message() {
         if app.pane_at(column, row) == Some(app.focus) {
-            app.edit_mouse(mouse);
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => app.begin_selection(column, row),
+                MouseEventKind::Drag(MouseButton::Left) => app.extend_selection(column, row),
+                MouseEventKind::Up(MouseButton::Left) => {
+                    app.finish_selection();
+                }
+                _ => app.edit_mouse(mouse),
+            }
             return;
         }
         app.disengage_editor();
@@ -897,6 +1001,10 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                 app.begin_resize(divider);
                 return;
             }
+
+            // Before the pane is looked up, because the source view is text
+            // that can be selected and is not a pane.
+            app.begin_selection(column, row);
 
             let Some(focus) = app.pane_at(column, row) else {
                 return;
@@ -922,9 +1030,12 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                 }),
             ),
             Some(app::Divider::Chat) => app.resize_chat(column),
-            None => {}
+            None => app.extend_selection(column, row),
         },
-        MouseEventKind::Up(MouseButton::Left) => app.end_resize(),
+        MouseEventKind::Up(MouseButton::Left) => {
+            app.end_resize();
+            app.finish_selection();
+        }
         // The pane under the pointer scrolls, not the focused one: reaching
         // for the wheel over a list is an unambiguous statement about which
         // list is meant.
@@ -2358,5 +2469,291 @@ mod tests {
             KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE),
         );
         assert_eq!((app.focus, app.tab(), app.should_quit), before);
+    }
+
+    /// Draw a frame, which is what records areas and takes selected text.
+    fn redraw(app: &mut App) {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        let mut preview = Preview::detect(Backend::Blocks);
+        terminal
+            .draw(|frame| ui::draw(frame, app, &mut preview))
+            .unwrap();
+    }
+
+    /// Press, drag to and release the left button, redrawing as the loop does.
+    fn drag(app: &mut App, from: (u16, u16), to: (u16, u16)) {
+        for (kind, (column, row)) in [
+            (MouseEventKind::Down(MouseButton::Left), from),
+            (MouseEventKind::Drag(MouseButton::Left), to),
+            (MouseEventKind::Up(MouseButton::Left), to),
+        ] {
+            wheel(app, kind, column, row);
+            redraw(app);
+        }
+    }
+
+    #[test]
+    fn grabbing_the_terminal_enables_bracketed_paste_and_releasing_it_disables_it() {
+        let mut taken = Vec::new();
+        enter_screen(&mut taken, true).unwrap();
+        let taken = String::from_utf8(taken).unwrap();
+
+        let mut given = Vec::new();
+        leave_screen(&mut given).unwrap();
+        let given = String::from_utf8(given).unwrap();
+
+        assert!(taken.contains("\x1b[?2004h"), "{taken:?}");
+        assert!(taken.contains("\x1b[?1000h"), "{taken:?}");
+        assert!(given.contains("\x1b[?2004l"), "{given:?}");
+        assert!(given.contains("\x1b[?1000l"), "{given:?}");
+    }
+
+    #[test]
+    fn starting_without_the_mouse_never_captures_it() {
+        let mut taken = Vec::new();
+        enter_screen(&mut taken, false).unwrap();
+        let taken = String::from_utf8(taken).unwrap();
+
+        assert!(!taken.contains("\x1b[?1000h"), "{taken:?}");
+        assert!(taken.contains("\x1b[?2004h"), "paste must not depend on it");
+    }
+
+    #[test]
+    fn f2_releases_the_mouse_and_takes_it_back() {
+        let mut app = app();
+        assert!(app.mouse_captured());
+
+        press(&mut app, KeyCode::F(2));
+        assert!(!app.mouse_captured());
+        assert!(app.notice.is_some(), "it should say what happened");
+
+        press(&mut app, KeyCode::F(2));
+        assert!(app.mouse_captured());
+    }
+
+    #[test]
+    fn f2_works_from_inside_an_editor_and_does_not_type_into_it() {
+        let mut app = engaged();
+
+        press(&mut app, KeyCode::F(2));
+
+        assert!(!app.mouse_captured());
+        assert!(app.is_editing(), "it should not leave the editor");
+        assert_eq!(app.draft(), "");
+    }
+
+    #[test]
+    fn a_paste_into_the_description_editor_is_inserted_whole_and_committed_once() {
+        let mut app = engaged();
+
+        apply(&mut app, Event::Paste("one\r\ntwo\rthree".to_owned()));
+
+        assert_eq!(app.draft(), "one\ntwo\nthree");
+        assert_eq!(
+            app.project.metadata().description.as_deref(),
+            Some("one\ntwo\nthree")
+        );
+        assert!(app.is_dirty());
+        assert_eq!(
+            app.history.entries().len(),
+            1,
+            "a paste is not a candidate per character"
+        );
+    }
+
+    #[test]
+    fn a_paste_containing_escape_or_tab_does_not_leave_or_change_the_pane() {
+        let mut app = engaged();
+
+        apply(&mut app, Event::Paste("a\x1bb\tc".to_owned()));
+
+        assert!(app.is_editing());
+        assert_eq!(app.focus, Focus::Prompt);
+        assert_eq!(app.draft(), "a\x1bb\tc");
+    }
+
+    #[test]
+    fn a_paste_into_the_message_editor_does_not_touch_the_description() {
+        let mut app = app();
+        let before = app.project.metadata().description.clone();
+        app.focus = Focus::Message;
+        press(&mut app, KeyCode::Enter);
+
+        apply(&mut app, Event::Paste("hello agent".to_owned()));
+
+        assert_eq!(app.message_draft(), "hello agent");
+        assert_eq!(app.project.metadata().description, before);
+        assert!(!app.is_dirty());
+    }
+
+    #[test]
+    fn a_paste_outside_an_editor_does_not_trigger_a_shortcut() {
+        let mut app = app();
+        let before = (app.focus, app.mode(), app.view(), app.chat_open());
+
+        // Every one of these is a shortcut when typed.
+        apply(&mut app, Event::Paste("qsmtxrW\n".to_owned()));
+
+        assert!(!app.should_quit);
+        assert!(!app.is_editing());
+        assert!(app.modal().is_none());
+        assert_eq!((app.focus, app.mode(), app.view(), app.chat_open()), before);
+    }
+
+    #[test]
+    fn a_paste_into_a_palette_field_is_typed_into_it() {
+        let mut app = app();
+        app.focus = Focus::Palette;
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.editing(), Some(Focus::Palette));
+        // The field opens holding the colour's current value.
+        for _ in 0..16 {
+            press(&mut app, KeyCode::Backspace);
+        }
+
+        apply(&mut app, Event::Paste("#ff0000\n".to_owned()));
+
+        assert_eq!(
+            app.project.metadata().palette.colours()[0].value,
+            "#ff0000".parse::<crate::project::Rgba>().unwrap(),
+            "the newline must not have moved to the next field"
+        );
+        assert!(app.is_editing());
+    }
+
+    #[test]
+    fn a_paste_into_a_modal_goes_to_its_field_and_does_not_close_it() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('x'));
+        assert!(app.modal().is_some());
+
+        apply(&mut app, Event::Paste("a\nb".to_owned()));
+
+        assert!(app.modal().is_some(), "a pasted newline is not enter");
+    }
+
+    #[test]
+    fn copying_in_the_editor_also_reaches_the_system_clipboard() {
+        let mut app = engaged();
+        type_text(&mut app, "hello world");
+        handle(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
+        handle(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
+
+        control(&mut app, KeyCode::Char('c'));
+
+        assert_eq!(app.take_clipboard().as_deref(), Some("ld"));
+        assert_eq!(app.take_clipboard(), None, "it is taken once");
+    }
+
+    #[test]
+    fn copying_with_nothing_selected_does_not_resend_an_old_yank() {
+        let mut app = engaged();
+        type_text(&mut app, "hello world");
+        handle(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
+        control(&mut app, KeyCode::Char('c'));
+        assert!(app.take_clipboard().is_some());
+
+        control(&mut app, KeyCode::Char('c'));
+
+        assert_eq!(app.take_clipboard(), None);
+    }
+
+    #[test]
+    fn dragging_across_a_pane_copies_the_text_under_it_without_the_border() {
+        let mut app = laid_out();
+        app.set_draft("hello world");
+        redraw(&mut app);
+        let pane = app.area(Focus::Prompt);
+
+        // From the first cell inside the border to the fifth.
+        drag(&mut app, (pane.x + 1, pane.y + 1), (pane.x + 5, pane.y + 1));
+
+        assert_eq!(app.take_clipboard().as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn dragging_past_the_edge_of_a_pane_stays_inside_it() {
+        let mut app = laid_out();
+        app.set_draft("hello world");
+        redraw(&mut app);
+        let pane = app.area(Focus::Prompt);
+
+        drag(&mut app, (pane.x + 1, pane.y + 1), (99, pane.y + 1));
+
+        // The other columns' text is not on the same selection, and nor is
+        // this pane's border.
+        assert_eq!(app.take_clipboard().as_deref(), Some("hello world"));
+    }
+
+    #[test]
+    fn a_click_without_a_drag_selects_nothing_and_copies_nothing() {
+        let mut app = laid_out();
+        app.set_draft("hello world");
+        redraw(&mut app);
+        let pane = app.area(Focus::Prompt);
+
+        drag(&mut app, (pane.x + 2, pane.y + 1), (pane.x + 2, pane.y + 1));
+
+        assert_eq!(app.take_clipboard(), None);
+        assert!(app.text_selection().is_none());
+    }
+
+    #[test]
+    fn dragging_inside_an_editor_selects_instead_of_being_swallowed() {
+        let mut app = engaged();
+        // Already engaged, so it is the text area that draws this.
+        app.set_draft("hello world");
+        redraw(&mut app);
+        let pane = app.area(Focus::Prompt);
+
+        drag(&mut app, (pane.x + 1, pane.y + 1), (pane.x + 5, pane.y + 1));
+
+        assert!(app.is_editing(), "a drag is not a click elsewhere");
+        assert_eq!(app.take_clipboard().as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn a_key_clears_the_selection() {
+        let mut app = laid_out();
+        app.set_draft("hello world");
+        redraw(&mut app);
+        let pane = app.area(Focus::Prompt);
+        drag(&mut app, (pane.x + 1, pane.y + 1), (pane.x + 5, pane.y + 1));
+        assert!(app.text_selection().is_some());
+
+        press(&mut app, KeyCode::Char('z'));
+
+        assert!(app.text_selection().is_none());
+    }
+
+    #[test]
+    fn dragging_a_divider_still_resizes_and_selects_nothing() {
+        let mut app = laid_out();
+        let divider = (0..100)
+            .find_map(|x| app.divider_at(x, 5).map(|_| x))
+            .expect("the layout has a divider");
+        let before = app.column_width;
+
+        drag(&mut app, (divider, 5), (divider + 6, 5));
+
+        assert_ne!(app.column_width, before, "the divider should have moved");
+        assert_eq!(app.take_clipboard(), None);
+    }
+
+    #[test]
+    fn releasing_the_mouse_ends_a_selection_in_progress() {
+        let mut app = laid_out();
+        let pane = app.area(Focus::Prompt);
+        wheel(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            pane.x + 1,
+            pane.y + 1,
+        );
+
+        press(&mut app, KeyCode::F(2));
+
+        assert!(app.text_selection().is_none());
     }
 }

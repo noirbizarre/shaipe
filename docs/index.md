@@ -137,7 +137,10 @@ the references pane has no in-place editor, only the `x` table. `e` opens the
 focused description or message in `$VISUAL` or `$EDITOR`, and `ctrl-s` saves; the status line marks
 unsaved work and quitting with any asks first. The mouse works: click a
 button, a tab or a pane, double-click to edit, wheel to scroll, drag the
-divider to resize, and double-click a specification's tab to export it.
+divider to resize, and double-click a specification's tab to export it. Dragging
+inside a pane selects text and copies it to the clipboard (OSC 52, so it works
+over SSH); `F2` hands the mouse to the terminal for its own selection, and
+pasting is inserted whole into the editor that has the keyboard.
 
 ```bash
 shaipe doctor

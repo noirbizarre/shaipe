@@ -398,3 +398,6 @@ Toolchain, docs, release.
 - [x] Rework the agent interaction around an accessible chat workspace, transient instructions and visible tool activity — #35.
 - [x] Build the workflow and comparison workspace only after the interaction model is clear — #34.
 - [x] Add iteration history and visual review so the user can compare, revisit and refine outputs — #36.
+- [x] TUI: paste is inserted whole through bracketed paste instead of being read as keystrokes — ADR-032.
+- [x] TUI: drag inside a pane to select text, copied to the system clipboard through OSC 52 — ADR-032.
+- [x] TUI: `F2` and `--no-mouse` hand the mouse to the terminal for its own selection — ADR-032.
