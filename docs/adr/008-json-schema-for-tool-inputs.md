@@ -104,3 +104,10 @@ moving away from the consumer.
 - The passage quoted in Context is a paraphrase of ADR-004, not a verbatim
   quotation: ADR-004 says a tool has "a parameter list" and does not use those
   words.
+- A schema has no `oneOf`, `anyOf`, `allOf`, `not`, `enum` or `if` at its top
+  level. Anthropic's API rejects the tool (`input_schema does not support
+  oneOf, allOf, or anyOf at the top level`), and one rejected tool fails the
+  agent's whole turn, not just calls to that tool. `set_font` once expressed
+  "exactly one of `src` or `href`" that way. Such a rule now lives in the
+  description and in the tool's own validation, which returns a recoverable
+  error; `every_tool_publishes_a_schema_a_model_can_read` enforces it.

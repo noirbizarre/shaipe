@@ -357,7 +357,10 @@ mod tests {
             .find(|tool| tool.name == "set_font")
             .unwrap();
         assert_eq!(tool.input_schema["required"], json!(["family"]));
-        assert_eq!(tool.input_schema["oneOf"].as_array().unwrap().len(), 2);
+        // Anthropic refuses a top-level combinator; the rule is enforced by the call.
+        for keyword in ["oneOf", "anyOf", "allOf"] {
+            assert!(!tool.input_schema.contains_key(keyword), "{keyword}");
+        }
         for name in ["src", "href", "sha256"] {
             assert!(
                 tool.input_schema["properties"].get(name).is_some(),

@@ -311,6 +311,18 @@ mod tests {
                  model that invents one is told rather than ignored"
             );
 
+            // Anthropic's API refuses a tool whose input schema has a
+            // combinator at the top level, and one refused tool fails the
+            // agent's whole turn, not just that tool. A rule such as "exactly
+            // one of `a` or `b`" belongs in the description and in `call`.
+            for keyword in ["oneOf", "anyOf", "allOf", "not", "enum", "if"] {
+                assert!(
+                    schema.get(keyword).is_none(),
+                    "`{name}` has a top-level `{keyword}`, which Anthropic rejects: \
+                     state the rule in the description and validate it in `call`"
+                );
+            }
+
             let properties = schema["properties"].as_object().unwrap_or_else(|| {
                 panic!("`{name}` must list its properties, even if there are none")
             });
