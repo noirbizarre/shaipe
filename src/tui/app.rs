@@ -2754,6 +2754,11 @@ impl App {
     /// without `--model` having to say so again. Only on a change: the agent
     /// resends this list more than once a session, and re-saving the model
     /// already saved would just be a write that changed nothing.
+    ///
+    /// The `current` entry is taken to be the model *in use*, so the agent must
+    /// not report one it is about to leave: when a model was asked for at
+    /// startup, the first report already carries the outcome of that switch
+    /// (ADR 016's second update).
     pub fn set_models(&mut self, models: Vec<ModelChoice>) {
         let current_id = models
             .iter()

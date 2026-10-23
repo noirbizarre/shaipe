@@ -557,7 +557,19 @@ async fn connect(
                 // switch to has nothing to offer the `M` picker either.
                 let model = model_option(opened.config_options.as_deref());
 
-                if let Some(option) = model {
+                // Reported now only when there is no switch to wait for.
+                // With one, this list would mark the agent's *own default*
+                // current for as long as the switch takes, and the workspace
+                // would treat that as the model in use: it saved the default
+                // over the remembered choice, and opened the vision picker
+                // over a default without vision even though the remembered
+                // model — one with vision — was about to be applied. The
+                // picker then came up on every start, however well the
+                // choice had been remembered. So the one report is sent
+                // below, once the switch has an outcome.
+                if config.model.is_none()
+                    && let Some(option) = model
+                {
                     drop(
                         updates
                             .try_send(AgentUpdate::Models(model_choices(option))),
@@ -575,7 +587,10 @@ async fn connect(
                     // preference below — silence on failure would be worse
                     // than a session that quietly answers with the wrong
                     // model.
-                    let note = match model.and_then(|option| find_model_choice(option, wanted)) {
+                    let found = model.and_then(|option| find_model_choice(option, wanted));
+                    let mut switched = false;
+
+                    let note = match found {
                         Some(choice) => {
                             let request = SetSessionConfigOptionRequest::new(
                                 session.clone(),
@@ -588,23 +603,7 @@ async fn connect(
 
                             match cx.send_request(request).block_task().await {
                                 Ok(_) => {
-                                    // The `Models` sent above, right after
-                                    // `session/new`, still marks whatever was
-                                    // current *before* this switch — the same
-                                    // staleness `model_choices_after_switch`
-                                    // exists to fix for a switch made mid
-                                    // session. Without this, the status line
-                                    // and a picker opened straight away both
-                                    // showed the wrong model until the first
-                                    // one asked for afterwards.
-                                    if let Some(option) = model {
-                                        drop(updates.try_send(AgentUpdate::Models(
-                                            model_choices_after_switch(
-                                                option,
-                                                choice.value.0.as_ref(),
-                                            ),
-                                        )));
-                                    }
+                                    switched = true;
                                     None
                                 }
                                 Err(error) => Some(format!(
@@ -616,6 +615,17 @@ async fn connect(
                             "the agent does not offer a model named `{wanted}`"
                         )),
                     };
+
+                    // The one report, now that the switch has an outcome —
+                    // the agent's default if there was no switch to make or
+                    // it failed (then it really is what is in use), the
+                    // requested model if it took. Sent before the note so
+                    // the note lands after a list it can be read against.
+                    if let Some(option) = model {
+                        drop(updates.try_send(AgentUpdate::Models(models_after_startup(
+                            option, found, switched,
+                        ))));
+                    }
 
                     if let Some(note) = note {
                         drop(updates.try_send(AgentUpdate::Other(note)));
@@ -852,6 +862,23 @@ fn model_choices_after_switch(option: &SessionConfigOption, chosen: &str) -> Vec
             ..choice
         })
         .collect()
+}
+
+/// The one model list to report at startup when a model was asked for.
+///
+/// `switched` is whether the agent accepted the switch to `requested`. Only
+/// then is `requested` current; otherwise — it was not offered, or the agent
+/// refused it — the agent is still on its own default, and saying anything
+/// else would report a model nothing is using.
+fn models_after_startup(
+    option: &SessionConfigOption,
+    requested: Option<&SessionConfigSelectOption>,
+    switched: bool,
+) -> Vec<ModelChoice> {
+    match requested {
+        Some(choice) if switched => model_choices_after_switch(option, choice.value.0.as_ref()),
+        _ => model_choices(option),
+    }
 }
 
 /// Match a model requested by name against what the agent actually offers.
@@ -1467,6 +1494,44 @@ mod tests {
         );
         assert!(find_model_choice(&option, "claude opus 4.1").is_some());
         assert!(find_model_choice(&option, "gpt-5").is_none());
+    }
+
+    fn current_of(models: &[ModelChoice]) -> Vec<&str> {
+        models
+            .iter()
+            .filter(|model| model.current)
+            .map(|model| model.id.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn a_model_asked_for_at_startup_is_reported_current_once_the_switch_took() {
+        let option = model_selector("a", &[("a", "A"), ("b", "B")]);
+        let requested = find_model_choice(&option, "b");
+
+        let models = models_after_startup(&option, requested, true);
+
+        assert_eq!(current_of(&models), ["b"]);
+    }
+
+    #[test]
+    fn a_refused_switch_reports_the_agents_default_rather_than_the_model_asked_for() {
+        let option = model_selector("a", &[("a", "A"), ("b", "B")]);
+        let requested = find_model_choice(&option, "b");
+
+        let models = models_after_startup(&option, requested, false);
+
+        assert_eq!(current_of(&models), ["a"]);
+    }
+
+    #[test]
+    fn a_model_the_agent_does_not_offer_reports_the_agents_default() {
+        let option = model_selector("a", &[("a", "A"), ("b", "B")]);
+        let requested = find_model_choice(&option, "gone");
+
+        let models = models_after_startup(&option, requested, false);
+
+        assert_eq!(current_of(&models), ["a"]);
     }
 
     #[test]
