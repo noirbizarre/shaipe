@@ -1845,18 +1845,16 @@ impl Tool for SetFont {
                 (
                     "sha256",
                     string(
-                        "Optional expected SHA-256 for `href`: 64 lowercase hexadecimal characters. If omitted, Shaipe computes it from the download.",
+                        "Optional expected SHA-256 for `href` only (not valid with `src`): 64 lowercase hexadecimal characters. If omitted, Shaipe computes it from the download.",
                     ),
                 ),
             ],
             &["family"],
         );
-        // Put the source alternatives in the schema itself, so a client can
-        // discover the rule before the first rejected call.
-        schema["oneOf"] = json!([
-            { "required": ["src"], "not": { "anyOf": [{ "required": ["href"] }, { "required": ["sha256"] }] } },
-            { "required": ["href"], "not": { "required": ["src"] } },
-        ]);
+        // "Exactly one of `src` or `href`" is deliberately not a `oneOf`:
+        // Anthropic rejects a top-level `oneOf`/`anyOf`/`allOf`, which fails
+        // the agent's whole turn. The rule is in the description and the
+        // property text, and `call` refuses a violation with a recoverable error.
         schema["properties"]["sha256"]["pattern"] = json!("^[0-9a-f]{64}$");
         schema["properties"]["href"]["pattern"] = json!("^https?://");
         schema
