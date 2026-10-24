@@ -119,6 +119,29 @@ reason.
   in how it reports a switch — a small, independently useful fix, not a
   workaround kept local to this feature.
 
+## Update: one report at startup, after the switch
+
+The startup fix above still sent the list *twice* when a model was asked
+for: once right after `session/new`, marking the agent's own default
+current, and again after the switch. The first was wrong for as long as the
+switch took, and `App::set_models` acted on it: it saved the default over
+the remembered model, and `maybe_nudge_for_vision` opened the `M` picker
+over a default without vision even though the remembered model — one with
+vision — was about to be applied. The result was a picker on every start
+and a `settings.json` that was rewritten twice, while the choice itself had
+been remembered correctly all along.
+
+When a model is asked for, `src/acp/agent.rs` now sends exactly one report,
+once the switch has an outcome (`models_after_startup`): the requested model
+if the agent accepted it, the agent's default if it was not offered or was
+refused — the default then really is what is in use. With no model asked
+for, the list is still sent immediately. ADR-017's nudge is unchanged, and
+still fires for a model that is actually in use and lacks vision.
+
+A saved id the agent no longer offers still leaves the agent's default
+current, and `set_models` still saves it over the stale preference. That
+was already so and is deliberately left alone here.
+
 ## Update: a second file in the config directory
 
 "The crate's first use of `config_dir()`" was true when written. ADR-017's
