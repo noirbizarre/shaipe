@@ -254,7 +254,7 @@ crossterm = { version = "0.29.0", features = ["event-stream"] }
 # protocol *v1*, which is what every agent shipping today negotiates. Do not
 # enable `unstable_protocol_v2` — it is an unreleased draft, and turning it on
 # would make Shaipe speak a dialect nothing answers.
-agent-client-protocol = "2.0.0"
+agent-client-protocol = "3.4.0"
 
 # The MCP server, over stdio for a standalone session and over a socket for a
 # live workspace. `server` plus the two transports; no `macros` or `schemars`,
