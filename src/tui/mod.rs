@@ -2493,6 +2493,9 @@ mod tests {
         }
     }
 
+    // Unix only: crossterm drives these modes through the Win32 console API
+    // there, not escape sequences, and a console is not something CI has.
+    #[cfg(unix)]
     #[test]
     fn grabbing_the_terminal_enables_bracketed_paste_and_releasing_it_disables_it() {
         let mut taken = Vec::new();
@@ -2509,6 +2512,9 @@ mod tests {
         assert!(given.contains("\x1b[?1000l"), "{given:?}");
     }
 
+    // Unix only: crossterm drives these modes through the Win32 console API
+    // there, not escape sequences, and a console is not something CI has.
+    #[cfg(unix)]
     #[test]
     fn starting_without_the_mouse_never_captures_it() {
         let mut taken = Vec::new();
