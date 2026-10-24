@@ -251,6 +251,18 @@ double-click a specification's tab to write it to the project's output
 directory — `dist/` beside the project unless `<shaipe:renders output="…">`
 says otherwise, the same place `shaipe render` writes.
 
+Text can be selected and copied. Drag inside a pane (or the source view) to
+highlight it; releasing the button copies it to the system clipboard through
+the terminal, with an OSC 52 sequence, so it works over SSH and inside tmux
+(which needs `set -g set-clipboard on` or `set -g allow-passthrough on`). Some terminals ignore OSC 52 unless
+told otherwise, and selecting across panes is not something a drag can do, so
+`F2` hands the mouse back to the terminal — its own selection then works, and
+`F2` again takes it back; `shaipe tui --no-mouse` starts that way. In the
+description and message editors `shift`+arrows select, and `ctrl-c` and `ctrl-x`
+copy and cut to the clipboard as well. Pasting uses the terminal's own paste
+(`ctrl-shift-v`, `cmd-v`) and is inserted whole into whichever editor, field or
+picker has the keyboard; outside of one it is ignored rather than read as keys.
+
 `e` opens the focused description or message in `$VISUAL` or `$EDITOR` instead. `ctrl-s` writes the
 project back to its file. The status line marks unsaved work, and quitting with
 any asks first.
@@ -427,6 +439,7 @@ the agent's edits and your preview cannot drift apart
 shaipe tui --agent "some-other-agent acp"      # any ACP agent, not just OpenCode
 shaipe tui --no-agent                          # open the workspace without one
 shaipe tui --yes                               # approve the agent's own tools
+shaipe tui --no-mouse                          # leave the mouse to the terminal
 shaipe tui --model "anthropic/claude-opus-4-1" # request one of the agent's own models
 ```
 

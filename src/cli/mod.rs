@@ -269,6 +269,15 @@ pub struct TuiArgs {
     /// own: `write_svg` changes the project in memory until you press ctrl-s.
     #[arg(long)]
     pub yes: bool,
+
+    /// Start with the mouse left to the terminal.
+    ///
+    /// Clicking and dragging inside the workspace stop working, and the
+    /// terminal's own text selection works instead. Dragging inside a pane
+    /// selects and copies without it, and `F2` switches either way while the
+    /// workspace is open.
+    #[arg(long)]
+    pub no_mouse: bool,
 }
 
 impl TuiArgs {

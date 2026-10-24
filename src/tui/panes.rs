@@ -655,7 +655,7 @@ fn hints(app: &App) -> Vec<Hint> {
     // listing none. Its own keys are along the bottom of the dialogue, which
     // is where somebody looking at a dialogue is looking.
     if app.modal().is_some() {
-        return vec![Hint::essential("esc", "close")];
+        return vec![Hint::essential("esc", "close"), mouse_hint(app)];
     }
 
     if app.is_editing() {
@@ -678,6 +678,7 @@ fn hints(app: &App) -> Vec<Hint> {
         }
 
         hints.push(Hint::optional("ctrl-s", "save", 1));
+        hints.push(mouse_hint(app));
         return hints;
     }
 
@@ -759,8 +760,29 @@ fn hints(app: &App) -> Vec<Hint> {
     hints.push(Hint::optional("ctrl-s", "save", 1));
     hints.push(Hint::optional("R", "reload", 7));
     hints.push(Hint::essential("q", "quit"));
+    hints.push(mouse_hint(app));
 
     hints
+}
+
+/// The way to the terminal's own text selection, and back.
+///
+/// Named on the line because nothing else would: a terminal that has handed
+/// its mouse over looks, to the person trying to select with it, simply
+/// broken. Given up before the keys everything else needs, but not first:
+/// dragging inside a pane already selects and copies, yet this is the only way
+/// to the terminal's own selection for what that cannot reach, and a key nobody
+/// can see is a key nobody presses.
+fn mouse_hint(app: &App) -> Hint {
+    Hint::optional(
+        "F2",
+        if app.mouse_captured() {
+            "select"
+        } else {
+            "mouse"
+        },
+        4,
+    )
 }
 
 #[cfg(test)]
@@ -1294,6 +1316,20 @@ mod tests {
 
         let stale = drawn(status(&app, 120), 120, 1);
         assert!(stale.contains("on disk"), "{stale}");
+    }
+
+    #[test]
+    fn the_status_line_names_the_way_to_the_terminals_own_selection() {
+        // Wide enough for every hint: this is the first to go when there is
+        // not room, which is the point of its priority.
+        let mut app = App::new(fixtures::project(), "blocks");
+        let line = drawn(status(&app, 300), 300, 1);
+        assert!(line.contains("F2 select"), "{line}");
+
+        // Once released the key is the way back, and says so.
+        app.set_mouse_captured(false);
+        let line = drawn(status(&app, 300), 300, 1);
+        assert!(line.contains("F2 mouse"), "{line}");
     }
 
     #[test]

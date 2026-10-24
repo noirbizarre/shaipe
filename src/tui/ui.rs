@@ -97,6 +97,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, backend: &mut Backend) {
         Some(Modal::Model(picker)) => modal::draw_model_picker(frame, picker, body),
         None => {}
     }
+
+    // After the modal, though a modal opening ends any selection: this is
+    // painting over what is on screen, and nothing may be drawn over it.
+    super::selection::paint(frame.buffer_mut(), app);
 }
 
 /// Draw the description column.

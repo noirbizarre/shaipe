@@ -70,4 +70,5 @@ verbs). Anything else is an *Update*.
   geometry apart from appearance
 - [ADR-030](030-durable-description-and-transient-messages.md) — Keep design intent in the SVG and turns in the session
 - [ADR-031](031-workflow-first-workspace.md) — Navigate the workspace by phase while keeping artifacts and session state
+- [ADR-032](032-selection-and-clipboard.md) — Select, copy and paste inside a workspace that owns the mouse
   distinct

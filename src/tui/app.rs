@@ -11,7 +11,7 @@
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
-use ratatui::layout::Rect;
+use ratatui::layout::{Margin, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::ListState;
 use ratatui_textarea::{TextArea, WrapMode};
@@ -27,6 +27,7 @@ use crate::tui::modal::{
     ColourPicker, Modal, ModelPicker, ReferencesEditor, RendersEditor, VariantsEditor,
 };
 use crate::tui::render_worker::{Rendered, Worker};
+use crate::tui::selection::Selection;
 use crate::tui::toolbar::Button;
 use crate::tui::transcript::Transcript;
 use crate::tui::watch::Watcher;
@@ -636,6 +637,19 @@ pub struct App {
     last_tab_click: Option<(usize, Instant)>,
     /// Whether the column divider is being dragged.
     resizing: Option<Divider>,
+    /// Whether the workspace has the mouse, rather than the terminal.
+    ///
+    /// The terminal can only select text itself while nobody is capturing the
+    /// mouse, so this is what `F2` flips. Applied by the event loop, which owns
+    /// the terminal: the state only says what it wants.
+    mouse: bool,
+    /// Text being selected with the mouse, or just selected.
+    selection: Option<Selection>,
+    /// Text waiting to be sent to the system clipboard.
+    ///
+    /// A request rather than the deed, like [`Self::editor_requested`]: writing
+    /// the escape sequence needs the terminal, which the state does not have.
+    pending_clipboard: Option<String>,
     /// Whether to skip drawing the image for one frame.
     holding_image: bool,
     /// Scroll state per list pane, so the selection stays visible when a pane
@@ -664,6 +678,19 @@ pub struct App {
     /// asked to compare pixels to notice a change; a counter is both cheaper
     /// and impossible to get subtly wrong.
     generation: u64,
+}
+
+/// Whether this key copies or cuts the editor's selection.
+///
+/// Asked *before* the key is applied, because the text area forgets its
+/// selection when it acts on it, and because with nothing selected `ctrl-c`
+/// copies nothing and its yank buffer still holds whatever was there before —
+/// which is not what anyone pressing it just now meant to put on a clipboard.
+fn copies_selection(editor: &TextArea<'_>, key: KeyEvent) -> bool {
+    editor.selection_range().is_some()
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && !key.modifiers.contains(KeyModifiers::ALT)
+        && matches!(key.code, KeyCode::Char('c' | 'x'))
 }
 
 impl App {
@@ -747,6 +774,9 @@ impl App {
             last_click: None,
             last_tab_click: None,
             resizing: None,
+            mouse: true,
+            selection: None,
+            pending_clipboard: None,
             holding_image: false,
             list_states: std::array::from_fn(|_| ListState::default()),
             selected: [0; Focus::COUNT],
@@ -1329,13 +1359,173 @@ impl App {
         match self.editing {
             Some(Focus::Palette) => self.palette_key(key),
             Some(Focus::Message) => {
+                let copying = copies_selection(&self.message_editor, key);
                 self.message_editor.input(key);
+                if copying {
+                    self.pending_clipboard = Some(self.message_editor.yank_text());
+                }
             }
             _ => {
+                let copying = copies_selection(&self.editor, key);
                 self.editor.input(key);
                 self.commit_prompt();
+                if copying {
+                    self.pending_clipboard = Some(self.editor.yank_text());
+                }
             }
         }
+    }
+
+    /// Insert pasted text where the keyboard is.
+    ///
+    /// Bracketed paste is what makes this a method of its own rather than a
+    /// loop over [`Self::edit_key`]. Typed one character at a time a paste is
+    /// slow, commits the description once per character, and — worst — is
+    /// *interpreted*: an `esc` or a tab in it leaves the pane, a newline in a
+    /// field moves to the next one, and with nothing being edited every letter
+    /// is a shortcut. Here it is data, and goes only where data is wanted.
+    pub fn paste(&mut self, text: &str) {
+        // Terminals send `\r` for the lines of a paste, and a text area keeps
+        // a lone one as a character.
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        if text.is_empty() {
+            return;
+        }
+
+        // A modal owns the keyboard, and every one of its text fields takes
+        // plain characters; the fields that do not simply ignore them.
+        if self.modal.is_some() {
+            for character in text.chars() {
+                let character = match character {
+                    // A field is one line, and a real `Enter` would be taken
+                    // as "next field" or "choose this one".
+                    '\n' | '\t' => ' ',
+                    other if other.is_control() => continue,
+                    other => other,
+                };
+                self.modal_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+            }
+            return;
+        }
+
+        match self.editing {
+            Some(Focus::Palette) => {
+                for character in text.chars().filter(|character| !character.is_control()) {
+                    self.palette_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+                }
+            }
+            Some(Focus::Message) => {
+                self.message_editor.insert_str(&text);
+            }
+            Some(Focus::Prompt) => {
+                self.editor.insert_str(&text);
+                self.commit_prompt();
+            }
+            // Nothing is being edited, so there is nowhere for it to go.
+            // Dropping it is the point: the alternative is the keys.
+            _ => {}
+        }
+    }
+
+    /// Whether the workspace has the mouse, rather than the terminal.
+    #[must_use]
+    pub const fn mouse_captured(&self) -> bool {
+        self.mouse
+    }
+
+    /// Decide whether the workspace has the mouse. The event loop notices the
+    /// change and tells the terminal.
+    pub fn set_mouse_captured(&mut self, captured: bool) {
+        self.mouse = captured;
+        // Neither survives a change of hands: the highlight is drawn by us and
+        // the drag is made of events the terminal will no longer send.
+        self.selection = None;
+        self.resizing = None;
+    }
+
+    /// Hand the mouse to the terminal, or take it back.
+    pub fn toggle_mouse(&mut self) {
+        self.set_mouse_captured(!self.mouse);
+        self.notice = Some(Notice::info(if self.mouse {
+            "mouse back in Shaipe: click and drag work here"
+        } else {
+            "mouse released: select with the terminal, F2 to take it back"
+        }));
+    }
+
+    /// Text to send to the system clipboard, taken once.
+    pub const fn take_clipboard(&mut self) -> Option<String> {
+        self.pending_clipboard.take()
+    }
+
+    /// Ask for text to be sent to the system clipboard.
+    pub fn copy_to_clipboard(&mut self, text: String) {
+        if !text.is_empty() {
+            self.pending_clipboard = Some(text);
+        }
+    }
+
+    /// The selection, if there is one.
+    #[must_use]
+    pub const fn text_selection(&self) -> Option<&Selection> {
+        self.selection.as_ref()
+    }
+
+    /// Note that the selected text has been taken from the frame.
+    pub const fn mark_selection_copied(&mut self) {
+        if let Some(selection) = self.selection.as_mut() {
+            selection.mark_copied();
+        }
+    }
+
+    /// Let go of the selection, so its highlight leaves the next frame.
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+    }
+
+    /// The text a drag starting at this point would select within, if any.
+    ///
+    /// A pane's interior, so the border is never part of it, and the source
+    /// view, which is text. The preview is not: it is pixels, and there is
+    /// nothing in its cells to copy.
+    fn selectable_at(&self, column: u16, row: u16) -> Option<Rect> {
+        let point = ratatui::layout::Position::new(column, row);
+        let region = match self.pane_at(column, row) {
+            Some(focus) => self.area(focus),
+            None if self.view == View::Source => self.preview_area,
+            None => return None,
+        }
+        .inner(Margin::new(1, 1));
+
+        region.contains(point).then_some(region)
+    }
+
+    /// Start selecting where the button went down.
+    pub fn begin_selection(&mut self, column: u16, row: u16) {
+        self.selection = self
+            .selectable_at(column, row)
+            .map(|region| Selection::begin(region, column, row));
+    }
+
+    /// Follow the pointer.
+    pub fn extend_selection(&mut self, column: u16, row: u16) {
+        if let Some(selection) = self.selection.as_mut() {
+            selection.extend(column, row);
+        }
+    }
+
+    /// The button went up: keep what was selected, or drop a plain click.
+    ///
+    /// Returns whether a selection is now waiting to be copied.
+    pub fn finish_selection(&mut self) -> bool {
+        let Some(selection) = self.selection.as_mut() else {
+            return false;
+        };
+        if selection.finish() {
+            return true;
+        }
+        self.selection = None;
+        false
     }
 
     /// Apply a keypress to the palette's field editor.

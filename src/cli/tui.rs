@@ -67,5 +67,14 @@ pub async fn run(
         }
     };
 
-    shaipe::tui::run(project, !existed, preview, scale, verbose, agent).await
+    shaipe::tui::run(
+        project,
+        !existed,
+        preview,
+        scale,
+        verbose,
+        agent,
+        !args.no_mouse,
+    )
+    .await
 }
